@@ -30,13 +30,16 @@ function component(relative){
 }
 
 test("one connection form prepares the full hierarchy, preserves secrets on edit, and rolls back on failure",async()=>{
-  delete process.env.DATABASE_URL;
-  process.env.AUTOSNAP_PGLITE_DIR="memory://";
+  process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";
   process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
   const db=new DatabaseService();await db.onModuleInit();
   try{
     const snapUserId="snap-owner";
     await db.query("INSERT INTO autosnap_records (id,kind,name,parent_id,partner_id,data,created_at,updated_at) VALUES ($1,'snap_user','Owner',NULL,NULL,$2::jsonb,$3,$3)",[snapUserId,JSON.stringify({email:"owner@example.test",username:"owner@example.test"}),new Date().toISOString()]);
+    const now=new Date().toISOString();
+    await db.query("INSERT INTO autosnap_records (id,kind,name,parent_id,partner_id,data,created_at,updated_at) VALUES ('orphan-client','client','Belum Lengkap',NULL,'orphan-key',$1::jsonb,$2,$2)",[JSON.stringify({clientId:"orphan-key",partnerIdSource:"client_id",channelId:"95221"}),now]);
+    const completed=await saveConnection(db,{name:"Orphan Completed",userId:snapUserId,client:{clientId:"orphan-key",partnerIdSource:"client_id",channelId:"95221"},environment:{mode:"portal"}});
+    assert.equal(completed.clientId,"orphan-client","an incomplete visible client is reused instead of rejected as duplicate");
     const created=await saveConnection(db,{name:"Simulasi",userId:snapUserId,environment:{mode:"mock"}});
     const [client]=await db.query("SELECT * FROM autosnap_records WHERE id=$1",[created.clientId]);
     const [project]=await db.query("SELECT * FROM autosnap_records WHERE id=$1",[created.projectId]);
@@ -80,11 +83,10 @@ test("testing starts with explicit choices, no hidden target or manual token inp
   assert.doesNotMatch(html,/<span>Project<\/span>|Request Template|Access Token B2B/);
 });
 
-test("a Dev Site draft requires an owner, uses a direct API URL and has editable default channel",()=>{
+test("a Dev Site draft requires an owner, defaults to ASPI Sandbox and has editable channel",()=>{
   const ConnectionForm=component("app/connection-form.tsx");
   const html=renderToStaticMarkup(createElement(ConnectionForm,{api:async()=>({}),reload:async()=>{},onSaved:()=>{},onClose:()=>{}}));
-  assert.match(html,/User SNAP \*/);assert.match(html,/Nama Dev Site Client/);assert.doesNotMatch(html,/URL Aplikasi Pengujian Access Token B2B|Encoding RSA|Encoding HMAC|Public Key client/);assert.match(html,/>Simpan</);
+  assert.match(html,/User SNAP \*/);assert.match(html,/Nama Dev Site Client/);assert.match(html,/Mode Pengujian/);assert.match(html,/ASPI Sandbox/);assert.match(html,/Mock Lokal/);assert.doesNotMatch(html,/URL Aplikasi Pengujian Access Token B2B|Encoding RSA|Encoding HMAC|Public Key client/);assert.match(html,/>Simpan</);
   assert.match(html,/value="95221"/);assert.doesNotMatch(html,/Target pengujian|Simulasi lokal/);
-  assert.doesNotMatch(html,/sandbox/i);
   assert.doesNotMatch(html,/<span>Access Token|provided_token|rekening konsumen/);
 });

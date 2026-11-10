@@ -29,11 +29,11 @@ export function validateHeaderProfile(data: Record<string, unknown>): string[] {
   return errors;
 }
 
-export function balanceResponseChecks(status: number, response: unknown, expected: string, request: Record<string, unknown>): Check[] {
+export function balanceResponseChecks(status: number|null, response: unknown, expected: string, request: Record<string, unknown>): Check[] {
   const body = object(response) ? response : {};
   const checks: Check[] = [];
   const add = (label: string, passed: boolean, detail: string) => checks.push({ label, passed, detail });
-  add("HTTP status", status === Number(expected.slice(0, 3)), `Expected ${expected.slice(0, 3)}, received ${status}.`);
+  add("HTTP status", status === Number(expected.slice(0, 3)), `Expected ${expected.slice(0, 3)}, received ${status??"no HTTP response"}.`);
   add("SNAP responseCode", body.responseCode === expected, `Expected ${expected}, received ${String(body.responseCode ?? "missing")}.`);
   add("Response JSON", object(response), "Response harus berupa object JSON.");
   add("responseMessage", typeof body.responseMessage === "string" && body.responseMessage.length > 0 && body.responseMessage.length <= 150, "Wajib string, maksimal 150 karakter.");

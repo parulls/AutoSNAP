@@ -17,7 +17,7 @@ async function main(){
     await app.init();
     const db=app.get(DatabaseService);
     await initializeLocalSecurity(db,process.cwd());
-    await app.listen(Number(process.env.AUTOSNAP_API_PORT??4010),"127.0.0.1");
+    await app.listen(Number(process.env.AUTOSNAP_API_PORT??4010),process.env.AUTOSNAP_API_HOST??"127.0.0.1");
   }catch(error){await app.close();throw error;}
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

@@ -41,7 +41,15 @@ export async function saveConnection(db:DatabaseService,input:Record<string,unkn
       let url:URL;try{url=new URL(text(environment.baseUrl));}catch{fail("Base URL API langsung tidak valid.");}
       if(url!.protocol!=="https:"||url!.username||url!.password||url!.search||url!.hash)fail("Base URL API langsung harus HTTPS tanpa query atau fragment.");
     }
-    const client={...(oldClient?.data??{})};
+    const requestedSource=text(incomingClient.partnerIdSource)||String(oldClient?.data.partnerIdSource??"client_id");
+    const requestedPartner=requestedSource==="client_id"?text(incomingClient.clientId):text(incomingClient.partnerId);
+    const reusableClient=!oldClient&&requestedPartner?rows.find(x=>x.kind==="client"&&x.partner_id===requestedPartner):undefined;
+    const reusableProjects=reusableClient?rows.filter(x=>x.kind==="project"&&x.parent_id===reusableClient.id):[];
+    const reusableProject=!oldProject&&reusableClient?reusableProjects.find(project=>!rows.some(x=>x.kind==="environment"&&x.parent_id===project.id)):undefined;
+    const existingEnvironment=reusableProjects.map(project=>rows.find(x=>x.kind==="environment"&&x.parent_id===project.id)).find(Boolean);
+    if(reusableClient&&existingEnvironment)fail(`Client ID sudah digunakan oleh Dev Site Client ${existingEnvironment.name}. Edit data tersebut.`,409);
+    const baseClient=oldClient??reusableClient,baseProject=oldProject??reusableProject;
+    const client={...(baseClient?.data??{})};
     for(const field of ["clientId","channelId","deviceId","origin","ipAddress","latitude","longitude"])if(field in incomingClient)client[field]=text(incomingClient[field]);
     if(environment.mode==="portal")delete client.publicKey;
     client.channelId=client.channelId||"95221";
@@ -49,16 +57,16 @@ export async function saveConnection(db:DatabaseService,input:Record<string,unkn
     if("partnerIdSource" in incomingClient)client.partnerIdSource=text(incomingClient.partnerIdSource);
     client.partnerIdSource=client.partnerIdSource||"client_id";
     if(!["client_id","custom"].includes(String(client.partnerIdSource)))fail("Sumber Partner ID tidak valid.");
-    const partnerId=(client.partnerIdSource==="client_id"?text(client.clientId):("partnerId" in incomingClient?text(incomingClient.partnerId):oldClient?.partner_id))||null;
+    const partnerId=(client.partnerIdSource==="client_id"?text(client.clientId):("partnerId" in incomingClient?text(incomingClient.partnerId):baseClient?.partner_id))||null;
     if(partnerId&&!/^[A-Za-z0-9._-]{1,36}$/.test(partnerId))fail("Partner ID maksimal 36 karakter tanpa spasi.");
-    if(partnerId&&rows.some(x=>x.kind==="client"&&x.partner_id===partnerId&&x.id!==oldClient?.id))fail("Client ID / Partner ID sudah tersimpan. Edit client yang sudah ada.",409);
+    if(partnerId&&rows.some(x=>x.kind==="client"&&x.partner_id===partnerId&&x.id!==baseClient?.id))fail("Client ID / Partner ID sudah tersimpan pada client lain.",409);
     const errors=validateHeaderProfile(client);if(errors.length)fail(errors.join(" "));
     if(text(client.channelId).length>5)fail("CHANNEL-ID maksimal 5 karakter.");
     for(const field of ["clientSecret","privateKey"]){
       const value=text(incomingClient[field]);
-      if(value&&value!==mask)client[field]=encrypt(field==="accessToken"?value.replace(/^Bearer\s+/i,""):value);
+      if(value&&value!==mask)client[field]=encrypt(value);
     }
-    const clientId=oldClient?.id??randomUUID(),projectId=oldProject?.id??randomUUID(),id=oldEnvironment?.id??randomUUID();
+    const clientId=baseClient?.id??randomUUID(),projectId=baseProject?.id??randomUUID(),id=oldEnvironment?.id??randomUUID();
     if(text(incomingClient.appName).length>120)fail("Nama aplikasi maksimal 120 karakter.");
     const userId=text(input.userId)||text(environment.defaultUserId);
     const oldUser=rows.find(x=>x.id===userId&&x.kind==="snap_user");
@@ -71,7 +79,7 @@ export async function saveConnection(db:DatabaseService,input:Record<string,unkn
     };
     try{
       await write(clientId,"client",text(incomingClient.appName)||oldClient?.name||name,null,partnerId!,client);
-      if(!oldProject)await write(projectId,"project",name,clientId,null,{description:"Pengujian Balance Inquiry"});
+      if(!baseProject)await write(projectId,"project",name,clientId,null,{description:"Pengujian Balance Inquiry"});
       await write(id,"environment",name,projectId,null,environment);
     }catch(error){if((error as {code?:string}).code==="23505")fail("Client ID sudah digunakan. Pilih koneksi yang telah tersimpan.",409);throw error;}
     return {ok:true,id,clientId,projectId,userId:savedUserId??null};

@@ -42,6 +42,9 @@ next-env.d.ts
 /.wrangler/
 /.autosnap-pg/
 /.autosnap-browser-profile/
+/autosnap-diagnostics/
+/backups/
+/.secrets/
 /backend/dist/
 /outputs/
 /work/

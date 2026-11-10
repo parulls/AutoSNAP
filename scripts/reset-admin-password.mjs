@@ -1,4 +1,3 @@
-import { PGlite } from "@electric-sql/pglite";
 import { Pool } from "pg";
 import { pbkdf2 as pbkdf2Callback, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -43,7 +42,6 @@ function hiddenQuestion(label) {
 }
 
 let pool;
-let embedded;
 try {
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
   const email = (await prompt.question("Username AutoSNAP (atau email akun lama): ")).trim().toLowerCase();
@@ -55,13 +53,10 @@ try {
   if (password.length < 12) throw new Error("Password minimal 12 karakter.");
   if (password !== confirmation) throw new Error("Konfirmasi password tidak sama.");
 
-  if (process.env.DATABASE_URL) {
-    pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
-  } else {
-    embedded = new PGlite(process.env.AUTOSNAP_PGLITE_DIR || join(process.cwd(), ".autosnap-pg"));
-    await embedded.waitReady;
-  }
-  const query = (sql, params = []) => pool ? pool.query(sql, params) : embedded.query(sql, params);
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) throw new Error("DATABASE_URL Supabase belum diatur.");
+  pool = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 15000, allowExitOnIdle: true, options: "-c search_path=autosnap,public" });
+  const query = (sql, params = []) => pool.query(sql, params);
   const account = await query("SELECT id, name FROM autosnap_users WHERE LOWER(email)=$1 OR LOWER(username)=$1", [email]);
   if (!account.rows.length) throw new Error("Akun dengan email tersebut tidak ditemukan.");
 
@@ -73,9 +68,7 @@ try {
 } catch (error) {
   const detail = error instanceof Error ? error.message : String(error);
   process.stderr.write(`Reset gagal: ${detail}\n`);
-  if (/lock|already in use|directory/i.test(detail)) process.stderr.write("Hentikan npm run dev terlebih dahulu, lalu ulangi perintah reset.\n");
   process.exitCode = 1;
 } finally {
   await pool?.end();
-  await embedded?.close();
 }

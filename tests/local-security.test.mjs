@@ -35,7 +35,7 @@ test("configured external keys are honored; missing or invalid keys never rotate
 });
 
 test("bootstrap examines the database before generating a replacement key",async t=>{
-  const dir=directory(t);delete process.env.DATABASE_URL;process.env.AUTOSNAP_PGLITE_DIR="memory://";
+  const dir=directory(t);process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";
   const db=new DatabaseService();await db.onModuleInit();
   try{
     const environment={NODE_ENV:"development"};

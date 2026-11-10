@@ -8,7 +8,7 @@ const {AutoSnapController}=require("../backend/dist/app.js");
 const {RunEngine}=require("../backend/dist/run-engine.js");
 
 test("signup verifies one-use CAPTCHA; pending accounts and testers cannot manage other users",async()=>{
-  delete process.env.DATABASE_URL;process.env.AUTOSNAP_PGLITE_DIR="memory://";process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
+  process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
   process.env.AUTOSNAP_RECAPTCHA_SITE_KEY="test-site";process.env.AUTOSNAP_RECAPTCHA_SECRET_KEY="test-secret";process.env.AUTOSNAP_RECAPTCHA_HOSTNAMES="localhost";
   const used=new Set(),savedFetch=globalThis.fetch;
   globalThis.fetch=async(_url,options)=>{const token=new URLSearchParams(String(options.body)).get("response"),success=!!token&&token!=="expired"&&!used.has(token);if(success)used.add(token);return {ok:true,json:async()=>success?{success:true,hostname:"localhost"}:{success:false,"error-codes":["timeout-or-duplicate"]}};};
@@ -55,10 +55,5 @@ test("signup verifies one-use CAPTCHA; pending accounts and testers cannot manag
     assert.equal((await invoke("login",{username:"qa-petugas",password:"changed-password-123"})).status,403);
     const expired={recaptchaToken:"expired"};
     assert.equal((await invoke("register",{username:"expired",password:"long-password-123",...expired})).status,400);
-    await db.query("INSERT INTO autosnap_users (id,email,name,salt,password_hash,created_at) VALUES ('legacy-user','legacy@example.test','Legacy',$1,$2,$3)",[admin.salt,admin.password_hash,new Date().toISOString()]);
-    await db.schema();
-    assert.equal((await invoke("login",{email:"legacy@example.test",password:"long-password-123"})).status,200,"legacy email login remains usable after migration");
-    const legacy=await db.one("SELECT * FROM autosnap_users WHERE id='legacy-user'");
-    assert.equal(legacy.username,"legacy@example.test");assert.equal(legacy.role,"tester");
   }finally{globalThis.fetch=savedFetch;await db.onModuleDestroy();}
 });

@@ -2,9 +2,10 @@ import { Injectable } from "@nestjs/common";
 import { request as playwrightRequest, type APIRequestContext } from "playwright-core";
 import { decrypt, hmacSignature, redact, rsaSignature, sha256 } from "./security";
 import type { RecordRow } from "./database.service";
+import type { HitOutcome } from "./aspi-types";
 
-export type HitResult={status:number;body:unknown;request:Record<string,unknown>};
-export type HitInput={baseUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow|null;scenarioId:string|null;externalId:string;extraHeaders:Record<string,string>;authFlow:string;useCase?:string;tokenPath?:string;rsaEncoding?:string;hmacEncoding?:string};
+export type HitResult={status:number|null;outcome?:HitOutcome;body:unknown;request:Record<string,unknown>};
+export type HitInput={baseUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow|null;scenarioId:string|null;externalId:string;extraHeaders:Record<string,string>;authFlow:string;useCase?:string;tokenPath?:string;rsaEncoding?:string;hmacEncoding?:string;negativeAccessToken?:boolean};
 const value=(row:RecordRow,key:string)=>String(row.data[key]??"");
 export function isoJakarta(){return new Date(Date.now()+7*3600000).toISOString().replace(/\.\d{3}Z$/,"+07:00");}
 export function allowedUrl(base:string,path:string){
@@ -76,7 +77,7 @@ export class RunEngine {
       if(useCase==="B2B2C"&&(!user||!value(user,"customerToken")))throw new Error("User SNAP live memerlukan customer access token B2B2C dari proses consent/OAuth.");
       const customerToken=useCase==="B2B2C"&&user?decrypt(value(user,"customerToken")):"";
       if(customerToken&&authFlow==="direct_rsa")throw new Error("B2B2C memerlukan token_b2b atau provided_token.");
-      if(scenarioId?.endsWith(".1"))token="invalid-access-token";
+      if(input.negativeAccessToken||scenarioId?.endsWith(".1"))token="invalid-access-token";
       const url=allowedUrl(baseUrl,path),serialized=method==="GET"?"":JSON.stringify(body);
       if(method==="GET"&&body.queryParameter&&typeof body.queryParameter==="object"&&!Array.isArray(body.queryParameter))for(const [key,param] of Object.entries(body.queryParameter))if(param!==null&&param!==undefined)url.searchParams.set(key,String(param));
       const relative=url.pathname+url.search;

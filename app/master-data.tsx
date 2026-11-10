@@ -14,10 +14,11 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
   const [draft,setDraft]=useState({name:"",parentId:"",data:{} as Record<string,unknown>}),[busy,setBusy]=useState(false);
   const admin=state.user?.role==="admin";
   const users=state.records.filter(x=>x.kind==="snap_user");
-  const sites=state.records.filter(x=>x.kind==="environment"&&value(x,"category")==="Dev Site");
-  const services=state.records.filter(x=>x.kind==="service"&&["Registrasi","Informasi Saldo"].includes(value(x,"module")));
-  const endpoints=state.records.filter(x=>x.kind==="endpoint"&&(services.some(service=>service.parentId===x.id||x.parentId===service.id)||!state.records.some(service=>service.kind==="service"&&(service.parentId===x.id||x.parentId===service.id))));
-  const rows=kind==="snap_user"?users:kind==="dev_site"?sites:kind==="service"?services:endpoints;
+  const sites=state.records.filter(x=>x.kind==="environment"&&value(x,"category").trim().toLowerCase()!=="client simulator");
+  const incompleteClients=state.records.filter(client=>client.kind==="client"&&!state.records.some(project=>project.kind==="project"&&project.parentId===client.id&&state.records.some(environment=>environment.kind==="environment"&&environment.parentId===project.id)));
+  const services=state.records.filter(x=>x.kind==="service"&&value(x,"module").trim().toLowerCase()==="informasi saldo");
+  const endpoints=state.records.filter(x=>x.kind==="endpoint");
+  const rows=kind==="snap_user"?users:kind==="dev_site"?[...sites,...incompleteClients]:kind==="service"?services:endpoints;
   function open(item:Item|null){
     setEditing(item??"new");
     const endpoint=item&&kind==="service"?state.records.find(x=>x.id===item.parentId&&x.kind==="endpoint")??endpoints.find(x=>x.parentId===item.id):undefined;
@@ -36,8 +37,10 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
     setBusy(true);setError("");
     try{await api("delete",{id:item.id});await reload();setNotice("Data dihapus.");}catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
-  const selectedSite=connection&&connection!=="new"?connection:undefined;
+  const selectedRecord=connection&&connection!=="new"?connection:undefined;
+  const selectedSite=selectedRecord?.kind==="environment"?selectedRecord:undefined;
   const project=state.records.find(x=>x.id===selectedSite?.parentId),client=state.records.find(x=>x.id===project?.parentId);
+  const selectedClient=selectedRecord?.kind==="client"?selectedRecord:client;
   const owner=users.find(x=>x.id===value(selectedSite,"defaultUserId"));
   const field=(key:string,label:string,multiline=false,secret=false)=><label className={`form-field${multiline?" wide":""}`}><span>{label}</span>{multiline?<textarea rows={9} spellCheck={false} value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>:<input type={secret?"password":key==="email"?"email":"text"} autoComplete="off" value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>}</label>;
 
@@ -47,9 +50,9 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
     {kind==="dev_site"&&!users.length&&<p className="helper">Tambahkan User SNAP sebelum membuat Dev Site Client.</p>}
     {kind==="service"&&!endpoints.length&&<p className="helper">Tambahkan Endpoint URL sebelum membuat service.</p>}
     <div className="table-wrap"><table><thead><tr><th>NAMA</th><th>DETAIL</th><th>DIPERBARUI</th>{admin&&<th>AKSI</th>}</tr></thead><tbody>{rows.map(item=>{
-      const siteProject=state.records.find(x=>x.id===item.parentId),siteClient=state.records.find(x=>x.id===siteProject?.parentId);
+      const incomplete=item.kind==="client",siteProject=incomplete?undefined:state.records.find(x=>x.id===item.parentId),siteClient=incomplete?item:state.records.find(x=>x.id===siteProject?.parentId);
       const linkedEndpoint=endpoints.find(x=>x.id===item.parentId||x.parentId===item.id);
-      return <tr key={item.id}><td><strong>{item.name}</strong></td><td className="detail-cell">{kind==="snap_user"?(value(item,"email")||"—"):kind==="dev_site"?<>{users.find(x=>x.id===value(item,"defaultUserId"))?.name??"—"}<span className="cell-caption">{[`Portal ASPI`,value(siteClient,"channelId")&&`CHANNEL-ID ${value(siteClient,"channelId")}`].filter(Boolean).join(" · ")}</span></>:kind==="endpoint"?<>{[value(item,"method"),value(item,"path")].filter(Boolean).join(" ")||"—"}<span className="cell-caption">{value(item,"portalUrl")||"URL Aplikasi Pengujian belum diisi"}</span></>:(linkedEndpoint?value(linkedEndpoint,"path")||linkedEndpoint.name:"—")}</td><td>{new Date(item.updatedAt).toLocaleDateString("id-ID")}</td>{admin&&<td><div className="inline-actions"><button disabled={busy} onClick={()=>kind==="dev_site"?setConnection(item):open(item)}>Edit</button><button disabled={busy} className="danger-action" onClick={()=>remove(item)}>Hapus</button></div></td>}</tr>;
+      return <tr key={item.id}><td><strong>{item.name}</strong>{incomplete&&<span className="cell-caption">Belum dilengkapi</span>}</td><td className="detail-cell">{kind==="snap_user"?(value(item,"email")||"—"):kind==="dev_site"?<>{incomplete?"Pilih Lengkapi untuk menghubungkan User SNAP":users.find(x=>x.id===value(item,"defaultUserId"))?.name??"—"}<span className="cell-caption">{[incomplete?"Client tersimpan":value(item,"mode")==="mock"?"Mock Lokal":value(item,"mode")==="live"?"Live Bank Sumut":"ASPI Sandbox",value(siteClient,"channelId")&&`CHANNEL-ID ${value(siteClient,"channelId")}`].filter(Boolean).join(" · ")}</span></>:kind==="endpoint"?<>{[value(item,"method"),value(item,"path")].filter(Boolean).join(" ")||"—"}<span className="cell-caption">{value(item,"portalUrl")||"URL Aplikasi Pengujian belum diisi"}</span></>:(linkedEndpoint?value(linkedEndpoint,"path")||linkedEndpoint.name:"—")}</td><td>{new Date(item.updatedAt).toLocaleDateString("id-ID")}</td>{admin&&<td><div className="inline-actions"><button disabled={busy} onClick={()=>kind==="dev_site"?setConnection(item):open(item)}>{incomplete?"Lengkapi":"Edit"}</button><button disabled={busy} className="danger-action" onClick={()=>remove(item)}>Hapus</button></div></td>}</tr>;
     })}</tbody></table>{!rows.length&&<p className="empty-note">Belum ada data.</p>}</div>
     {kind==="dev_site"&&<p className="helper">CHANNEL-ID wajib. X-DEVICE-ID, ORIGIN, X-IP-ADDRESS, X-LATITUDE, dan X-LONGITUDE opsional.</p>}
     {kind==="snap_user"&&<p className="helper">Password SNAP disimpan terenkripsi.</p>}
@@ -64,6 +67,6 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
       </div>
       <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>setEditing(null)}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
     </form></div>}
-    {connection&&<ConnectionForm client={client} environment={selectedSite} user={owner} users={users} api={api} reload={reload} onClose={()=>setConnection(null)} onSaved={()=>{setConnection(null);setNotice("Dev Site Client disimpan.");}}/>}
+    {connection&&<ConnectionForm client={selectedClient} environment={selectedSite} user={owner} users={users} api={api} reload={reload} onClose={()=>setConnection(null)} onSaved={()=>{setConnection(null);setNotice("Dev Site Client disimpan.");}}/>}
   </section>;
 }

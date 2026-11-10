@@ -11,6 +11,9 @@ import { RunEngine, isoJakarta, type HitResult } from "./run-engine";
 import { PortalEngine } from "./portal-engine";
 import { decrypt, encrypt, redact, secretFields, sha256 } from "./security";
 import { balanceResponseChecks, mockBalance, object, validateBalanceRequest, validateHeaderProfile, type UseCase } from "./balance";
+import { testingHistoryPdf } from "./report-pdf";
+import { AspiFormResolver } from "./aspi-form-resolver";
+import { AspiSessionManager } from "./aspi-session-manager";
 
 type Scenario={id:string;group:string;service:string;scenario:string;expected:string;expectedCode:string|null};
 type Input=Record<string,unknown>;
@@ -84,9 +87,21 @@ export class AutoSnapController {
       if(action==="delete")return await this.remove(res,input);
       if(action==="userCreate"){await createAccount(this.db,input,input.role==="admin"?"admin":"tester",true);return res.json({ok:true});}
       if(action==="userDelete"||action==="userUpdate"){await updateAccount(this.db,input,user);return res.json({ok:true});}
+      if(action==="downloadRunPdf")return await this.downloadRunPdf(res,input);
       if(action==="run")return await this.run(res,input);
       return this.fail(res,clientError("Action tidak dikenal.",404));
     }catch(error){return this.fail(res,error);}
+  }
+  private async downloadRunPdf(res:Response,input:Input){
+    const id=String(input.id??"");
+    const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1",[id]);
+    if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
+    const pdf=await testingHistoryPdf(run);
+    const filename=`AutoSNAP-${run.id.replace(/[^A-Za-z0-9_-]/g,"-")}.pdf`;
+    res.setHeader("Content-Type","application/pdf");
+    res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);
+    res.setHeader("Content-Length",String(pdf.length));
+    return res.send(pdf);
   }
   private async setup(req:Request,res:Response,input:Input){
     const count=await this.db.one<{n:string}>("SELECT COUNT(*)::text AS n FROM autosnap_users");
@@ -209,6 +224,9 @@ export class AutoSnapController {
     if(/production|prod\b/i.test(environment.name))return this.fail(res,clientError("Target production tidak diizinkan untuk automation ini."));
     const useCase=String(input.useCase??environment.data.useCase??"B2B") as UseCase;
     if(!["B2B","B2B2C"].includes(useCase))return this.fail(res,clientError("Pilih use case B2B atau B2B2C."));
+    const testType=String(input.testType??"positive");
+    if(!["positive","invalid_access_token"].includes(testType))return this.fail(res,clientError("Jenis testing tidak valid."));
+    const negativeAccessToken=testType==="invalid_access_token";
     if(useCase==="B2B2C"&&serviceCode==="11"&&(!snapUser||!value(snapUser,"customerToken")||!value(client,"deviceId")))return this.fail(res,clientError("Balance Inquiry B2B2C memerlukan User SNAP, customer access token, dan X-DEVICE-ID."));
     if(serviceCode==="11"&&useCase==="B2B2C"&&value(snapUser??undefined,"customerTokenExpiresAt")&&Date.parse(value(snapUser??undefined,"customerTokenExpiresAt"))<=Date.now())return this.fail(res,clientError("Customer token kedaluwarsa. Perbarui melalui Keamanan sebelum testing."));
     const scenarios=await this.catalog(),scenarioId=input.scenarioId?String(input.scenarioId):null,scenario=scenarioId?scenarios.find(item=>item.id===scenarioId):null;
@@ -237,15 +255,30 @@ export class AutoSnapController {
       if(value(snapUser,"accountNo"))body.accountNo=decrypt(value(snapUser,"accountNo"));
       else if(value(snapUser,"bankCardToken"))body.bankCardToken=decrypt(value(snapUser,"bankCardToken"));
     }
+    let automaticRegistration:{portalUrl:string;path:string;body:Record<string,unknown>}|null=null;
+    if(mode==="portal"&&serviceCode==="11"&&!body.accountNo&&!body.bankCardToken&&!scenarioId?.endsWith(".3")&&!scenarioId?.endsWith(".4")){
+      const registrationService=rows.find(row=>row.kind==="service"&&value(row,"code")==="01");
+      const registrationEndpoint=registrationService?rows.find(row=>row.kind==="endpoint"&&(row.id===registrationService.parent_id||row.parent_id===registrationService.id)):undefined;
+      const registrationTemplate=registrationEndpoint?rows.find(row=>row.kind==="template"&&row.parent_id===registrationEndpoint.id):undefined;
+      const registrationRaw=registrationService?.data.requestBody??registrationTemplate?.data.body;
+      if(!registrationEndpoint||!value(registrationEndpoint,"portalUrl")||typeof registrationRaw!=="string")return this.fail(res,clientError("Konfigurasi Card Registration otomatis belum lengkap di Master Data."));
+      try{
+        const parsed=resolve(JSON.parse(registrationRaw));
+        if(!object(parsed))throw Error();
+        automaticRegistration={portalUrl:value(registrationEndpoint,"portalUrl"),path:value(registrationEndpoint,"path"),body:parsed};
+      }catch{return this.fail(res,clientError("Default Request Body Card Registration harus berupa object JSON valid dan lengkap."));}
+      if(/\{\{[^}]+\}\}/.test(JSON.stringify(automaticRegistration.body)))return this.fail(res,clientError("Request Card Registration otomatis masih memiliki placeholder yang belum diisi."));
+    }
     if(/\{\{[^}]+\}\}/.test(JSON.stringify(body)))return this.fail(res,clientError("Masih ada placeholder yang belum diisi pada request."));
     const negativeFieldCase=scenarioId?.endsWith(".3")||scenarioId?.endsWith(".4");
     if(serviceCode==="11"&&!negativeFieldCase){
-      const errors=validateBalanceRequest(body,useCase==="B2B2C"&&!!value(snapUser??undefined,"customerToken"));
+      const validationBody=automaticRegistration?{...body,bankCardToken:"AUTO_FROM_CARD_REGISTRATION"}:body;
+      const errors=validateBalanceRequest(validationBody,useCase==="B2B2C"&&!!value(snapUser??undefined,"customerToken"));
       if(errors.length)return this.fail(res,clientError(errors.join(" ")));
     }
     const savesPrerequisite=["01","03","04","07","08","74"].includes(serviceCode);
     if(savesPrerequisite&&!snapUser)return this.fail(res,clientError("Pilih User SNAP agar hasil Registrasi atau Keamanan dapat disimpan otomatis."));
-    const expected=codeFor(scenario?.expectedCode,serviceCode)??(serviceCode==="11"?"2001100":null),externalId=String(input.externalId??"").trim()||Date.now().toString()+String(Math.floor(Math.random()*1000000)).padStart(6,"0");
+    const expected=negativeAccessToken&&serviceCode==="11"?"4011100":codeFor(scenario?.expectedCode,serviceCode)??(serviceCode==="11"?"2001100":null),externalId=String(input.externalId??"").trim()||Date.now().toString()+String(Math.floor(Math.random()*1000000)).padStart(6,"0");
     if(!/^[0-9]{1,36}$/.test(externalId))return this.fail(res,clientError("X-EXTERNAL-ID harus angka, maksimal 36 digit."));
     const extra=template?.data.headers;
     if(extra!==undefined&&(!object(extra)||Object.values(extra).some(x=>typeof x!=="string")))return this.fail(res,clientError("Header tambahan harus object berisi string."));
@@ -260,19 +293,68 @@ export class AutoSnapController {
     const started=Date.now();let result:HitResult;
     if(mode==="mock"){
       const code=expected??"200"+serviceCode+"00",timestamp=isoJakarta();
-      const response=serviceCode==="11"?mockBalance(body,code):{responseCode:code,responseMessage:scenario?.expected.match(/(?:Response|Error) Message:\s*"([^"]+)/i)?.[1]??(code.startsWith("2")?"Successful":"Simulated error"),additionalInfo:{mock:true}};
+      const response=negativeAccessToken?{responseCode:"4011100",responseMessage:"Invalid Access Token Scope",additionalInfo:{mock:true}}:serviceCode==="11"?mockBalance(body,code):{responseCode:code,responseMessage:scenario?.expected.match(/(?:Response|Error) Message:\s*"([^"]+)/i)?.[1]??(code.startsWith("2")?"Successful":"Simulated error"),additionalInfo:{mock:true}};
       result={status:Number(code.slice(0,3)),body:response,request:{method,path,timestamp,externalId,body:method==="GET"?null:body,headers:{"Content-Type":"application/json","Authorization":"[MOCK TOKEN]","X-TIMESTAMP":timestamp,"X-SIGNATURE":"[MOCK SIGNATURE]","X-PARTNER-ID":client.data.partnerIdSource==="client_id"?value(client,"clientId"):client.partner_id,"X-EXTERNAL-ID":externalId,"CHANNEL-ID":value(client,"channelId"),...(useCase==="B2B2C"?{"Authorization-Customer":"[MOCK CUSTOMER TOKEN]"}:{}),...(value(client,"deviceId")?{"X-DEVICE-ID":value(client,"deviceId")}:{}),...requestHeaders}}};
     }else if(mode==="portal"){
-      try{result=await this.portal.hit({portalUrl:value(endpoint,"portalUrl"),path,method,body,client,user:snapUser!,externalId,extraHeaders:requestHeaders});}
-      catch(error){result={status:0,body:{error:error instanceof Error?error.message:"Automasi Portal ASPI gagal"},request:{method,path,portalUrl:value(endpoint,"portalUrl"),externalId,body}};}
+      try{result=await this.portal.hit({portalUrl:value(endpoint,"portalUrl"),path,method,body,client,user:snapUser!,externalId,extraHeaders:requestHeaders,negativeAccessToken,registration:automaticRegistration?{...automaticRegistration,externalId:Date.now().toString()+String(Math.floor(Math.random()*1000000)).padStart(6,"0")}:null});}
+      catch(error){result={status:null,outcome:"AUTOMATION_ERROR",body:{error:error instanceof Error?error.message:"Automasi Portal ASPI gagal"},request:{method,path,portalUrl:value(endpoint,"portalUrl"),externalId,body}};}
     }else{
-      try{result=await this.engine.hit({baseUrl:value(environment,"baseUrl"),path,method,body,client,user:snapUser??null,scenarioId,externalId,extraHeaders:requestHeaders,authFlow:serviceCode==="11"?"token_b2b":value(environment,"authFlow")||"token_b2b",useCase,tokenPath:value(environment,"tokenPath")||"/api/v1.0/access-token/b2b",rsaEncoding:value(environment,"rsaEncoding")||"base64",hmacEncoding:value(environment,"hmacEncoding")||"hex"});}
-      catch(error){result={status:0,body:{error:error instanceof Error?error.message:"Live request failed"},request:{method,path,externalId,body}};}
+      try{result=await this.engine.hit({baseUrl:value(environment,"baseUrl"),path,method,body,client,user:snapUser??null,scenarioId,externalId,extraHeaders:requestHeaders,negativeAccessToken,authFlow:serviceCode==="11"?"token_b2b":value(environment,"authFlow")||"token_b2b",useCase,tokenPath:value(environment,"tokenPath")||"/api/v1.0/access-token/b2b",rsaEncoding:value(environment,"rsaEncoding")||"base64",hmacEncoding:value(environment,"hmacEncoding")||"hex"});}
+      catch(error){result={status:null,outcome:"TRANSPORT_ERROR",body:{error:error instanceof Error?error.message:"Live request failed"},request:{method,path,externalId,body}};}
     }
     const duration=Date.now()-started,responseBody=object(result.body)?result.body:{},responseCode=String(responseBody.responseCode??"")||null;
-    const checks=serviceCode==="11"?balanceResponseChecks(result.status,result.body,expected??"2001100",body):[];
-    const status=checks.length?(checks.every(check=>check.passed)?"Passed":"Failed"):expected?(responseCode===expected&&result.status===Number(expected.slice(0,3))?"Passed":"Failed"):(result.status>=200&&result.status<300?"Passed":"Failed");
-    let notes=mode==="mock"?"Simulasi lokal; bukan bukti kesesuaian terhadap penyedia SNAP.":mode==="portal"?(status==="Failed"?"Form ASPI telah dijalankan, tetapi respons tidak sesuai ekspektasi.":"Form Aplikasi Pengujian ASPI berhasil dijalankan."):status==="Failed"?"Respons tidak sesuai ekspektasi. Periksa hasil validasi dan respons tersanitasi.":"Respons sesuai skenario.";
+    const executedBody=object(result.request.body)?result.request.body:body;
+    const registrationOutput=object(result.request.registrationOutput)?result.request.registrationOutput:null;
+    if(mode==="portal"&&snapUser&&registrationOutput){
+      const outputs:Record<string,unknown>={};
+      for(const field of ["bankCardToken","accountNo"])if(typeof registrationOutput[field]==="string"&&registrationOutput[field])outputs[field]=encrypt(String(registrationOutput[field]));
+      if(Object.keys(outputs).length)await this.db.query("UPDATE autosnap_records SET data=data || $1::jsonb,updated_at=$2 WHERE id=$3",[JSON.stringify(outputs),new Date().toISOString(),snapUser.id]);
+    }
+    
+const requestNotExecuted =
+  result.status === null;
+
+const checks = requestNotExecuted
+  ? [{
+      label: "HTTP Request",
+      passed: false,
+      detail:
+        "Request tidak menghasilkan respons HTTP. " +
+        `Outcome: ${result.outcome ?? "UNKNOWN"}.`
+    }]
+  : serviceCode === "11"
+    ? balanceResponseChecks(
+        result.status,
+        result.body,
+        expected ?? "2001100",
+        executedBody
+      )
+    : [];
+
+    const automationChecks=object(result.request)&&Array.isArray(result.request.automationChecks)?result.request.automationChecks.filter(object).map(item=>({label:String(item.label??"Automation"),passed:item.passed===true,detail:String(item.detail??"")})):[];
+    checks.push(...automationChecks);
+    const status=checks.length?(checks.every(check=>check.passed)?"Passed":"Failed"):expected?(responseCode===expected&&result.status===Number(expected.slice(0,3))?"Passed":"Failed"):(result.status!==null&&result.status>=200&&result.status<300?"Passed":"Failed");
+    
+let notes: string;
+
+if (mode === "mock") {
+  notes = "Pengujian menggunakan mock lokal.";
+} else if (result.status === null) {
+  notes =
+    "Pengujian belum memperoleh HTTP response. " +
+    "Periksa tahap autentikasi, form, dan jaringan.";
+} else if (status === "Failed") {
+  notes =
+    "Respons API diterima, tetapi tidak sesuai ekspektasi.";
+} else {
+  notes =
+    "Respons API diterima dan sesuai ekspektasi.";
+}
+
+if (result.outcome) {
+  notes += ` Outcome: ${result.outcome}.`;
+}
+    notes+=(negativeAccessToken?" Tes negatif: Authorization sengaja menggunakan access token tidak valid.":" Tes positif: access token hasil API Keamanan digunakan tanpa perubahan.");
     const now=new Date().toISOString(),id="RUN-"+now.slice(0,10).replaceAll("-","")+"-"+randomUUID().slice(0,8).toUpperCase();
     if(savesPrerequisite&&(mode==="live"||mode==="portal")&&snapUser&&result.status===200&&((serviceCode==="74"&&!responseCode)||responseCode==="200"+serviceCode+"00")){
       const outputs:Record<string,unknown>={};
@@ -290,11 +372,11 @@ export class AutoSnapController {
         notes+=" Data hasil disimpan terenkripsi ke User SNAP terpilih.";
       }else notes+=" Tidak ada field hasil yang dikenali; isi User SNAP dari respons provider yang sudah dikonfirmasi.";
     }else if(savesPrerequisite&&mode==="mock")notes+=" Hasil mock tidak disimpan sebagai kredensial.";
-    const requestSnapshot={...result.request,validation:checks,context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase}};
+    const requestSnapshot={...result.request,outcome:result.outcome??null,validation:checks,context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
     await this.db.query("INSERT INTO autosnap_runs (id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18)",[id,client.id,project.id,environment.id,snapUser?.id??null,service.id,endpoint.id,scenarioId,mode,status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,now]);
     return res.json({ok:true,id,status,httpStatus:result.status,responseCode,expectedCode:expected,durationMs:duration,response:redact(result.body),checks,notes});
   }
 }
 
-@Module({controllers:[AutoSnapController],providers:[DatabaseService,RunEngine,PortalEngine]})
+@Module({controllers:[AutoSnapController],providers:[DatabaseService,RunEngine,AspiSessionManager,AspiFormResolver,PortalEngine]})
 export class AppModule {}

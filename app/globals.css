@@ -62,3 +62,6 @@ nav button.active:hover{background:var(--primary-hover);color:#fff}
 .detail-cell{white-space:normal;overflow-wrap:anywhere}
 .inline-actions{flex-wrap:wrap}
 @media(max-width:760px){.sidebar .nav-label{display:none}.mobile-logout{display:block;margin-top:8px;border:0;background:transparent;color:#cbd5e1;font-size:11px}}
+.loading-spinner,.button-spinner{display:inline-block;border:2px solid #bfdbfe;border-top-color:#2563eb;border-radius:50%;animation:autosnap-spin .8s linear infinite;flex:0 0 auto}
+.loading-spinner{width:22px;height:22px}.button-spinner{width:18px;height:18px;border-color:rgba(255,255,255,.45);border-top-color:#fff;vertical-align:-3px}
+@keyframes autosnap-spin{to{transform:rotate(360deg)}}

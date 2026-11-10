@@ -11,7 +11,7 @@ const {encrypt}=require("../backend/dist/security.js");
 const {request}=require("playwright-core");
 
 test("Dev Site drafts and endpoint-first services run with the right owner and preserve history",async()=>{
-  delete process.env.DATABASE_URL;process.env.AUTOSNAP_PGLITE_DIR="memory://";process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
+  process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
   process.env.AUTOSNAP_RECAPTCHA_SITE_KEY="test-site";process.env.AUTOSNAP_RECAPTCHA_SECRET_KEY="test-secret";process.env.AUTOSNAP_RECAPTCHA_HOSTNAMES="localhost";
   const savedFetch=globalThis.fetch;globalThis.fetch=async()=>({ok:true,json:async()=>({success:true,hostname:"localhost"})});
   const db=new DatabaseService();await db.onModuleInit();
@@ -57,7 +57,7 @@ test("Dev Site drafts and endpoint-first services run with the right owner and p
     assert.equal(migrated.parent_id,"seed-endpoint-10");
     const seedEndpoint=await db.one("SELECT * FROM autosnap_records WHERE id='seed-endpoint-10'");
     assert.equal(seedEndpoint.parent_id,null);
-    assert.equal(JSON.parse(migrated.data.requestBody).accountNo,"");
+    assert.equal(JSON.parse(migrated.data.requestBody).accountNo,"2000100101");
   }finally{globalThis.fetch=savedFetch;await db.onModuleDestroy();}
 });
 

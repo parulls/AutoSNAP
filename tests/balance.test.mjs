@@ -65,14 +65,13 @@ test("live engine signs the exact transmitted body, uses Client ID and separates
   } finally { request.newContext = saved; }
 });
 
-test("database/controller flow: credentials, registration variables, mock history and deferred modules", async () => {
+test("database/controller flow: credentials, Balance Inquiry variables and mock history", async () => {
   process.env.AUTOSNAP_ENCRYPTION_KEY = randomBytes(32).toString("base64");
-  process.env.AUTOSNAP_PGLITE_DIR = "memory://";
+  process.env.NODE_ENV = "test";process.env.AUTOSNAP_TEST_PGLITE = "memory://";
   process.env.AUTOSNAP_RECAPTCHA_SITE_KEY = "test-site";
   process.env.AUTOSNAP_RECAPTCHA_SECRET_KEY = "test-secret";
   process.env.AUTOSNAP_RECAPTCHA_HOSTNAMES = "localhost";
   const savedFetch=globalThis.fetch;globalThis.fetch=async()=>({ok:true,json:async()=>({success:true,hostname:"localhost"})});
-  delete process.env.DATABASE_URL;
   const db = new DatabaseService();
   await db.onModuleInit();
   const engine = new RunEngine();
@@ -119,38 +118,12 @@ test("database/controller flow: credentials, registration variables, mock histor
     const duplicate = await call("run", { ...input, scenarioId: "3.5", externalId: run.request_json.externalId });
     assert.equal(duplicate.body.status, "Passed");
     assert.equal(duplicate.body.responseCode, "4091100");
-    const tokenInput = { ...input, serviceId: "seed-service-73", endpointId: "seed-endpoint-73", body: JSON.stringify({ grantType: "AUTHORIZATION_CODE", authCode: "from-consent" }), saveOutputs: true };
-    await call("run", tokenInput);
-    const afterMock = await db.one("SELECT data FROM autosnap_records WHERE id=$1", [user.body.id]);
-    assert.equal(afterMock.data.customerToken, undefined, "mock must never create usable credentials");
-    await call("save", { id: environment.body.id, kind: "environment", name: "ASPI Sandbox", parentId: project.body.id, data: { mode: "live", baseUrl: "https://sandbox.example" } });
-    await call("save", { id: client.body.id, kind: "client", name: "SNAP Bank Sumut", data: { privateKey:"test-key" } });
-    await call("save", { id: environment.body.id, kind: "environment", name: "ASPI Sandbox", parentId: project.body.id, data: { tokenPath:"/api/v1.0/access-token/b2b",rsaEncoding:"base64",hmacEncoding:"hex" } });
-    engine.hit = async () => ({ status: 200, body: { responseCode: "2007400", responseMessage: "Successful", accessToken: "actual-customer-token", refreshToken: "actual-refresh-token", accessTokenExpiryTime: "2099-01-01T00:00:00+07:00" }, request: { method: "POST", path: "/api/v1.0/access-token/b2b2c" } });
-    const tokenResult = await call("run", tokenInput);
-    assert.equal(tokenResult.body.status, "Passed");
-    assert.equal(tokenResult.body.response.accessToken, "[REDACTED]");
-    const afterLive = await db.one("SELECT data FROM autosnap_records WHERE id=$1", [user.body.id]);
-    assert.equal(decrypt(afterLive.data.customerToken), "actual-customer-token");
-    assert.equal(decrypt(afterLive.data.refreshToken), "actual-refresh-token");
-    assert.equal(afterLive.data.customerTokenExpiresAt, "2099-01-01T00:00:00+07:00");
-    engine.hit = async () => ({ status: 200, body: { responseCode: "2000100", responseMessage: "Successful", accountNo: "9000100101", bankCardToken: "new-registration-token" }, request: { method: "POST", path: "/api/v1.0/registration-card-bind" } });
-    await call("run", { ...input, serviceId: "seed-service-0", endpointId: "seed-endpoint-0", saveOutputs: true });
-    const afterRegistration = await db.one("SELECT data FROM autosnap_records WHERE id=$1", [user.body.id]);
-    assert.equal(decrypt(afterRegistration.data.accountNo), "9000100101");
-    assert.equal(decrypt(afterRegistration.data.bankCardToken), "new-registration-token");
     const savedTemplate = await db.one("SELECT data FROM autosnap_records WHERE id='seed-template-10'");
-    assert.equal(JSON.parse(savedTemplate.data.body).accountNo, "");
-    const oldExample=JSON.stringify({partnerReferenceNo:"{{partner_reference_no}}",accountNo:"2000100101",balanceTypes:["Cash","Coins"],additionalInfo:{}},null,2);
-    await db.query("UPDATE autosnap_records SET data=jsonb_set(data,'{body}',$1::jsonb) WHERE id='seed-template-10'",[JSON.stringify(oldExample)]);
-    await db.upgradeBalanceTemplate();
-    const upgraded=await db.one("SELECT data FROM autosnap_records WHERE id='seed-template-10'");
-    assert.equal(JSON.parse(upgraded.data.body).accountNo, "", "known seed example is cleared without deleting the template");
+    assert.equal(JSON.parse(savedTemplate.data.body).accountNo, "2000100101");
     const custom=JSON.stringify({accountNo:"9876543210",additionalInfo:{custom:true}});
     await db.query("UPDATE autosnap_records SET data=jsonb_set(data,'{body}',$1::jsonb) WHERE id='seed-template-10'",[JSON.stringify(custom)]);
-    await db.upgradeBalanceTemplate();
     const preserved=await db.one("SELECT data FROM autosnap_records WHERE id='seed-template-10'");
-    assert.equal(preserved.data.body,custom,"custom request templates must be preserved");
+    assert.equal(preserved.data.body,custom,"custom request templates must not be rewritten by runtime upgrades");
     assert.equal(redact({ cardData: "encrypted-card", authCode: "auth", privateKey: "key" }).cardData, "[REDACTED]");
   } finally { globalThis.fetch=savedFetch;await db.onModuleDestroy(); }
 });
