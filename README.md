@@ -77,6 +77,7 @@ Jika ASPI meminta CAPTCHA, OTP, MFA, atau interaksi lain, run berhenti dengan ou
 ## Persiapan release publik
 
 - Frontend dan backend wajib memiliki `AUTOSNAP_INTERNAL_TOKEN` yang sama (secret acak minimal 32 karakter). Ini autentikasi antarserver, bukan token SNAP. Jangan menambahkan awalan `NEXT_PUBLIC_`.
+- `AUTOSNAP_DEPLOYMENT_ROLE=api` hanya pada proyek backend Vercel. `vercel.ts` memilih adapter Express yang meneruskan request ke NestJS; proyek frontend tetap Next.js. Keduanya memakai repository dan build masing-masing, bukan dua salinan frontend.
 - Frontend: `AUTOSNAP_API_BASE_URL` harus URL HTTPS backend yang benar. Jangan mengarahkan ke frontend sendiri.
 - Backend: pertahankan `DATABASE_URL`, `AUTOSNAP_ENCRYPTION_KEY` lama, serta konfigurasi Google reCAPTCHA. Jangan membuat key enkripsi baru untuk database berisi kredensial.
 - `AUTOSNAP_RECAPTCHA_HOSTNAMES` wajib memuat hostname frontend publik yang juga terdaftar pada Google reCAPTCHA.

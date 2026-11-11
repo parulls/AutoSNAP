@@ -30,7 +30,8 @@ RLS has intentionally **no browser policies**: this application uses server-side
 
 - Set the same strong `AUTOSNAP_INTERNAL_TOKEN` in both Vercel projects before promoting this release. It must never be exposed through `NEXT_PUBLIC_` variables.
 - Preserve the existing encryption key. Confirm backend HTTPS URL, database pooling, Google reCAPTCHA hostname allowlist, Node runtime, Chromium bundling, region and function duration in project settings.
-- Production deployment, Linux browser launch, actual ASPI end-to-end requests, and public-domain security checks are **not yet verified** because Vercel team access requires user approval.
+- Frontend and backend production deployments are READY in Singapore. Public checks verified page 200, proxy/database account-state 200, direct backend rejection 403, unauthenticated testing 401, cross-origin rejection 403, and incorrect Content-Type 415. Browser verification found the login form and registration CAPTCHA frame with no console errors. All 35 regression tests pass; production dependency audit reports zero known vulnerabilities.
+- Actual ASPI end-to-end requests and a browser launch inside the deployed Linux function are **not yet verified**. Local headless regression fixtures do not prove provider access or production credential validity.
 - The current database connection uses a privileged Postgres account. A dedicated least-privilege runtime role is recommended; coordinate that credential change with both deployment environments to prevent an outage.
 - Access is shared within an internal QA workspace. This review does not introduce multi-tenant isolation between organizations.
 - CSP currently allows inline scripts for Next.js compatibility. Nonce-based strict CSP would provide stronger XSS defense and requires a separately tested rendering change.
