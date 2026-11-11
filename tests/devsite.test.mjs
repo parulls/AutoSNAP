@@ -71,7 +71,9 @@ test("custom token path is used and failed Security does not send Balance Inquir
   try{
     const result=await new RunEngine().hit({baseUrl:"https://bank.example",path:"/bank/v1/balance",method:"POST",body:{accountNo:"1234567890"},client,user:null,scenarioId:null,externalId:"123",extraHeaders:{},authFlow:"token_b2b",tokenPath:"/bank/security/token"});
     assert.equal(calls.length,1);assert.equal(calls[0].url,"https://bank.example/bank/security/token");
-    assert.equal(result.status,401);assert.match(result.body.error,/Balance Inquiry tidak dikirim/);
+    assert.equal(result.status,null,"Balance Inquiry tidak menghasilkan HTTP status karena tidak pernah dikirim");
+    assert.equal(result.body.prerequisiteHttpStatus,401,"status 401 berasal dari prerequisite Security");
+    assert.match(result.body.error,/Balance Inquiry tidak dikirim/);
     assert.equal(result.request.steps[0].name,"Access Token B2B");
     assert.equal(calls[0].headers["Content-Type"],"application/json");
   }finally{request.newContext=saved;}

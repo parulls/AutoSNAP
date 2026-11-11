@@ -103,6 +103,13 @@ test("database/controller flow: credentials, Balance Inquiry variables and mock 
     assert.equal(result.body.status, "Passed");
     assert.equal(result.body.responseCode, "2001100");
     assert.equal(result.body.response.accountNo, "[REDACTED]");
+    const negative = await call("run", { ...input, testType: "invalid_access_token" });
+    assert.equal(negative.status, 200);
+    assert.equal(negative.body.status, "Passed");
+    assert.equal(negative.body.httpStatus, 401);
+    assert.equal(negative.body.responseCode, "4011101");
+    assert.equal(negative.body.expectedCode, "4011101");
+    assert.match(negative.body.notes,/sesuai ekspektasi/i);
     const run = await db.one("SELECT * FROM autosnap_runs WHERE id=$1", [result.body.id]);
     assert.equal(run.request_json.headers["X-PARTNER-ID"], "test-client");
     assert.equal(run.request_json.context.useCase, "B2B");

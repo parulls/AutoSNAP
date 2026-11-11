@@ -14,7 +14,7 @@ export function recaptchaPublicConfig(){
 export async function verifyRecaptcha(input:Record<string,unknown>,remoteIp?:string){
   const secret=String(process.env.AUTOSNAP_RECAPTCHA_SECRET_KEY??"").trim(),token=String(input.recaptchaToken??"").trim();
   if(!secret)fail("Google reCAPTCHA belum dikonfigurasi pada server.",503);
-  if(!token)fail("Centang 'Saya bukan robot' terlebih dahulu.");
+  if(!token||token.length>8192)fail("Centang 'Saya bukan robot' terlebih dahulu.");
   const body=new URLSearchParams({secret,response:token});if(remoteIp)body.set("remoteip",remoteIp);
   let result:RecaptchaResponse;
   try{
@@ -23,10 +23,12 @@ export async function verifyRecaptcha(input:Record<string,unknown>,remoteIp?:str
   }catch{fail("Verifikasi Google reCAPTCHA tidak dapat dihubungi. Coba lagi.",503);}
   if(!result!.success)fail(result!["error-codes"]?.includes("timeout-or-duplicate")?"reCAPTCHA kedaluwarsa atau sudah digunakan. Centang kembali.":"Verifikasi reCAPTCHA gagal. Coba lagi.");
   const allowed=String(process.env.AUTOSNAP_RECAPTCHA_HOSTNAMES??"").split(",").map(value=>value.trim().toLowerCase()).filter(Boolean);
+  if(process.env.NODE_ENV==="production"&&!allowed.length)fail("Hostname reCAPTCHA belum dikonfigurasi.",503);
   if(allowed.length&&(!result!.hostname||!allowed.includes(result!.hostname.toLowerCase())))fail("Hostname reCAPTCHA tidak diizinkan.",403);
 }
 export async function createAccount(db:DatabaseService,input:Record<string,unknown>,role:"admin"|"tester",active:boolean,first=false){
   const username=usernameOf(input),password=String(input.password??"");
+  if(String(input.name??"").length>120)fail("Nama maksimal 120 karakter.");
   if(!/^[a-z0-9][a-z0-9._-]{2,39}$/.test(username))fail("Username 3–40 karakter: huruf, angka, titik, garis bawah, atau tanda hubung.");
   if(password.length<12||password.length>256)fail("Password harus 12–256 karakter.");
   const pass=await hashPassword(password),id=randomUUID();
@@ -70,7 +72,8 @@ export async function updateAccount(db:DatabaseService,input:Record<string,unkno
     if(input.password){
       const password=String(input.password);
       if(password.length<12||password.length>256)fail("Password harus 12–256 karakter.");
-      if(own&&!(await verifyPassword(String(input.currentPassword??""),row!)))fail("Password saat ini salah.");
+      const currentPassword=String(input.currentPassword??"");
+      if(own&&(currentPassword.length>256||!(await verifyPassword(currentPassword,row!))))fail("Password saat ini salah.");
       const pass=await hashPassword(password);
       await query("UPDATE autosnap_users SET salt=$1,password_hash=$2 WHERE id=$3",[pass.salt,pass.hash,id]);
       await query("DELETE FROM autosnap_sessions WHERE user_id=$1",[id]);

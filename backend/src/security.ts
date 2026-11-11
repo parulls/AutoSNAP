@@ -32,6 +32,6 @@ export function rsaSignature(privateKey:string,input:string,encoding:"hex"|"base
 export function hmacSignature(secret:string,input:string,encoding:"hex"|"base64"="hex"){return createHmac("sha512",secret).update(input).digest(encoding);}
 export function redact(value:unknown):unknown{
   if(Array.isArray(value))return value.map(redact);
-  if(value&&typeof value==="object")return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,/(authorization|token|secret|password|private.?key|signature|carddata|cardno|accountno|authcode|seamlessdata|seamlesssign|phone|msisdn|email|otp|pin)/i.test(k)?"[REDACTED]":redact(v)]));
+  if(value&&typeof value==="object")return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,/(authorization|cookie|token|secret|password|private.?key|signature|carddata|cardno|cardnumber|accountno|authcode|seamlessdata|seamlesssign|phone|msisdn|email|otp|pin)/i.test(k)?"[REDACTED]":redact(v)]));
   return value;
 }

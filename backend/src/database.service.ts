@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { PGlite } from "@electric-sql/pglite";
 import { Pool } from "pg";
 import { readFile, readdir } from "node:fs/promises";
@@ -16,6 +16,7 @@ function defaultBody(code:string):Record<string,unknown>{
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger=new Logger(DatabaseService.name);
   private pool:Pool|null=null;
   private embedded:PGlite|null=null;
 
@@ -26,12 +27,58 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }else{
       const connectionString=process.env.DATABASE_URL;
       if(!connectionString)throw new Error("DATABASE_URL Supabase wajib tersedia. Tidak ada fallback database lokal.");
-      this.pool=new Pool({connectionString,max:Number(process.env.DATABASE_POOL_MAX??5),connectionTimeoutMillis:15_000,idleTimeoutMillis:30_000,keepAlive:true,allowExitOnIdle:true,options:"-c search_path=autosnap,public"});
-      await this.pool.query("SELECT 1");
+      this.pool=new Pool({connectionString,max:Number(process.env.DATABASE_POOL_MAX??5),connectionTimeoutMillis:30_000,idleTimeoutMillis:30_000,keepAlive:true,allowExitOnIdle:true,options:"-c search_path=autosnap,public"});
+      this.pool.on("error",error=>this.logger.error(`Koneksi idle Supabase terputus: ${error.message}`));
+      const runMigrations=process.env.AUTOSNAP_RUN_MIGRATIONS==="true";
+      await this.connectWithRetry(!runMigrations);
+      if(runMigrations)await this.migrateWithRetry();
     }
-    await this.migrate();
     // Data contoh hanya tersedia pada database test terisolasi. Database runtime mulai kosong.
-    if(this.embedded)await this.seed();
+    if(this.embedded){await this.migrateWithRetry();await this.seed();}
+  }
+  private async connectWithRetry(requireSchema=false){
+    if(!this.pool)return;
+    let lastError:unknown;
+    for(let attempt=1;attempt<=4;attempt++){
+      try{
+        const result=await this.pool.query(requireSchema
+          ? "SELECT to_regclass('autosnap.autosnap_users') AS users,to_regclass('autosnap.autosnap_records') AS records,to_regclass('autosnap.autosnap_runs') AS runs"
+          : "SELECT 1");
+        if(requireSchema&&Object.values(result.rows[0]??{}).some(value=>value===null)){
+          throw new Error("Schema AutoSNAP belum tersedia di Supabase. Jalankan migrasi database satu kali.");
+        }
+        return;
+      }
+      catch(error){
+        lastError=error;
+        if(attempt===4||!this.isTransientConnectionError(error))break;
+        const delay=400*2**(attempt-1);
+        this.logger.warn(`Koneksi Supabase gagal (percobaan ${attempt}/4). Mencoba lagi dalam ${delay} ms.`);
+        await new Promise(resolve=>setTimeout(resolve,delay));
+      }
+    }
+    throw lastError;
+  }
+  private async migrateWithRetry(){
+    let lastError:unknown;
+    const attempts=this.pool?4:1;
+    for(let attempt=1;attempt<=attempts;attempt++){
+      try{await this.migrate();return;}
+      catch(error){
+        lastError=error;
+        if(attempt===attempts||!this.isTransientConnectionError(error))break;
+        const delay=500*2**(attempt-1);
+        this.logger.warn(`Migrasi Supabase terputus (percobaan ${attempt}/${attempts}). Mengulang dalam ${delay} ms.`);
+        await new Promise(resolve=>setTimeout(resolve,delay));
+      }
+    }
+    throw lastError;
+  }
+  private isTransientConnectionError(error:unknown){
+    const candidate=error as {code?:string;message?:string;cause?:{code?:string;message?:string}};
+    const code=candidate?.code??candidate?.cause?.code??"";
+    const message=`${candidate?.message??""} ${candidate?.cause?.message??""}`;
+    return ["ECONNRESET","ETIMEDOUT","ECONNREFUSED","57P01","57P02","57P03","08000","08003","08006"].includes(code)||/connection.*(terminated|reset|timeout|closed)|read ECONNRESET/i.test(message);
   }
   async onModuleDestroy(){await this.pool?.end();await this.embedded?.close();}
   async query<T extends object=Record<string,unknown>>(sql:string,params:unknown[]=[]):Promise<T[]>{
@@ -43,13 +90,21 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async transaction<T>(callback:(query:QueryRows)=>Promise<T>):Promise<T>{
     if(this.pool){
       const client=await this.pool.connect();
+      let discarded=false;
       try{
         await client.query("BEGIN");
         const query:QueryRows=async<R extends object>(sql:string,params:unknown[]=[]) => (await client.query(sql,params)).rows as R[];
         const result=await callback(query);
         await client.query("COMMIT");
         return result;
-      }catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}
+      }catch(error){
+        await client.query("ROLLBACK").catch(()=>undefined);
+        client.release(error instanceof Error?error:undefined);
+        discarded=true;
+        throw error;
+      }finally{
+        if(!discarded)client.release();
+      }
     }
     if(this.embedded)return this.embedded.transaction(async tx=>{
       const query:QueryRows=async<R extends object>(sql:string,params:unknown[]=[]) => (await tx.query<R>(sql,params)).rows;

@@ -21,8 +21,8 @@ async function responseOf(context:APIRequestContext,url:URL,method:string,header
   try{body=JSON.parse(raw);}catch{}
   return {status:response.status(),body,responseHeaders:response.headers()};
 }
-function checkHeaders(extra:Record<string,string>){
-  for(const key of Object.keys(extra))if(typeof extra[key]!=="string"||/[\r\n]/.test(extra[key])||!/^[A-Za-z0-9-]+$/.test(key)||/^(authorization|authorization-customer|content-type|x-timestamp|x-signature|x-partner-id|x-external-id|channel-id|x-device-id|host)$/i.test(key))throw new Error(`Header template tidak boleh mengganti ${key}.`);
+export function checkHeaders(extra:Record<string,string>){
+  for(const key of Object.keys(extra))if(typeof extra[key]!=="string"||/[\r\n]/.test(extra[key])||!/^[A-Za-z0-9-]+$/.test(key)||/^(authorization|authorization-customer|content-type|x-timestamp|x-signature|x-partner-id|x-external-id|channel-id|x-device-id|host|cookie|set-cookie|proxy-authorization|connection|transfer-encoding|content-length)$/i.test(key))throw {error:"Header tambahan tidak valid atau mengganti header yang dikelola sistem.",status:400};
 }
 
 @Injectable()
@@ -67,7 +67,7 @@ export class RunEngine {
         if(b2bTokenService)return {...result,request:{method:"POST",path:tokenPath,timestamp,body:tokenBody,headers:redact(tokenHeaders)}};
         steps.push({name:"Access Token B2B",method:"POST",path:tokenPath,timestamp,requestHeaders:redact(tokenHeaders),httpStatus:result.status,response:redact(result.body),responseHeaders:redact(result.responseHeaders)});
         const parsed=result.body&&typeof result.body==="object"?result.body as Record<string,unknown>:{};
-        if(result.status<200||result.status>=300||typeof parsed.accessToken!=="string"||!parsed.accessToken||parsed.responseCode&&!String(parsed.responseCode).startsWith("200"))return {status:result.status,body:{error:"API Keamanan tidak memberikan access token yang valid. Balance Inquiry tidak dikirim.",securityResponse:redact(result.body)},request:{method,path,timestamp,body,steps}};
+        if(result.status<200||result.status>=300||typeof parsed.accessToken!=="string"||!parsed.accessToken||parsed.responseCode&&!String(parsed.responseCode).startsWith("200"))return {status:null,outcome:"PRECONDITION_FAILED",body:{error:"API Keamanan tidak memberikan access token yang valid. Balance Inquiry tidak dikirim.",prerequisiteHttpStatus:result.status,securityResponse:redact(result.body)},request:{method,path,timestamp,body,steps}};
         token=String(parsed.accessToken);
       }else if(authFlow==="provided_token"){
         if(!value(client,"accessToken"))throw new Error("Access Token B2B tersimpan diperlukan untuk provided_token.");

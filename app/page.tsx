@@ -25,12 +25,11 @@ export default function Home(){
       <div className="brand"><div className="brand-mark">AS</div><div><strong>AutoSNAP</strong><span>Dev Site Testing</span></div></div>
       <div className="workspace-label">MENU UTAMA</div>
       <nav aria-label="Navigasi utama">{pages.map((entry,index)=><button key={entry} title={entry} aria-label={entry} className={entry===page?"active":""} onClick={()=>{setPage(entry);setError("");setNotice("");}}><span className="nav-icon" aria-hidden="true">{["MD","AT","UM"][index]}</span><span className="nav-label">{entry}</span></button>)}</nav>
-      <div className="sidebar-help"><strong>Alur penggunaan</strong><span>Isi Master Data, jalankan testing, lalu lihat history di bawah hasil.</span></div>
       <div className="profile"><span className="avatar">{state.user.username.slice(0,2).toUpperCase()}</span><div><strong>{state.user.username}</strong><span>{state.user.role==="admin"?"Admin":"Petugas"}</span></div><button onClick={logout}>Keluar</button></div>
       <button className="mobile-logout" onClick={logout} aria-label="Keluar dari AutoSNAP">Keluar</button>
     </aside>
     <main className="main-content">
-      <header className="topbar"><div><div className="breadcrumb">AutoSNAP / {page}</div><h1>{page==="API Testing"?"API Testing Dev Site":page}</h1><p>{page==="Master Data"?"Data yang disimpan digunakan kembali pada pengujian.":page==="API Testing"?"Informasi Saldo Bank Sumut, hasil, dan history dalam satu halaman.":"Kelola akses petugas ke AutoSNAP."}</p></div></header>
+      <header className="topbar"><div><div className="breadcrumb">AutoSNAP / {page}</div><h1>{page==="API Testing"?"API Testing":page}</h1></div></header>
       {error&&<div className="form-error" role="alert">{error}<button aria-label="Tutup pesan kesalahan" onClick={()=>setError("")}>×</button></div>}
       {notice&&<div className="form-notice" role="status">{notice}<button aria-label="Tutup pemberitahuan" onClick={()=>setNotice("")}>×</button></div>}
       {page==="Master Data"&&<MasterData {...common}/>}

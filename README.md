@@ -74,3 +74,17 @@ Portal ASPI selalu dijalankan dengan Chromium `headless: true`. Setiap akun port
 
 Jika ASPI meminta CAPTCHA, OTP, MFA, atau interaksi lain, run berhenti dengan outcome `AUTH_INTERACTION_REQUIRED`. AutoSNAP tidak melakukan bypass. Mode Portal Headless dan Direct SNAP API tetap eksplisit dan tidak saling fallback otomatis.
 
+## Persiapan release publik
+
+- Frontend dan backend wajib memiliki `AUTOSNAP_INTERNAL_TOKEN` yang sama (secret acak minimal 32 karakter). Ini autentikasi antarserver, bukan token SNAP. Jangan menambahkan awalan `NEXT_PUBLIC_`.
+- Frontend: `AUTOSNAP_API_BASE_URL` harus URL HTTPS backend yang benar. Jangan mengarahkan ke frontend sendiri.
+- Backend: pertahankan `DATABASE_URL`, `AUTOSNAP_ENCRYPTION_KEY` lama, serta konfigurasi Google reCAPTCHA. Jangan membuat key enkripsi baru untuk database berisi kredensial.
+- `AUTOSNAP_RECAPTCHA_HOSTNAMES` wajib memuat hostname frontend publik yang juga terdaftar pada Google reCAPTCHA.
+- `AUTOSNAP_SETUP_TOKEN` diperlukan untuk membuat admin pertama pada produksi. Akun baru berikutnya tetap menunggu aktivasi admin.
+- Migrasi keamanan menambahkan rate limit persisten dan mengaktifkan RLS tanpa policy publik pada schema privat `autosnap`. Aplikasi memakai koneksi database backend; browser tidak diberi akses langsung ke tabel.
+- Di Vercel, Chromium diekstrak ke `/tmp`, bukan folder Windows atau filesystem proyek. Profil sementara dapat hilang; login ulang resmi otomatis tetap diperlukan dan CAPTCHA/MFA tidak dilewati.
+- Penguncian sesi ASPI tersimpan di database agar akun yang sama tidak dipakai dua instance sekaligus. Lock berakhir otomatis setelah 15 menit jika proses terhenti mendadak.
+- Jalankan `npm test`, `npm run lint`, dan `npm audit` sebelum release. Uji login, akses tanpa sesi, testing positif/negatif, dan download PDF pada deployment preview sebelum promosi.
+
+Audit kode dan tes otomatis mengurangi risiko, tetapi bukan jaminan aplikasi kebal serangan. Produksi tetap membutuhkan pemantauan, backup, pembaruan dependensi, dan pengujian penetrasi terotorisasi.
+
