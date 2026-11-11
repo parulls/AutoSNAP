@@ -76,6 +76,13 @@ Jika ASPI meminta CAPTCHA, OTP, MFA, atau interaksi lain, run berhenti dengan ou
 
 ## Persiapan release publik
 
+Alamat penggunaan:
+
+- Frontend utama (`autosnap-web`): https://autosnap-web-two.vercel.app
+- Backend: https://auto-snap-api.vercel.app (status layanan), `/health` untuk liveness.
+- Akses `/autosnap` backend secara langsung tanpa secret memang ditolak. Pengguna login dan menjalankan testing dari frontend, bukan dari dashboard `vercel.com`.
+- Setiap proyek Vercel menyimpan environment sendiri. Menambah secret di proyek `auto-snap` tidak otomatis mengisi proyek `autosnap-web`. Perubahan environment memerlukan deployment baru; URL deployment lama tetap menunjuk versi lamanya.
+
 - Frontend dan backend wajib memiliki `AUTOSNAP_INTERNAL_TOKEN` yang sama (secret acak minimal 32 karakter). Ini autentikasi antarserver, bukan token SNAP. Jangan menambahkan awalan `NEXT_PUBLIC_`.
 - `AUTOSNAP_DEPLOYMENT_ROLE=api` hanya pada proyek backend Vercel. `vercel.ts` memilih adapter Express yang meneruskan request ke NestJS; proyek frontend tetap Next.js. Keduanya memakai repository dan build masing-masing, bukan dua salinan frontend.
 - Frontend: `AUTOSNAP_API_BASE_URL` harus URL HTTPS backend yang benar. Jangan mengarahkan ke frontend sendiri.

@@ -9,6 +9,7 @@ const server=express();
 server.disable("x-powered-by");
 let initialization:Promise<INestApplication>|undefined;
 
+server.get("/",(_req,res)=>res.json({status:"ok",service:"autosnap-api",message:"Backend AutoSNAP aktif. Gunakan frontend untuk login dan menjalankan pengujian.",health:"/health"}));
 server.get("/health",(_req,res)=>res.json({status:"ok",service:"autosnap-api"}));
 server.all("/autosnap",requireTrustedProxy,async(req,res)=>{
   try{
