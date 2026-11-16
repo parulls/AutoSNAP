@@ -85,7 +85,7 @@ test("database/controller flow: credentials, Balance Inquiry variables and mock 
     return controller.action(req, res);
   };
   try {
-    assert.equal((await call("setup", { username: "qa-admin", password: "test-password-123",recaptchaToken:"test-token" })).status, 200);
+    assert.equal((await call("setup", { username: "qa-admin", email:"qa-admin@example.test", password: "test-password-123",recaptchaToken:"test-token" })).status, 200);
     const client = await call("save", { kind: "client", name: "SNAP Bank Sumut", data: { clientId: "test-client", partnerIdSource: "client_id", clientSecret: "test-secret", channelId: "95221" } });
     assert.equal(client.status, 200);
     const project = await call("save", { kind: "project", name: "Project", parentId: client.body.id });

@@ -23,7 +23,7 @@ test("Dev Site drafts and endpoint-first services run with the right owner and p
     return controller.action(req,res);
   };
   try{
-    await invoke("setup",{username:"admin-dev",password:"long-password-123",recaptchaToken:"test-token"});
+    await invoke("setup",{username:"admin-dev",email:"admin-dev@example.test",password:"long-password-123",recaptchaToken:"test-token"});
     const user=(await invoke("save",{kind:"snap_user",name:"Mentor mengisi nanti",data:{}})).body;
     const other=(await invoke("save",{kind:"snap_user",name:"User berbeda",data:{}})).body;
     const connection=await saveConnection(db,{name:"Dev Site belum lengkap",userId:user.id,environment:{mode:"live"}});

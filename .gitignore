@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/tmp/
 
 # next.js
 /.next/
@@ -38,6 +39,7 @@ yarn-error.log*
 .vercel
 
 # typescript
+*.tsbuildinfo
 next-env.d.ts
 /dist/
 /.wrangler/
@@ -47,6 +49,7 @@ next-env.d.ts
 /backups/
 /.secrets/
 /backend/dist/
+/backend/dist-verify/
 /outputs/
 /work/
 /.autosnap-security.lock

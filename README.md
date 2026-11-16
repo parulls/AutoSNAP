@@ -17,7 +17,7 @@ Menu aktif hanya Master Data, API Testing (termasuk history), dan User Managemen
 
 ## Menjalankan lokal
 
-Node.js 22.13+ diperlukan.
+Node.js 22.17+ diperlukan.
 
 ```powershell
 cd 'C:\Magang SUMUT\AutoSNAP'
@@ -38,7 +38,15 @@ npm.cmd run start
 
 Semua akun, master data, relasi Dev Site Client, dan history runtime disimpan pada schema privat `autosnap` di Supabase. Reset password admin memakai `npm.cmd run admin:reset-password` dan langsung menulis ke Supabase yang dikonfigurasi.
 
-Untuk melihat tabel dan master data secara aman, hentikan `npm run dev`, lalu jalankan `npm.cmd run db:inspect`. Penambahan dan perubahan data dilakukan melalui UI Master Data agar secret terenkripsi dan relasi Client → Project → Environment tetap valid.
+Untuk memeriksa ringkasan jumlah data dan izin database runtime, jalankan `npm.cmd run db:inspect` (alias `db:audit:supabase`). Perintah ini tidak lagi membuka database PGlite lama. Penambahan dan perubahan data dilakukan melalui UI Master Data agar secret terenkripsi dan relasi Client → Project → Environment tetap valid.
+
+## Pemeliharaan kode
+
+- `npm.cmd test`: build dan seluruh tes regresi.
+- `npm.cmd run lint`: pemeriksaan kode; compiler frontend/backend juga menolak variabel dan parameter tidak terpakai.
+- `npm.cmd run pdf:preview`: membuat contoh laporan di `outputs/pdf/`, bukan bagian dari history testing nyata.
+- `scripts/backup-pglite.mjs` hanya dipertahankan untuk pemulihan data lokal lama; bukan database runtime.
+- Hasil build, preview sementara, dan cache TypeScript tidak dimasukkan ke Git. Folder sesi browser, `.env.local`, backup, dan database lokal lama bukan sampah build dan tidak dihapus otomatis.
 
 ## Konfigurasi live hit
 
@@ -95,4 +103,12 @@ Alamat penggunaan:
 - Jalankan `npm test`, `npm run lint`, dan `npm audit` sebelum release. Uji login, akses tanpa sesi, testing positif/negatif, dan download PDF pada deployment preview sebelum promosi.
 
 Audit kode dan tes otomatis mengurangi risiko, tetapi bukan jaminan aplikasi kebal serangan. Produksi tetap membutuhkan pemantauan, backup, pembaruan dependensi, dan pengujian penetrasi terotorisasi.
+
+# Bukti PDF resmi ASPI
+
+Progress testing menampilkan log bertimestamp dari backend. Tombol Cancel Testing mengirim permintaan pembatalan milik pengguna ke database agar instance backend lain dapat menerimanya. Browser headless ditutup, tahap berikutnya dihentikan, dan hasil disimpan sebagai Cancelled. Request API yang sudah terkirim tidak dapat dibatalkan di sisi ASPI. Log proses dan kegagalan PDF per service tersimpan pada `request_json.progressLog` di History Testing. Download PDF dicoba maksimal tiga kali; Execute API tidak diulang.
+
+Saat otomasi headless menjalankan setiap service, AutoSNAP membandingkan daftar aktivitas ASPI sebelum dan setelah Execute. Hanya Activity ID baru yang cocok secara unik dengan service tersebut yang dipakai. PDF diunduh dari tautan laporan resmi ASPI menggunakan sesi yang sama, lalu disimpan di `autosnap.autosnap_evidence_pdfs` bersama ID History Testing.
+
+History menyediakan PDF per service dan ZIP seluruh PDF yang telah tersimpan. Download pengguna membaca database server, tidak membuka browser atau menghubungi ASPI lagi. Akses dibatasi ke pemilik history. Jika ASPI mengirim file PDF, byte aslinya disimpan. Jika tautan resmi memberikan halaman laporan cetak HTML, halaman resmi tersebut dicetak ke PDF tanpa template AutoSNAP. Halaman login, halaman error, atau ID ambigu ditolak. Tidak ada screenshot atau laporan custom AutoSNAP. Validasi API tetap mengikuti response aktual, terpisah dari status penyimpanan bukti.
 

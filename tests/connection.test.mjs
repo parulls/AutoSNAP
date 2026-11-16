@@ -67,7 +67,7 @@ test("one connection form prepares the full hierarchy, preserves secrets on edit
 });
 
 test("testing starts with explicit choices, no hidden target or manual token input",()=>{
-  const Testing=component("app/testing.tsx");
+  const Testing=component("app/testing-panel.tsx");
   const records=[
     {id:"client",kind:"client",name:"Client",data:{clientId:"client-key"}},
     {id:"project",kind:"project",name:"Project",parentId:"client",data:{}},
@@ -77,10 +77,17 @@ test("testing starts with explicit choices, no hidden target or manual token inp
     {id:"template",kind:"template",name:"Default",parentId:"endpoint",data:{body:JSON.stringify({partnerReferenceNo:"{{partner_reference_no}}",accountNo:"2000100101",additionalInfo:{}})}}
   ];
   const html=renderToStaticMarkup(createElement(Testing,{state:{records,runs:[],scenarios:[]},api:async()=>({}),reload:async()=>{},setError:()=>{},setNotice:()=>{}}));
-  assert.match(html,/<span>Endpoint URL \*<\/span>/);assert.match(html,/<span>API Service \*<\/span>/);assert.match(html,/<span>User SNAP \*<\/span>/);assert.match(html,/<span>Dev Site Client \*<\/span>/);
+  assert.match(html,/<span>Endpoint URL<\/span>/);assert.match(html,/<span>API Service<\/span>/);assert.match(html,/<span>User SNAP<\/span>/);assert.match(html,/<span>Dev Site Client<\/span>/);
+  assert.doesNotMatch(html,/<span>[^<]+ \*<\/span>/,"required markers stay in validation, not in visible labels");
   assert.match(html,/CHANNEL-ID/);assert.match(html,/History Testing/);assert.match(html,/Jalankan Testing/);
   assert.match(html,/disabled=""/);assert.doesNotMatch(html,/2000100101/,"a sample account is not selected before choosing a service");
   assert.doesNotMatch(html,/<span>Project<\/span>|Request Template|Access Token B2B/);
+});
+
+test("terminal progress shows backend events and leaves Cancel active while testing runs",()=>{
+  const Progress=component("app/testing-progress.tsx");
+  const html=renderToStaticMarkup(createElement(Progress,{progress:{status:"running",stage:"access_token",steps:[{stage:"signature_auth",status:"completed",at:"2026-11-17T02:00:00Z",detail:"Signature diterima"},{stage:"access_token",status:"running",at:"2026-11-17T02:00:01Z",detail:"Mengambil token"}]},running:true,onCancel:async()=>{},onClose:()=>{}}));
+  assert.match(html,/role="log"/);assert.match(html,/Signature diterima/);assert.match(html,/Mengambil token/);assert.match(html,/Cancel Testing/);assert.doesNotMatch(html,/disabled=""/);
 });
 
 test("a Dev Site draft requires an owner, defaults to ASPI Sandbox and has editable channel",()=>{

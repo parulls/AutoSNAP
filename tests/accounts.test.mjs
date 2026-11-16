@@ -23,12 +23,12 @@ test("signup verifies one-use CAPTCHA; pending accounts and testers cannot manag
   const challenge=async()=>({recaptchaToken:randomBytes(12).toString("hex")});
   try{
     assert.equal((await invoke("setup",{username:"admin-qa",password:"long-password-123"})).status,400);
-    assert.equal((await invoke("setup",{username:"admin-qa",password:"long-password-123",...await challenge()})).status,200);
+    assert.equal((await invoke("setup",{username:"admin-qa",email:"admin-qa@example.test",password:"long-password-123",...await challenge()})).status,200);
     const adminSession=session;
     const admin=await db.one("SELECT * FROM autosnap_users WHERE username='admin-qa'");
     assert.equal(admin.role,"admin");assert.equal(admin.active,true);assert.notEqual(admin.password_hash,"long-password-123");
     const singleUse=await challenge();
-    assert.equal((await invoke("register",{username:"qa-petugas",password:"long-password-123",...singleUse})).status,200);
+    assert.equal((await invoke("register",{username:"qa-petugas",email:"qa-petugas@example.test",password:"long-password-123",...singleUse})).status,200);
     assert.equal((await invoke("register",{username:"qa-replay",password:"long-password-123",...singleUse})).status,400);
     const account=await db.one("SELECT * FROM autosnap_users WHERE username='qa-petugas'");
     assert.equal(account.active,false);assert.equal(account.role,"tester");

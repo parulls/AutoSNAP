@@ -11,10 +11,13 @@ import { RunEngine, isoJakarta, type HitResult } from "./run-engine";
 import { PortalEngine } from "./portal-engine";
 import { decrypt, encrypt, redact, secretFields, sha256 } from "./security";
 import { balanceResponseChecks, mockBalance, object, validateBalanceRequest, validateHeaderProfile, type UseCase } from "./balance";
-import { testingHistoryPdf } from "./report-pdf";
 import { AspiFormResolver } from "./aspi-form-resolver";
 import { AspiSessionManager } from "./aspi-session-manager";
 import { clientAddress } from "./http-security";
+import { requestPasswordReset, resetPasswordWithOtp } from "./password-reset";
+import { hasPrivilege } from "./privileges";
+import { createZip } from "./zip";
+import { RunControl } from "./run-control";
 
 type Scenario={id:string;group:string;service:string;scenario:string;expected:string;expectedCode:string|null};
 type Input=Record<string,unknown>;
@@ -29,6 +32,20 @@ function publicRecord(row:RecordRow){
   return {id:row.id,kind:row.kind,name:row.name,parentId:row.parent_id,partnerId:row.partner_id,data,createdAt:row.created_at,updatedAt:row.updated_at};
 }
 function clientError(message:string,status=400){return {error:message,status};}
+type CapturedEvidence={activityId:string;service:string;timestamp:string;downloadUrl:string;pdf?:Buffer};
+function stripEvidence(value:unknown,evidence:CapturedEvidence[]):unknown{
+  if(Array.isArray(value))return value.map(item=>stripEvidence(item,evidence));
+  if(!object(value)||Buffer.isBuffer(value))return value;
+  const output:Record<string,unknown>={};
+  for(const [key,item] of Object.entries(value)){
+    if(key==="evidencePdf"&&object(item)&&typeof item.activityId==="string"){
+      evidence.push({activityId:item.activityId,service:String(item.service),timestamp:String(item.timestamp),downloadUrl:String(item.downloadUrl),pdf:Buffer.isBuffer(item.pdf)?item.pdf:undefined});
+      continue;
+    }
+    output[key]=stripEvidence(item,evidence);
+  }
+  return output;
+}
 
 @Controller("autosnap")
 export class AutoSnapController {
@@ -39,7 +56,7 @@ export class AutoSnapController {
   private async user(req:Request){
     const token=req.headers.cookie?.split(";").map(x=>x.trim()).find(x=>x.startsWith("autosnap_session="))?.slice("autosnap_session=".length);
     if(!token)return null;
-    return this.db.one<Operator>("SELECT u.id,u.email,u.username,u.name,u.role,u.active,u.created_at FROM autosnap_users u JOIN autosnap_sessions s ON s.user_id=u.id WHERE s.hash=$1 AND s.expires_at>$2 AND u.active=TRUE",[sha256(token),new Date().toISOString()]);
+    return this.db.one<Operator>("SELECT u.id,u.email,u.username,u.name,u.role,u.active,u.privileges,u.created_at FROM autosnap_users u JOIN autosnap_sessions s ON s.user_id=u.id WHERE s.hash=$1 AND s.expires_at>$2 AND u.active=TRUE",[sha256(token),new Date().toISOString()]);
   }
   private async newSession(req:Request,res:Response,userId:string){
     const token=randomBytes(32).toString("hex"),expiry=new Date(Date.now()+8*3600000);
@@ -60,7 +77,7 @@ export class AutoSnapController {
         return res.json({setupRequired:true,setupTokenRequired:process.env.NODE_ENV==="production"||!["localhost","127.0.0.1"].includes(host),...recaptchaPublicConfig()});
       }
       const user=await this.user(req);if(!user)return res.json({loginRequired:true,...recaptchaPublicConfig()});
-      const [records,runs,scenarios,operators]=await Promise.all([this.allRecords(),this.db.query<RunRow>("SELECT * FROM autosnap_runs ORDER BY created_at DESC"),this.catalog(),this.db.query<Operator>("SELECT id,name,email,username,role,active,created_at FROM autosnap_users WHERE ($1=TRUE OR id=$2) ORDER BY created_at",[user.role==="admin",user.id])]);
+      const [records,runs,scenarios,operators]=await Promise.all([this.allRecords(),this.db.query<RunRow>("SELECT * FROM autosnap_runs WHERE operator_id=$1 ORDER BY created_at DESC LIMIT 500",[user.id]),this.catalog(),this.db.query<Operator>("SELECT id,name,email,username,role,active,privileges,created_at FROM autosnap_users WHERE ($1=TRUE OR id=$2) ORDER BY created_at",[user.role==="admin",user.id])]);
       return res.json({user,operators:operators.map(item=>({...item,createdAt:item.created_at})),records:records.map(publicRecord),runs:runs.map(run=>({...run,request:run.request_json,response:run.response_json})),scenarios});
     }catch(error){return this.fail(res,error);}
   }
@@ -78,11 +95,34 @@ export class AutoSnapController {
         return res.json({ok:true,message:"Pendaftaran berhasil. Tunggu admin mengaktifkan akun."});
       }
       if(action==="login")return await this.login(req,res,input);
+      if(action==="forgotPassword"){
+        await this.enforceRateLimit(`forgot:${clientAddress(req)}`,5,15*60_000);
+        await verifyRecaptcha(input,req.ip);
+        await this.enforceRateLimit(`forgot-email:${String(input.email??"").trim().toLowerCase()}`,3,15*60_000);
+        return res.json(await requestPasswordReset(this.db,input.email));
+      }
+      if(action==="resetPassword"){
+        await this.enforceRateLimit(`reset:${clientAddress(req)}`,10,15*60_000);
+        await resetPasswordWithOtp(this.db,input);
+        return res.json({ok:true,message:"Password berhasil diperbarui. Silakan masuk."});
+      }
       const user=await this.user(req);if(!user)return this.fail(res,clientError("Sesi login diperlukan.",401));
       if(action==="logout"){
         const token=req.headers.cookie?.split(";").map(x=>x.trim()).find(x=>x.startsWith("autosnap_session="))?.slice("autosnap_session=".length);
         if(token)await this.db.query("DELETE FROM autosnap_sessions WHERE hash=$1",[sha256(token)]);
         res.clearCookie("autosnap_session",{path:"/"});return res.json({ok:true});
+      }
+      if(action==="cancelRun"){
+        await this.enforceRateLimit(`cancel:${user.id}`,30,60_000);
+        const id=String(input.id??"");if(!/^[0-9a-f-]{36}$/i.test(id))return this.fail(res,clientError("ID testing tidak valid."));
+        const row=await this.db.one("INSERT INTO autosnap_test_progress (id,user_id,status,stage,steps,updated_at) VALUES ($1,$2,'cancel_requested','cancelling','[]'::jsonb,$3) ON CONFLICT (id) DO UPDATE SET status='cancel_requested',updated_at=EXCLUDED.updated_at WHERE autosnap_test_progress.user_id=$2 AND autosnap_test_progress.stage<>'finished' RETURNING id",[id,user.id,new Date().toISOString()]);
+        if(!row)return this.fail(res,clientError("Testing sudah selesai atau tidak ditemukan.",409));
+        await this.updateProgress(id,user.id,"cancelling","running","Cancel diterima. Menghentikan browser dan tahap berikutnya.");
+        return res.json({ok:true,status:"cancel_requested"});
+      }
+      if(action==="getProgress"){
+        const progress=await this.db.one("SELECT id,status,stage,steps,updated_at FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[String(input.id??""),user.id]);
+        return progress?res.json(progress):this.fail(res,clientError("Progress testing tidak ditemukan.",404));
       }
       if(["save","saveConnection","delete","userCreate","userDelete"].includes(action)&&user.role!=="admin")return this.fail(res,clientError("Hanya admin yang boleh mengubah master data atau mengelola akun.",403));
       if(action==="save")return await this.save(res,input);
@@ -90,44 +130,64 @@ export class AutoSnapController {
       if(action==="delete")return await this.remove(res,input);
       if(action==="userCreate"){await createAccount(this.db,input,input.role==="admin"?"admin":"tester",true);return res.json({ok:true});}
       if(action==="userDelete"||action==="userUpdate"){await updateAccount(this.db,input,user);return res.json({ok:true});}
-      if(action==="downloadRunPdf")return await this.downloadRunPdf(res,input);
       if(action==="downloadAspiActivityPdf"){
-        if(user.role!=="admin")return this.fail(res,clientError("Hanya admin yang boleh mengunduh laporan aktivitas ASPI.",403));
-        return await this.downloadAspiActivityPdf(res,input);
+        await this.enforceRateLimit(`pdf:${user.id}`,20,10*60_000);
+        if(!hasPrivilege(user,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege download bukti Dev Site.",403));
+        return await this.downloadAspiActivityPdf(res,input,user);
       }
-      if(action==="downloadAspiActivityPdf")await this.enforceRateLimit(`pdf:${user.id}`,20,10*60_000);
+      if(action==="downloadAspiActivitiesZip"){
+        await this.enforceRateLimit(`zip:${user.id}`,10,10*60_000);
+        if(!hasPrivilege(user,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege download bukti Dev Site.",403));
+        return await this.downloadAspiActivitiesZip(res,input,user);
+      }
       if(action==="run")await this.enforceRateLimit(`run:${user.id}`,20,10*60_000);
-      if(action==="run")return await this.run(res,input);
+      if(action==="run"){
+        const environment=await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='environment'",[String(input.environmentId??"")]);
+        const required=value(environment??undefined,"mode")==="mock"?"client_simulator":"dev_site";
+        if(!hasPrivilege(user,required))return this.fail(res,clientError("Anda tidak memiliki privilege untuk menjalankan pengujian ini.",403));
+        return await this.run(res,input,user);
+      }
       return this.fail(res,clientError("Action tidak dikenal.",404));
     }catch(error){return this.fail(res,error);}
   }
-  private async downloadRunPdf(res:Response,input:Input){
-    const id=String(input.id??"");
-    const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1",[id]);
-    if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
-    const pdf=await testingHistoryPdf(run);
-    const filename=`AutoSNAP-${run.id.replace(/[^A-Za-z0-9_-]/g,"-")}.pdf`;
-    res.setHeader("Content-Type","application/pdf");
-    res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);
-    res.setHeader("Content-Length",String(pdf.length));
-    return res.send(pdf);
-  }
-  private async downloadAspiActivityPdf(res:Response,input:Input){
+  private async downloadAspiActivityPdf(res:Response,input:Input,operator:Operator){
     const runId=String(input.id??""),activityId=String(input.activityId??"");
-    const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1",[runId]);
+    const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1 AND operator_id=$2",[runId,operator.id]);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
     const request=object(run.request_json)?run.request_json:{},activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
     const activity=activities.find(item=>String(item.activityId??"")===activityId);
     if(!activity)return this.fail(res,clientError("Aktivitas ASPI tidak terdaftar pada history ini.",404));
-    if(!run.user_id)return this.fail(res,clientError("History tidak memiliki User SNAP untuk membuka sesi ASPI.",409));
-    const snapUser=await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='snap_user'",[run.user_id]);
-    if(!snapUser)return this.fail(res,clientError("User SNAP untuk history ini tidak ditemukan.",404));
-    const pdf=await this.portal.downloadActivityPdf(snapUser,activityId),service=String(activity.service??"ASPI").replace(/[^A-Za-z0-9_-]+/g,"-").slice(0,60);
+    const cached=await this.db.one<{pdf_data:Buffer}>("SELECT pdf_data FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id=$2",[runId,activityId]);
+    if(!cached)return this.fail(res,clientError("PDF resmi ASPI belum tersimpan untuk aktivitas ini. Lihat detail bukti pada History.",409));
+    const pdf=cached.pdf_data,service=String(activity.service??"ASPI").replace(/[^A-Za-z0-9_-]+/g,"-").slice(0,60);
     const filename=`ASPI-${service||"Activity"}-${activityId}.pdf`;
     res.setHeader("Content-Type","application/pdf");
     res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);
     res.setHeader("Content-Length",String(pdf.length));
     return res.send(pdf);
+  }
+  private async downloadAspiActivitiesZip(res:Response,input:Input,operator:Operator){
+    const runId=String(input.id??""),run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1 AND operator_id=$2",[runId,operator.id]);
+    if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
+    const request=object(run.request_json)?run.request_json:{},activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
+    if(!activities.length)return this.fail(res,clientError("History ini belum memiliki bukti aktivitas ASPI.",409));
+    const entries:{name:string;data:Buffer}[]=[];
+    for(const [index,activity] of activities.entries()){
+      const activityId=String(activity.activityId??"");
+      if(!activityId)continue;
+      const service=String(activity.service??`Service-${index+1}`),cached=await this.db.one<{pdf_data:Buffer}>("SELECT pdf_data FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id=$2",[runId,activityId]);
+      if(!cached)return this.fail(res,clientError("Sebagian PDF belum tersimpan; ZIP tidak dibuat agar bukti tidak terlewat.",409));
+      const pdf=cached.pdf_data;
+      entries.push({name:`${String(index+1).padStart(2,"0")}-${service}.pdf`,data:pdf});
+    }
+    const zip=createZip(entries),filename=`ASPI-Evidence-${runId.replace(/[^A-Za-z0-9_-]/g,"-")}.zip`;
+    if(zip.length>50*1024*1024)return this.fail(res,clientError("Ukuran gabungan bukti melebihi 50 MB.",413));
+    res.setHeader("Content-Type","application/zip");res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);res.setHeader("Content-Length",String(zip.length));
+    return res.send(zip);
+  }
+  private async storeEvidencePdf(runId:string,activityId:string,service:string,pdf:Buffer){
+    if(!pdf.length||pdf.length>15*1024*1024||pdf.subarray(0,5).toString()!=="%PDF-")throw clientError("PDF bukti ASPI tidak valid.",413);
+    await this.db.query("INSERT INTO autosnap_evidence_pdfs (run_id,activity_id,service,pdf_data,byte_size,created_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (run_id,activity_id) DO UPDATE SET service=EXCLUDED.service,pdf_data=EXCLUDED.pdf_data,byte_size=EXCLUDED.byte_size,created_at=EXCLUDED.created_at",[runId,activityId,service.slice(0,120),pdf,pdf.length,new Date().toISOString()]);
   }
   private async setup(req:Request,res:Response,input:Input){
     await this.enforceRateLimit(`setup:${clientAddress(req)}`,5,15*60_000);
@@ -229,7 +289,18 @@ export class AutoSnapController {
     });
     return res.json({ok:true});
   }
-  private async run(res:Response,input:Input){
+  private async updateProgress(id:string,userId:string,stage:string,status:"queued"|"running"|"completed"|"failed"|"cancelled",detail=""){
+    return this.db.transaction(async query=>{
+      const current=(await query<{steps:unknown;status:string}>("SELECT steps,status FROM autosnap_test_progress WHERE id=$1 AND user_id=$2 FOR UPDATE",[id,userId]))[0];
+      if(current?.status==="cancel_requested"&&stage==="finished"){status="cancelled";detail="Pengujian dibatalkan pengguna. Request yang sudah terkirim tetap tercatat.";}
+      const steps=Array.isArray(current?.steps)?current.steps.filter(object):[];
+      const next=steps.slice(-499);
+      next.push({stage,status,detail,at:new Date().toISOString()});
+      await query("UPDATE autosnap_test_progress SET status=$1,stage=$2,steps=$3::jsonb,updated_at=$4 WHERE id=$5 AND user_id=$6",[current?.status==="cancel_requested"&&stage!=="finished"?"cancel_requested":status,stage,JSON.stringify(next),new Date().toISOString(),id,userId]);
+      return status;
+    });
+  }
+  private async run(res:Response,input:Input,operator:Operator){
     const rows=await this.allRecords(),client=get(rows,input.clientId,"client"),project=get(rows,input.projectId,"project"),environment=get(rows,input.environmentId,"environment"),snapUser=input.userId?get(rows,input.userId,"snap_user"):null,service=get(rows,input.serviceId,"service"),endpoint=get(rows,input.endpointId,"endpoint"),template=input.templateId?get(rows,input.templateId,"template"):rows.find(row=>row.kind==="template"&&row.parent_id===input.endpointId);
     if(!client||!project||!environment||!service||!endpoint)return this.fail(res,clientError("Konfigurasi test belum lengkap."));
     if(input.userId&&!snapUser)return this.fail(res,clientError("User SNAP tidak ditemukan."));
@@ -329,18 +400,37 @@ export class AutoSnapController {
     if(duplicateCase&&!existing)return this.fail(res,clientError("Untuk skenario duplikat, isi X-EXTERNAL-ID yang sudah dijalankan hari ini."));
     if(existing&&!duplicateCase)return this.fail(res,clientError("X-EXTERNAL-ID sudah dipakai hari ini.",409));
     if(!duplicateCase){const claimed=await this.db.query("INSERT INTO autosnap_external_ids (environment_id,external_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING external_id",[environment.id,externalId,day]);if(!claimed.length)return this.fail(res,clientError("X-EXTERNAL-ID sudah dipakai hari ini.",409));}
+    const progressId=/^[0-9a-f-]{36}$/i.test(String(input.progressId??""))?String(input.progressId):randomUUID();
+    await this.db.query("DELETE FROM autosnap_test_progress WHERE updated_at<$1",[new Date(Date.now()-24*3600000).toISOString()]);
+    await this.db.query("INSERT INTO autosnap_test_progress (id,user_id,status,stage,steps,updated_at) VALUES ($1,$2,'queued','preparing','[]'::jsonb,$3) ON CONFLICT (id) DO NOTHING",[progressId,operator.id,new Date().toISOString()]);
+    const progressOwner=await this.db.one<{user_id:string}>("SELECT user_id FROM autosnap_test_progress WHERE id=$1",[progressId]);
+    if(progressOwner?.user_id!==operator.id)return this.fail(res,clientError("ID testing sudah digunakan.",409));
+    await this.updateProgress(progressId,operator.id,"preparing","completed","Konfigurasi tervalidasi");
+    const progress=async(stage:string,status:"running"|"completed"|"failed",detail="")=>{await this.updateProgress(progressId,operator.id,stage,status,detail);};
+    const control=new RunControl(this.db,progressId,operator.id);await control.start();
+    try{
     const started=Date.now();let result:HitResult;
+    if(control.signal.aborted){result={status:null,outcome:"CANCELLED",body:{error:"Pengujian dibatalkan sebelum request dikirim."},request:{method,path,body}};}
+    else
     if(mode==="mock"){
+      await progress("balance_inquiry","running","Menjalankan simulasi lokal");
       const code=expected??"200"+serviceCode+"00",timestamp=isoJakarta();
       const response=negativeAccessToken?{responseCode:code,responseMessage:"Access Token Invalid",additionalInfo:{mock:true}}:serviceCode==="11"?mockBalance(body,code):{responseCode:code,responseMessage:scenario?.expected.match(/(?:Response|Error) Message:\s*"([^"]+)/i)?.[1]??(code.startsWith("2")?"Successful":"Simulated error"),additionalInfo:{mock:true}};
       result={status:Number(code.slice(0,3)),body:response,request:{method,path,timestamp,externalId,body:method==="GET"?null:body,headers:{"Content-Type":"application/json","Authorization":"[MOCK TOKEN]","X-TIMESTAMP":timestamp,"X-SIGNATURE":"[MOCK SIGNATURE]","X-PARTNER-ID":client.data.partnerIdSource==="client_id"?value(client,"clientId"):client.partner_id,"X-EXTERNAL-ID":externalId,"CHANNEL-ID":value(client,"channelId"),...(useCase==="B2B2C"?{"Authorization-Customer":"[MOCK CUSTOMER TOKEN]"}:{}),...(value(client,"deviceId")?{"X-DEVICE-ID":value(client,"deviceId")}:{}),...requestHeaders}}};
+      await progress("balance_inquiry","completed","Simulasi selesai");
     }else if(mode==="portal"){
-      try{result=await this.portal.hit({portalUrl:value(endpoint,"portalUrl"),path,method,body,client,user:snapUser!,externalId,extraHeaders:requestHeaders,negativeAccessToken,registration:automaticRegistration?{...automaticRegistration,externalId:Date.now().toString()+String(Math.floor(Math.random()*1000000)).padStart(6,"0")}:null});}
+      try{result=await this.portal.hit({portalUrl:value(endpoint,"portalUrl"),path,method,body,client,user:snapUser!,externalId,extraHeaders:requestHeaders,negativeAccessToken,signal:control.signal,onProgress:progress,registration:automaticRegistration?{...automaticRegistration,externalId:Date.now().toString()+String(Math.floor(Math.random()*1000000)).padStart(6,"0")}:null});}
       catch{result={status:null,outcome:"AUTOMATION_ERROR",body:{error:"Automasi Portal ASPI gagal. Periksa konfigurasi dan koneksi portal."},request:{method,path,portalUrl:value(endpoint,"portalUrl"),externalId,body}};}
     }else{
-      try{result=await this.engine.hit({baseUrl:value(environment,"baseUrl"),path,method,body,client,user:snapUser??null,scenarioId,externalId,extraHeaders:requestHeaders,negativeAccessToken,authFlow:serviceCode==="11"?"token_b2b":value(environment,"authFlow")||"token_b2b",useCase,tokenPath:value(environment,"tokenPath")||"/api/v1.0/access-token/b2b",rsaEncoding:value(environment,"rsaEncoding")||"base64",hmacEncoding:value(environment,"hmacEncoding")||"hex"});}
+      await progress("balance_inquiry","running","Mengirim request ke target");
+      try{result=await this.engine.hit({baseUrl:value(environment,"baseUrl"),path,method,body,client,user:snapUser??null,scenarioId,externalId,extraHeaders:requestHeaders,negativeAccessToken,signal:control.signal,authFlow:serviceCode==="11"?"token_b2b":value(environment,"authFlow")||"token_b2b",useCase,tokenPath:value(environment,"tokenPath")||"/api/v1.0/access-token/b2b",rsaEncoding:value(environment,"rsaEncoding")||"base64",hmacEncoding:value(environment,"hmacEncoding")||"hex"});}
       catch{result={status:null,outcome:"TRANSPORT_ERROR",body:{error:"Request API gagal. Periksa konfigurasi dan koneksi target."},request:{method,path,externalId,body}};}
+      await progress("balance_inquiry",result.status===null?"failed":"completed",result.status===null?"Target tidak memberikan response":"Response diterima");
     }
+    await control.check();
+    if(control.signal.aborted){result={...result,outcome:"CANCELLED",body:{...(object(result.body)?result.body:{}),error:"Pengujian dibatalkan pengguna. Request yang sudah terkirim tidak dapat ditarik kembali."}};}
+    await progress("http_response",result.status===null?"failed":"completed",result.status===null?"HTTP response belum diterima":`HTTP ${result.status} diterima`);
+    await progress("evaluation","running","Mengevaluasi actual dan expected result");
     const duration=Date.now()-started,responseBody=object(result.body)?result.body:{},responseCode=String(responseBody.responseCode??"")||null;
     const executedBody=object(result.request.body)?result.request.body:body;
     const registrationOutput=object(result.request.registrationOutput)?result.request.registrationOutput:null;
@@ -355,9 +445,10 @@ export class AutoSnapController {
       : serviceCode === "11" ? balanceResponseChecks(result.status, result.body, expected??"2001100", executedBody) : [];
     const automationChecks=object(result.request)&&Array.isArray(result.request.automationChecks)?result.request.automationChecks.filter(object).map(item=>({label:String(item.label??"Automation"),passed:item.passed===true,detail:String(item.detail??"")})):[];
     checks.push(...automationChecks);
-    const status=checks.length?(checks.every(check=>check.passed)?"Passed":"Failed"):expected?(responseCode===expected&&result.status===Number(expected.slice(0,3))?"Passed":"Failed"):(result.status!==null&&result.status>=200&&result.status<300?"Passed":"Failed");
+    let status=result.outcome==="CANCELLED"?"Cancelled":checks.length?(checks.every(check=>check.passed)?"Passed":"Failed"):expected?(responseCode===expected&&result.status===Number(expected.slice(0,3))?"Passed":"Failed"):(result.status!==null&&result.status>=200&&result.status<300?"Passed":"Failed");
+    await progress("evaluation","completed",status==="Passed"?"Hasil sesuai ekspektasi":"Hasil tidak sesuai ekspektasi");
     const expectedNegativeRejection=negativeAccessToken&&status==="Passed";
-    let notes = expectedNegativeRejection ? "API menolak access token tidak valid sesuai ekspektasi skenario."
+    let notes = result.outcome==="CANCELLED" ? "Pengujian dibatalkan pengguna; tahap berikutnya dihentikan. Request yang sudah terkirim tidak dapat ditarik kembali." : expectedNegativeRejection ? "API menolak access token tidak valid sesuai ekspektasi skenario."
       : mode === "mock" ? "Pengujian menggunakan mock lokal; tidak ada request eksternal."
       : result.status === null ? "Pengujian belum mendapatkan HTTP response dari API target; periksa prasyarat autentikasi dan log automasi."
       : status === "Failed" ? "HTTP response diterima, tetapi validasi terhadap ekspektasi gagal."
@@ -385,9 +476,34 @@ export class AutoSnapController {
         notes+=" Data hasil disimpan terenkripsi ke User SNAP terpilih.";
       }else notes+=" Tidak ada field hasil yang dikenali; isi User SNAP dari respons provider yang sudah dikonfirmasi.";
     }else if(savesPrerequisite&&mode==="mock")notes+=" Hasil mock tidak disimpan sebagai kredensial.";
-    const requestSnapshot={...result.request,outcome:result.outcome??null,validation:checks,context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
-    await this.db.query("INSERT INTO autosnap_runs (id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18)",[id,client.id,project.id,environment.id,snapUser?.id??null,service.id,endpoint.id,scenarioId,mode,status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,now]);
-    return res.json({ok:true,id,status,httpStatus:result.status,responseCode,expectedCode:expected,durationMs:duration,response:redact(result.body),checks,notes});
+    const capturedEvidence:CapturedEvidence[]=[],cleanRequest=stripEvidence(result.request,capturedEvidence) as Record<string,unknown>;
+    const evidenceRows=[...new Map(capturedEvidence.map(item=>[item.activityId,item])).values()];
+    const evidenceMetadata=evidenceRows.map(({activityId,service,timestamp,downloadUrl})=>({activityId,service,timestamp,downloadUrl,pdfReady:false}));
+    const requestSnapshot:Record<string,unknown>={...cleanRequest,outcome:result.outcome??null,validation:checks,aspiActivities:evidenceMetadata,context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
+    await this.db.query("INSERT INTO autosnap_runs (id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19)",[id,operator.id,client.id,project.id,environment.id,snapUser?.id??null,service.id,endpoint.id,scenarioId,mode,status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,now]);
+    if(mode==="portal"){
+      await progress("evidence","running","Menyimpan PDF resmi ASPI ke server");
+      for(const item of evidenceRows){
+        if(!item.pdf){await progress("pdf_store","failed",`${item.service}: PDF tidak tersedia untuk Activity ID ${item.activityId}.`);continue;}
+        try{await this.storeEvidencePdf(id,item.activityId,item.service,item.pdf);evidenceMetadata.find(entry=>entry.activityId===item.activityId)!.pdfReady=true;await progress("pdf_store","completed",`${item.service}: PDF tersimpan di server; Activity ID ${item.activityId}.`);}
+        catch{notes+=` PDF aktivitas ${item.activityId} gagal disimpan.`;await progress("pdf_store","failed",`${item.service}: gagal menyimpan PDF ke database; Activity ID ${item.activityId}.`);}
+      }
+      const stored=evidenceMetadata.filter(item=>item.pdfReady).length;
+      const executedSteps=[cleanRequest,...(Array.isArray(cleanRequest.steps)?cleanRequest.steps.filter(object):[])].filter(item=>typeof item.name==="string");
+      await progress("evidence",stored>=executedSteps.length&&stored>0?"completed":"failed",stored?`${stored} dari ${executedSteps.length} PDF resmi ASPI tersimpan`:"PDF resmi ASPI belum tersedia");
+      if(stored<executedSteps.length)notes+=` PDF resmi ASPI tersimpan ${stored} dari ${executedSteps.length} operasi. Periksa detail bukti yang belum tersedia.`;
+      if(!stored)notes+=" PDF resmi ASPI belum tersedia; hasil pengujian tetap disimpan pada History.";
+      await this.db.query("UPDATE autosnap_runs SET request_json=$1::jsonb,notes=$2 WHERE id=$3",[JSON.stringify(redact(requestSnapshot)),notes,id]);
+    }
+    const finalStatus=await this.updateProgress(progressId,operator.id,"finished",status==="Cancelled"?"cancelled":status==="Passed"?"completed":"failed",notes);
+    if(finalStatus==="cancelled"&&status!=="Cancelled"){
+      status="Cancelled";result.outcome="CANCELLED";notes="Pengujian dibatalkan pengguna. Request yang sudah terkirim tetap tercatat.";
+      await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=request_json || $3::jsonb WHERE id=$4 AND operator_id=$5",[status,notes,JSON.stringify({outcome:"CANCELLED"}),id,operator.id]);
+    }
+    const finalProgress=await this.db.one<{steps:unknown}>("SELECT steps FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[progressId,operator.id]);
+    await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({progressLog:finalProgress?.steps??[]}),id,operator.id]);
+    return res.json({ok:true,id,progressId,status,outcome:result.outcome??null,failedStage:responseBody.failedStage??null,httpStatus:result.status,responseCode,expectedCode:expected,durationMs:duration,response:redact(result.body),checks,notes});
+    }finally{control.stop();}
   }
 }
 

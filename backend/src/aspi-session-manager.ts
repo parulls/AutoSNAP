@@ -13,12 +13,16 @@ const value=(row:RecordRow,key:string)=>String(row.data[key]??"");
 export class AspiSessionManager{
   private leases=new Set<string>();
   constructor(@Optional() private readonly db?:DatabaseService){}
-  async getAuthenticatedContext(user:RecordRow,environment:string,validate:(page:Page)=>Promise<boolean>){
+  async getAuthenticatedContext(user:RecordRow,environment:string,validate:(page:Page)=>Promise<boolean>,signal?:AbortSignal){
+    signal?.throwIfAborted();
     const identity=(value(user,"email")||value(user,"username")).toLowerCase(),lease=sha256(`${identity}|${environment}`).slice(0,24);
     if(this.leases.has(lease))throw new AspiAutomationError("AUTOMATION_ERROR","Sesi ASPI untuk akun dan environment ini sedang digunakan pengujian lain.");
     this.leases.add(lease);let context:BrowserContext|undefined;
     const owner=randomUUID();
+    const abort=()=>{void context?.close().catch(()=>undefined);};
+    signal?.addEventListener("abort",abort,{once:true});
     const release=async()=>{
+      signal?.removeEventListener("abort",abort);
       try{await context?.close().catch(()=>undefined);}
       finally{
         this.leases.delete(lease);
@@ -30,8 +34,9 @@ export class AspiSessionManager{
         const acquired=await this.db.one("INSERT INTO autosnap_automation_leases (key,owner,expires_at) VALUES ($1,$2,$3) ON CONFLICT (key) DO UPDATE SET owner=EXCLUDED.owner,expires_at=EXCLUDED.expires_at WHERE autosnap_automation_leases.expires_at<$4 RETURNING owner",[lease,owner,new Date(Date.now()+15*60_000).toISOString(),new Date().toISOString()]);
         if(!acquired)throw new AspiAutomationError("AUTOMATION_ERROR","Akun ASPI sedang digunakan pengujian lain. Tunggu hingga selesai.");
       }
-      context=await this.openContext(lease);const page=context.pages()[0]??await context.newPage();
+      context=await this.openContext(lease);signal?.throwIfAborted();const page=context.pages()[0]??await context.newPage();
       if(!await validate(page))await this.loginIfRequired(page,user);
+      signal?.throwIfAborted();
       return {context,page,release};
     }catch(error){await release().catch(()=>undefined);throw error;}
   }

@@ -1,10 +1,12 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { DatabaseService } from "./database.service";
 import { hashPassword } from "./security";
+import { normalizedPrivileges } from "./privileges";
 
-export type Operator={id:string;username:string;email:string;name:string;role:"admin"|"tester";active:boolean;created_at:string};
+export type Operator={id:string;username:string;email:string;name:string;role:"admin"|"tester";active:boolean;privileges:unknown;created_at:string};
 const fail=(error:string,status=400):never=>{throw {error,status};};
 const usernameOf=(input:Record<string,unknown>)=>String(input.username??"").trim().toLowerCase();
+const emailOf=(input:Record<string,unknown>)=>String(input.email??"").trim().toLowerCase();
 
 type RecaptchaResponse={success?:boolean;hostname?:string;"error-codes"?:string[]};
 export function recaptchaPublicConfig(){
@@ -27,19 +29,20 @@ export async function verifyRecaptcha(input:Record<string,unknown>,remoteIp?:str
   if(allowed.length&&(!result!.hostname||!allowed.includes(result!.hostname.toLowerCase())))fail("Hostname reCAPTCHA tidak diizinkan.",403);
 }
 export async function createAccount(db:DatabaseService,input:Record<string,unknown>,role:"admin"|"tester",active:boolean,first=false){
-  const username=usernameOf(input),password=String(input.password??"");
+  const username=usernameOf(input),email=emailOf(input),password=String(input.password??"");
   if(String(input.name??"").length>120)fail("Nama maksimal 120 karakter.");
   if(!/^[a-z0-9][a-z0-9._-]{2,39}$/.test(username))fail("Username 3–40 karakter: huruf, angka, titik, garis bawah, atau tanda hubung.");
+  if(!/^\S+@\S+\.\S+$/.test(email)||email.length>254)fail("Email akun AutoSNAP harus valid.");
   if(password.length<12||password.length>256)fail("Password harus 12–256 karakter.");
   const pass=await hashPassword(password),id=randomUUID();
   // The legacy email column is retained for existing account recovery.
   try{
     const result=await db.transaction(async query=>{
       if(first)await query("LOCK TABLE autosnap_users IN SHARE ROW EXCLUSIVE MODE");
-      return query("INSERT INTO autosnap_users (id,email,username,name,salt,password_hash,role,active,created_at) SELECT $1,$2,$2,$3,$4,$5,$6,$7,$8 WHERE ($9=FALSE OR NOT EXISTS (SELECT 1 FROM autosnap_users)) RETURNING id",[id,username,String(input.name??"").trim()||username,pass.salt,pass.hash,role,active,new Date().toISOString(),first]);
+      return query("INSERT INTO autosnap_users (id,email,username,name,salt,password_hash,role,active,privileges,created_at) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10 WHERE ($11=FALSE OR NOT EXISTS (SELECT 1 FROM autosnap_users)) RETURNING id",[id,email,username,String(input.name??"").trim()||username,pass.salt,pass.hash,role,active,JSON.stringify(normalizedPrivileges(input.privileges,role)),new Date().toISOString(),first]);
     });
     if(!result.length)fail("Administrator sudah dibuat.",409);
-  }catch(error){if((error as {code?:string}).code==="23505")fail("Username sudah dipakai.",409);throw error;}
+  }catch(error){if((error as {code?:string}).code==="23505")fail("Username atau email sudah dipakai.",409);throw error;}
   return id;
 }
 export async function verifyPassword(password:string,row:{salt:string;password_hash:string}){
@@ -67,7 +70,12 @@ export async function updateAccount(db:DatabaseService,input:Record<string,unkno
     if((role!==row!.role||active!==row!.active)&&current.role!=="admin")fail("Hanya admin yang boleh mengubah peran/status akun.",403);
     if(own&&(!active||role!==row!.role))fail("Ubah peran/status akun sendiri melalui admin lain.",409);
     if(row!.role==="admin"&&row!.active&&(role!=="admin"||!active)&&rows.filter(item=>item.role==="admin"&&item.active).length<=1)fail("Minimal satu admin aktif diperlukan.",409);
-    await query("UPDATE autosnap_users SET role=$1,active=$2 WHERE id=$3",[role,active,id]);
+    const email=input.email===undefined?row!.email:String(input.email).trim().toLowerCase();
+    if(!/^\S+@\S+\.\S+$/.test(email)||email.length>254)fail("Email akun AutoSNAP harus valid.");
+    if(rows.some(item=>item.id!==id&&item.email.toLowerCase()===email))fail("Email sudah dipakai.",409);
+    const privileges=input.privileges===undefined?normalizedPrivileges(row!.privileges,role as "admin"|"tester"):normalizedPrivileges(input.privileges,role as "admin"|"tester");
+    if(input.privileges!==undefined&&current.role!=="admin")fail("Hanya admin yang boleh mengubah privilege.",403);
+    await query("UPDATE autosnap_users SET role=$1,active=$2,email=$3,privileges=$4::jsonb WHERE id=$5",[role,active,email,JSON.stringify(privileges),id]);
     if(!active||role!==row!.role)await query("DELETE FROM autosnap_sessions WHERE user_id=$1",[id]);
     if(input.password){
       const password=String(input.password);

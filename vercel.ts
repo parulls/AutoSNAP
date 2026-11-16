@@ -5,6 +5,6 @@ export const config=process.env.AUTOSNAP_DEPLOYMENT_ROLE==="api"?{
   regions:["sin1"],
   functions:{"server.ts":{
     maxDuration:300,
-    includeFiles:"{app/scenario-catalog.json,node_modules/@sparticuz/chromium/bin/**,node_modules/pdfkit/js/data/**}",
+    includeFiles:"{app/scenario-catalog.json,node_modules/@sparticuz/chromium/bin/**}",
   }},
 }:{framework:"nextjs",buildCommand:"npm run build",regions:["sin1"]};

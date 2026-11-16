@@ -5,7 +5,7 @@ import type { RecordRow } from "./database.service";
 import type { HitOutcome } from "./aspi-types";
 
 export type HitResult={status:number|null;outcome?:HitOutcome;body:unknown;request:Record<string,unknown>};
-export type HitInput={baseUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow|null;scenarioId:string|null;externalId:string;extraHeaders:Record<string,string>;authFlow:string;useCase?:string;tokenPath?:string;rsaEncoding?:string;hmacEncoding?:string;negativeAccessToken?:boolean};
+export type HitInput={baseUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow|null;scenarioId:string|null;externalId:string;extraHeaders:Record<string,string>;authFlow:string;useCase?:string;tokenPath?:string;rsaEncoding?:string;hmacEncoding?:string;negativeAccessToken?:boolean;signal?:AbortSignal};
 const value=(row:RecordRow,key:string)=>String(row.data[key]??"");
 export function isoJakarta(){return new Date(Date.now()+7*3600000).toISOString().replace(/\.\d{3}Z$/,"+07:00");}
 export function allowedUrl(base:string,path:string){
@@ -28,6 +28,7 @@ export function checkHeaders(extra:Record<string,string>){
 @Injectable()
 export class RunEngine {
   async hit(input:HitInput):Promise<HitResult>{
+    input.signal?.throwIfAborted();
     const {baseUrl,path,method,body,client,user,scenarioId,externalId,extraHeaders,authFlow}=input;
     const clientId=value(client,"clientId"),channelId=value(client,"channelId");
     const tokenPath=input.tokenPath||"/api/v1.0/access-token/b2b";
@@ -44,7 +45,9 @@ export class RunEngine {
     checkHeaders(extraHeaders);
     const timestamp=isoJakarta();
     const context=await playwrightRequest.newContext({ignoreHTTPSErrors:false});
+    const abort=()=>{void context.dispose();};input.signal?.addEventListener("abort",abort,{once:true});
     try{
+      input.signal?.throwIfAborted();
       let privateKey="",tokenHeaders:Record<string,string>={};
       if(authFlow==="token_b2b"||authFlow==="direct_rsa"||tokenService){
         if(!value(client,"privateKey"))throw new Error("Private Key PKCS#8 wajib diisi untuk signature RSA.");
@@ -87,8 +90,9 @@ export class RunEngine {
       if(token)headers.Authorization=`Bearer ${token}`;
       if(customerToken)headers["Authorization-Customer"]=`Bearer ${customerToken}`;
       if(value(client,"deviceId"))headers["X-DEVICE-ID"]=value(client,"deviceId");
+      input.signal?.throwIfAborted();
       const result=await responseOf(context,url,method,headers,method==="GET"?undefined:serialized);
       return {...result,request:{method,path:url.pathname+url.search,timestamp,externalId,body:method==="GET"?null:body,headers:redact(headers),responseHeaders:redact(result.responseHeaders),steps,signatureEncoding:{rsa:rsaEncoding,hmac:hmacEncoding}}};
-    }finally{await context.dispose();}
+    }finally{input.signal?.removeEventListener("abort",abort);await context.dispose();}
   }
 }

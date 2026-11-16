@@ -6,12 +6,13 @@ import { join } from "node:path";
 
 export type RecordRow = { id:string;kind:string;name:string;parent_id:string|null;partner_id:string|null;data:Record<string,unknown>;created_at:string;updated_at:string };
 export type QueryRows = <R extends object = Record<string,unknown>>(sql:string,params?:unknown[])=>Promise<R[]>;
-export type RunRow = { id:string;client_id:string;project_id:string;environment_id:string;user_id:string|null;service_id:string;endpoint_id:string;scenario_id:string|null;mode:string;status:string;http_status:number|null;response_code:string|null;expected_code:string|null;duration_ms:number|null;request_json:unknown;response_json:unknown;notes:string;created_at:string };
+export type RunRow = { id:string;operator_id:string|null;client_id:string;project_id:string;environment_id:string;user_id:string|null;service_id:string;endpoint_id:string;scenario_id:string|null;mode:string;status:string;http_status:number|null;response_code:string|null;expected_code:string|null;duration_ms:number|null;request_json:unknown;response_json:unknown;notes:string;created_at:string };
 type CatalogItem = {code:string;name:string;method:string;endpoint:string;sourcePage:number;module:string;group:string;auth:string};
 
 function defaultBody(code:string):Record<string,unknown>{
   if(code==="11")return {partnerReferenceNo:"{{partner_reference_no}}",bankCardToken:"6d7963617264746f6b656e",accountNo:"2000100101",balanceTypes:["Cash","Coins"],additionalInfo:{deviceId:"12345679237",channel:"mobilephone"}};
   return {partnerReferenceNo:"{{partner_reference_no}}",additionalInfo:{}};
+
 }
 
 @Injectable()
@@ -145,7 +146,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       for(const entry of entries)await this.query("INSERT INTO autosnap_records (id,kind,name,parent_id,partner_id,data,created_at,updated_at) VALUES ($1,$2,$3,$4,NULL,$5::jsonb,$6,$6) ON CONFLICT (id) DO NOTHING",[entry.id,entry.kind,entry.name,entry.parent,JSON.stringify(entry.data),now]);
     }
   }
-  private async upgradeDevSiteModel(){
+  // Explicit legacy migration utility, covered by compatibility tests; never run automatically.
+  async upgradeDevSiteModel(){
     // Preserve IDs/history while converting the old Service -> Endpoint links.
     await this.transaction(async query=>{
       const rows=await query<RecordRow>("SELECT * FROM autosnap_records");
@@ -170,12 +172,5 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         if(project&&client&&site.data.category!=="Dev Site")await query("UPDATE autosnap_records SET data=data || $1::jsonb,updated_at=$2 WHERE id=$3",[JSON.stringify({category:"Dev Site"}),new Date().toISOString(),site.id]);
       }
     });
-  }
-  private async normalizeCatalogNames(){
-    const now=new Date().toISOString();
-    await this.query(
-      "UPDATE autosnap_records SET name=REPLACE(name,$1,$2),updated_at=$3 WHERE kind IN ('service','endpoint','template') AND POSITION($1 IN name)>0",
-      ["�","–",now],
-    );
   }
 }

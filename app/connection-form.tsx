@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import type { Item } from "./model";
+import PasswordInput from "./password-input";
 
 type Result=Record<string,unknown>;
 type Props={client?:Item;environment?:Item;user?:Item;users?:Item[];api:(action:string,payload:Result)=>Promise<Result>;reload:()=>Promise<void>;onSaved:(result:Result)=>void;onClose:()=>void};
@@ -18,7 +19,7 @@ export default function ConnectionForm({client,environment,user,users=[],api,rel
   }));
   const [busy,setBusy]=useState(false),[error,setError]=useState("");
   const set=(key:keyof typeof form,entry:string)=>setForm(current=>({...current,[key]:entry}));
-  const field=(key:keyof typeof form,label:string,hint="",multiline=false,secret=false)=><label className={`form-field${multiline?" wide":""}`}><span>{label}</span>{multiline?<textarea rows={4} value={form[key]} onChange={e=>set(key,e.target.value)} spellCheck={false} autoComplete="off"/>:<input type={secret?"password":"text"} value={form[key]} onChange={e=>set(key,e.target.value)} autoComplete="off"/>}{hint&&<small className="helper">{hint}</small>}</label>;
+  const field=(key:keyof typeof form,label:string,hint="",multiline=false,secret=false)=><label className={`form-field${multiline?" wide":""}`}><span>{label}</span>{multiline?<textarea rows={4} value={form[key]} onChange={e=>set(key,e.target.value)} spellCheck={false} autoComplete="off"/>:secret?<PasswordInput value={form[key]} onChange={e=>set(key,e.target.value)} autoComplete="off"/>:<input type="text" value={form[key]} onChange={e=>set(key,e.target.value)} autoComplete="off"/>}{hint&&<small className="helper">{hint}</small>}</label>;
   async function save(event:FormEvent){
     event.preventDefault();setBusy(true);setError("");
     try{

@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import ConnectionForm from "./connection-form";
 import type { Api, Item, State } from "./model";
+import PasswordInput from "./password-input";
 
 type Kind="snap_user"|"dev_site"|"endpoint"|"service";
 const labels:Record<Kind,string>={snap_user:"User SNAP",dev_site:"Dev Site Client",endpoint:"Endpoint URL",service:"API Service"};
@@ -42,7 +43,7 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
   const project=state.records.find(x=>x.id===selectedSite?.parentId),client=state.records.find(x=>x.id===project?.parentId);
   const selectedClient=selectedRecord?.kind==="client"?selectedRecord:client;
   const owner=users.find(x=>x.id===value(selectedSite,"defaultUserId"));
-  const field=(key:string,label:string,multiline=false,secret=false)=><label className={`form-field${multiline?" wide":""}`}><span>{label}</span>{multiline?<textarea rows={9} spellCheck={false} value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>:<input type={secret?"password":key==="email"?"email":"text"} autoComplete="off" value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>}</label>;
+  const field=(key:string,label:string,multiline=false,secret=false)=><label className={`form-field${multiline?" wide":""}`}><span>{label}</span>{multiline?<textarea rows={9} spellCheck={false} value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>:secret?<PasswordInput autoComplete="off" value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>:<input type={key==="email"?"email":"text"} autoComplete="off" value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>}</label>;
 
   return <section className="card master-card">
     <div className="section-header"><div><h2>Master Data</h2><p>Siapkan User SNAP, Dev Site Client, endpoint, kemudian service.</p></div>{admin&&<button className="primary-button" disabled={busy||kind==="dev_site"&&!users.length||kind==="service"&&!endpoints.length} onClick={()=>kind==="dev_site"?setConnection("new"):open(null)}>Tambah {labels[kind]}</button>}</div>

@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import type { Locator, Page, Request as PlaywrightRequest, Response as PlaywrightResponse } from "playwright-core";
 import type { RecordRow } from "./database.service";
 import type { HitResult } from "./run-engine";
@@ -7,13 +7,13 @@ import { decrypt, redact } from "./security";
 import { AspiFormResolver, normalizedParameterName } from "./aspi-form-resolver";
 import { AspiSessionManager } from "./aspi-session-manager";
 import { AspiAutomationError, type HitOutcome } from "./aspi-types";
+import { correlateActivity, fetchOfficialPdf, readActivities } from "./aspi-evidence";
 
 export {normalizedParameterName};
 type RegistrationStep={portalUrl:string;path:string;body:Record<string,unknown>;externalId:string};
-type PortalInput={portalUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow;externalId:string;extraHeaders:Record<string,string>;registration?:RegistrationStep|null;negativeAccessToken?:boolean};
-type AspiActivity={activityId:string;service:string;timestamp:string;downloadUrl:string};
+type ProgressReporter=(stage:string,status:"running"|"completed"|"failed",detail?:string)=>Promise<void>;
+type PortalInput={portalUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow;externalId:string;extraHeaders:Record<string,string>;registration?:RegistrationStep|null;negativeAccessToken?:boolean;signal?:AbortSignal;onProgress?:ProgressReporter};
 const value=(row:RecordRow,key:string)=>String(row.data[key]??"");
-const ACTIVITY_PAGE="https://apidevportal.aspi-indonesia.or.id/aktivitas-aplikasi-pengujian";
 export function aspiActivityDownloadUrl(activityId:string){
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(activityId))throw new Error("Activity ID ASPI tidak valid.");
   return `https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity?activityId=${activityId}`;
@@ -93,39 +93,54 @@ function thisUrl(raw:string){try{const url=new URL(raw);return `${url.origin}${u
 
 @Injectable()
 export class PortalEngine{
+  private readonly logger=new Logger(PortalEngine.name);
   private readonly pdfCache=new Map<string,{pdf:Buffer;expiresAt:number}>();
   private readonly pendingPdfs=new Map<string,Promise<Buffer>>();
   constructor(private readonly sessions:AspiSessionManager,private readonly forms:AspiFormResolver){}
   async hit(input:PortalInput):Promise<HitResult>{
-    const timestamp=isoJakarta();let release:(()=>Promise<void>)|undefined;
+    const timestamp=isoJakarta();let release:(()=>Promise<void>)|undefined,page:Page|undefined,currentStage="preparing";
+    const completedRequests:Record<string,unknown>[]=[];
+    const execute:typeof this.execute=async(...args)=>{input.signal?.throwIfAborted();const [page,url,path,method,headers,body]=args;const result=await this.execute(page,url,path,method,headers,body,report);completedRequests.push(result.request);input.signal?.throwIfAborted();return result;};
+    const report:ProgressReporter=async(stage,status,detail)=>{currentStage=stage;await input.onProgress?.(stage,status,detail).catch(()=>undefined);};
     try{
       // Validate before opening a browser or handling any credentials.
+      input.signal?.throwIfAborted();
       checkHeaders(input.extraHeaders);
-      const acquired=await this.sessions.getAuthenticatedContext(input.user,new URL(input.portalUrl).hostname,async page=>{await page.goto(PORTAL_URLS.signatureAuth,{waitUntil:"domcontentloaded",timeout:60000});await this.activateTestingPanel(page);return await this.hasSwagger(page);});
-      release=acquired.release;const page=acquired.page,clientId=value(input.client,"clientId"),channelId=value(input.client,"channelId"),partnerId=value(input.client,"partnerIdSource")==="client_id"?clientId:input.client.partner_id??"";
-      let activitySnapshot:Set<string>|null=null;
-      try{activitySnapshot=new Set((await this.activityList(page)).map(item=>item.activityId));}catch{}
-      const signatureAuth=await this.execute(page,PORTAL_URLS.signatureAuth,"/api/v1.0/utilities/signature-auth","POST",{"X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId,"Private_Key":decrypt(value(input.client,"privateKey"))},{});
-      const signatureAuthBody=this.object(signatureAuth.body);if(!this.ok(signatureAuth.status)||typeof signatureAuthBody.signature!=="string"||!signatureAuthBody.signature)return this.failedStep(input,timestamp,signatureAuth,"Form Signature Access Token ASPI tidak menghasilkan signature.");
-      const tokenResult=await this.execute(page,PORTAL_URLS.accessTokenB2B,"/api/v1.0/access-token/b2b","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId,"X-SIGNATURE":String(signatureAuthBody.signature)},{grantType:"client_credentials",additionalInfo:{}});
-      const tokenBody=this.object(tokenResult.body);if(!this.ok(tokenResult.status)||typeof tokenBody.accessToken!=="string"||!tokenBody.accessToken)return this.failedStep(input,timestamp,tokenResult,"Form Access Token B2B ASPI tidak menghasilkan accessToken.",[signatureAuth.request]);
+      const acquired=await this.sessions.getAuthenticatedContext(input.user,new URL(input.portalUrl).hostname,async page=>{await page.goto(PORTAL_URLS.signatureAuth,{waitUntil:"domcontentloaded",timeout:60000});await this.activateTestingPanel(page);return await this.hasSwagger(page);},input.signal);
+      release=acquired.release;page=acquired.page;const clientId=value(input.client,"clientId"),channelId=value(input.client,"channelId"),partnerId=value(input.client,"partnerIdSource")==="client_id"?clientId:input.client.partner_id??"";
+      await report("signature_auth","running");
+      const signatureAuth=await execute(page,PORTAL_URLS.signatureAuth,"/api/v1.0/utilities/signature-auth","POST",{"X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId,"Private_Key":decrypt(value(input.client,"privateKey"))},{});
+      await report("signature_auth","completed");
+      const signatureAuthBody=this.object(signatureAuth.body);if(!this.ok(signatureAuth.status)||typeof signatureAuthBody.signature!=="string"||!signatureAuthBody.signature){await report("signature_auth","failed","Signature tidak diterima");return this.failedStep(input,timestamp,signatureAuth,"Form Signature Access Token ASPI tidak menghasilkan signature.");}
+      await report("access_token","running");
+      const tokenResult=await execute(page,PORTAL_URLS.accessTokenB2B,"/api/v1.0/access-token/b2b","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId,"X-SIGNATURE":String(signatureAuthBody.signature)},{grantType:"client_credentials",additionalInfo:{}});
+      await report("access_token","completed");
+      const tokenBody=this.object(tokenResult.body);if(!this.ok(tokenResult.status)||typeof tokenBody.accessToken!=="string"||!tokenBody.accessToken){await report("access_token","failed","Access token tidak diterima");return this.failedStep(input,timestamp,tokenResult,"Form Access Token B2B ASPI tidak menghasilkan accessToken.",[signatureAuth.request]);}
       const validToken=String(tokenBody.accessToken),token=input.negativeAccessToken?`${validToken.slice(0,Math.max(1,validToken.length-4))}INVALID`:validToken,steps=[signatureAuth.request,tokenResult.request],serviceBody={...input.body};let registrationOutput:Record<string,unknown>|null=null;
       if(input.registration){
-        const signature=await this.execute(page,PORTAL_URLS.signatureService,"/api/v1.0/utilities/signature-service","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-SECRET":decrypt(value(input.client,"clientSecret")),"HttpMethod":"POST","EndpoinUrl":input.registration.path,"AccessToken":validToken},input.registration.body),signatureBody=this.object(signature.body);
-        if(!this.ok(signature.status)||typeof signatureBody.signature!=="string")return this.failedStep(input,timestamp,signature,"Signature otomatis untuk Card Registration gagal.",steps);
+        const signature=await execute(page,PORTAL_URLS.signatureService,"/api/v1.0/utilities/signature-service","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-SECRET":decrypt(value(input.client,"clientSecret")),"HttpMethod":"POST","EndpoinUrl":input.registration.path,"AccessToken":validToken},input.registration.body),signatureBody=this.object(signature.body);
+        if(!this.ok(signature.status)||typeof signatureBody.signature!=="string"){await report("registration","failed","Signature registrasi gagal");return this.failedStep(input,timestamp,signature,"Signature otomatis untuk Card Registration gagal.",steps);}
         const registrationHeaders:Record<string,string>={"Content-Type":"application/json","Authorization":`Bearer ${validToken}`,"X-TIMESTAMP":timestamp,"X-SIGNATURE":String(signatureBody.signature),"X-PARTNER-ID":partnerId,"X-EXTERNAL-ID":input.registration.externalId,"CHANNEL-ID":channelId,...input.extraHeaders};if(value(input.client,"deviceId"))registrationHeaders["X-DEVICE-ID"]=value(input.client,"deviceId");
-        const registration=await this.execute(page,portalUrl(input.registration.portalUrl),input.registration.path,"POST",registrationHeaders,input.registration.body);steps.push(signature.request,registration.request);registrationOutput=this.object(registration.body);
+        const registration=await execute(page,portalUrl(input.registration.portalUrl),input.registration.path,"POST",registrationHeaders,input.registration.body);steps.push(signature.request,registration.request);registrationOutput=this.object(registration.body);
         if(!this.ok(registration.status)||!String(registrationOutput.responseCode??"").startsWith("2"))return {status:registration.status,outcome:registration.outcome,body:{error:"Card Registration otomatis gagal. Balance Inquiry belum dijalankan.",registrationResponse:registration.body},request:{method:input.method,path:input.path,timestamp,body:input.body,steps}};
         if(typeof registrationOutput.bankCardToken==="string"&&registrationOutput.bankCardToken)serviceBody.bankCardToken=registrationOutput.bankCardToken;else if(typeof registrationOutput.accountNo==="string"&&registrationOutput.accountNo)serviceBody.accountNo=registrationOutput.accountNo;else return {status:registration.status,outcome:"SNAP_BUSINESS_ERROR",body:{error:"Card Registration tidak menghasilkan bankCardToken atau accountNo."},request:{method:input.method,path:input.path,timestamp,body:input.body,steps}};
       }
-      const signatureService=await this.execute(page,PORTAL_URLS.signatureService,"/api/v1.0/utilities/signature-service","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-SECRET":decrypt(value(input.client,"clientSecret")),"HttpMethod":input.method,"EndpoinUrl":input.path,"AccessToken":token},serviceBody),serviceSignatureBody=this.object(signatureService.body);
-      if(!this.ok(signatureService.status)||typeof serviceSignatureBody.signature!=="string")return this.failedStep(input,timestamp,signatureService,"Form Signature Service ASPI tidak menghasilkan signature.",steps);
+      await report("signature_service","running");
+      const signatureService=await execute(page,PORTAL_URLS.signatureService,"/api/v1.0/utilities/signature-service","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-SECRET":decrypt(value(input.client,"clientSecret")),"HttpMethod":input.method,"EndpoinUrl":input.path,"AccessToken":token},serviceBody),serviceSignatureBody=this.object(signatureService.body);
+      await report("signature_service","completed");
+      if(!this.ok(signatureService.status)||typeof serviceSignatureBody.signature!=="string"){await report("signature_service","failed","Signature service tidak diterima");return this.failedStep(input,timestamp,signatureService,"Form Signature Service ASPI tidak menghasilkan signature.",steps);}
       const headers:Record<string,string>={"Content-Type":"application/json","Authorization":`Bearer ${token}`,"X-TIMESTAMP":timestamp,"X-SIGNATURE":String(serviceSignatureBody.signature),"X-PARTNER-ID":partnerId,"X-EXTERNAL-ID":input.externalId,"CHANNEL-ID":channelId,...input.extraHeaders};if(value(input.client,"deviceId"))headers["X-DEVICE-ID"]=value(input.client,"deviceId");
-      const result=await this.execute(page,portalUrl(input.portalUrl),input.path,input.method,headers,serviceBody);
-      let aspiActivities:AspiActivity[]=[];
-      if(activitySnapshot)try{aspiActivities=await this.newActivities(page,activitySnapshot,input.registration?6:4);}catch{}
-      return {...result,request:{...result.request,method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:serviceBody,registrationOutput,steps:[...steps,signatureService.request],aspiActivities}};
-    }catch(error){const typed=error instanceof AspiAutomationError?error:new AspiAutomationError("AUTOMATION_ERROR","Automasi Portal ASPI gagal. Periksa konfigurasi dan koneksi portal.");return {status:null,outcome:typed.outcome,body:{error:typed.message,diagnostic:redact(typed.diagnostic)},request:{method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:input.body}};
+      await report("balance_inquiry","running");
+      const result=await execute(page,portalUrl(input.portalUrl),input.path,input.method,headers,serviceBody);
+      await report("balance_inquiry","completed");
+      await report("evidence","running","Menyiapkan PDF resmi ASPI");
+      return {...result,request:{...result.request,method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:serviceBody,registrationOutput,steps:[...steps,signatureService.request]}};
+    }catch(error){
+      const timeout=error instanceof Error&&/timeout/i.test(`${error.name} ${error.message}`);
+      const typed=input.signal?.aborted?new AspiAutomationError("CANCELLED","Pengujian dibatalkan pengguna. Request yang sudah terkirim tidak dapat ditarik kembali."):error instanceof AspiAutomationError?error:new AspiAutomationError(timeout?"TIMEOUT":"AUTOMATION_ERROR",timeout?"Automasi Portal ASPI melewati batas waktu.":"Automasi Portal ASPI gagal sebelum respons API target diterima.");
+      await report(currentStage,"failed",typed.message);
+      this.logger.error(`[${input.externalId}] ${typed.outcome} pada ${currentStage}: ${typed.message}`);
+      return {status:null,outcome:typed.outcome,body:{error:typed.message,failedStage:currentStage,diagnostic:redact(typed.diagnostic)},request:{method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:input.body,steps:completedRequests}};
     }finally{await release?.();}
   }
   async downloadActivityPdf(user:RecordRow,activityId:string){
@@ -165,38 +180,11 @@ export class PortalEngine{
         }
         const current=new URL(reportPage.url());
         if(current.hostname!=="apidevportal.aspi-indonesia.or.id"||current.pathname!=="/sandboxactivity/downloadreportactivity"||current.searchParams.get("activityId")!==activityId||reportPage.url().includes("/sign-in"))throw new Error("Sesi ASPI tidak dapat membuka laporan aktivitas ini.");
-        await reportPage.emulateMedia({media:"print"});
-        await reportPage.evaluate(()=>Promise.race([document.fonts.ready,new Promise(resolve=>setTimeout(resolve,1500))]));
-        const pdf=await reportPage.pdf({format:"A4",printBackground:true,preferCSSPageSize:true,margin:{top:"12mm",right:"12mm",bottom:"12mm",left:"12mm"}});
-        if(!pdf.length||pdf.length>15*1024*1024||pdf.subarray(0,4).toString()!=="%PDF")throw new Error("Hasil render laporan ASPI bukan PDF yang valid.");
-        return pdf;
+        return await fetchOfficialPdf(reportPage,url);
       }finally{await reportPage.close();}
     }finally{await release?.();}
   }
-  private async activityList(page:Page):Promise<AspiActivity[]>{
-    await page.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:60000});
-    if(page.url().includes("/sign-in"))throw new AspiAutomationError("AUTH_SESSION_EXPIRED","Sesi ASPI berakhir saat membaca aktivitas.");
-    await page.locator("table tbody tr").first().waitFor({state:"visible",timeout:10000}).catch(()=>undefined);
-    return page.locator("table tbody tr").evaluateAll(rows=>rows.flatMap(row=>{
-      const cells=row.querySelectorAll("td"),link=row.querySelector<HTMLAnchorElement>('a[href*="downloadreportactivity?activityId="]');
-      const match=link?.getAttribute("href")?.match(/[?&]activityId=([0-9a-f-]{36})/i);
-      if(!match)return [];
-      const clean=(value:string|null|undefined)=>(value??"").replace(/\s+/g," ").trim();
-      return [{activityId:match[1],timestamp:clean(cells[1]?.textContent),service:clean(cells[2]?.textContent),downloadUrl:new URL(link!.getAttribute("href")!,location.origin).toString()}];
-    }));
-  }
-  private async newActivities(page:Page,before:Set<string>,expectedCount:number){
-    let found:AspiActivity[]=[];
-    for(let attempt=0;attempt<4;attempt++){
-      found=(await this.activityList(page)).filter(item=>!before.has(item.activityId));
-      if(found.length>=expectedCount)break;
-      await page.waitForTimeout(750);
-    }
-    // Daftar ASPI diurutkan terbaru lebih dahulu. Batasi ke jumlah service
-    // yang benar-benar dijalankan oleh satu history agar aktivitas lain tidak ikut.
-    return found.slice(0,expectedCount);
-  }
-  private async execute(page:Page,url:string,path:string,method:string,headers:Record<string,string>,body:Record<string,unknown>):Promise<HitResult>{
+  private async execute(page:Page,url:string,path:string,method:string,headers:Record<string,string>,body:Record<string,unknown>,onEvidence?:ProgressReporter):Promise<HitResult>{
     let operation!:Locator;
     // Swagger ASPI kadang selesai memuat body editor lebih dahulu, tetapi event
     // Try it out belum terpasang. Muat ulang satu kali sebelum ada Execute/API
@@ -245,6 +233,9 @@ export class PortalEngine{
       });
     }
 
+    let before:Set<string>|null=null;
+    try{before=new Set((await this.activitiesInContext(page)).map(item=>item.activityId));}
+    catch{this.logger.warn(`Daftar aktivitas sebelum ${path} tidak tersedia; PDF tidak akan dikaitkan dengan menebak ID.`);}
     const browserIssues: string[] = [];
     const onPageError = () => { if (browserIssues.length < 10) browserIssues.push("Unhandled JavaScript error"); };
     const onConsole = (message: {type():string}) => {
@@ -277,7 +268,42 @@ export class PortalEngine{
     }
     const requestHeaders=await captured.request().allHeaders(),verification=this.verifyHeaders(headers,requestHeaders),raw=await captured.text().catch(()=>"");let parsed:unknown=raw;try{parsed=JSON.parse(raw);}catch{}
     const status=captured.status(),outcome=classifyHttpOutcome(status,parsed);
-    return {status,outcome,body:parsed,request:{name:path,portalUrl:url,httpStatus:status,actualUrl:captured.url(),automationChecks:verification,headers:redact(requestHeaders)}};
+    await onEvidence?.("pdf_download","running",`Mengambil Activity ID dan PDF: ${path}`);
+    const evidence=await this.collectActivityPdf(page,before,path);
+    await onEvidence?.("pdf_download",evidence.evidenceError?"failed":"completed",evidence.evidenceError?`${path}: ${evidence.evidenceError}`:`PDF ${path} berhasil diunduh; Activity ID ${evidence.activityId}.`);
+    return {status,outcome,body:parsed,request:{name:path,portalUrl:url,httpStatus:status,actualUrl:captured.url(),automationChecks:verification,headers:redact(requestHeaders),...evidence}};
+  }
+  private async activitiesInContext(page:Page){
+    const activityPage=await page.context().newPage();
+    try{return await readActivities(activityPage);}finally{await activityPage.close();}
+  }
+  private async collectActivityPdf(page:Page,before:Set<string>|null,path:string):Promise<Record<string,unknown>>{
+    if(!before)return {evidenceError:"Daftar aktivitas awal tidak tersedia; Activity ID belum dapat dikorelasikan."};
+    try{
+      for(let attempt=0;attempt<3;attempt++){
+        const activity=correlateActivity(before,await this.activitiesInContext(page),path);
+        if(activity){
+          let failure="";
+          for(let downloadAttempt=1;downloadAttempt<=3;downloadAttempt++){
+            try{
+              const pdf=await fetchOfficialPdf(page,activity.downloadUrl);
+              return {evidencePdf:{...activity,pdf},activityId:activity.activityId};
+            }catch(error){
+              const message=error instanceof Error?error.message:"";
+              failure=/HTTP \d{3}/.exec(message)?.[0]??(/timeout/i.test(message)?"Batas waktu download terlewati":/login|sesi/i.test(message)?"Sesi ASPI tidak dapat membuka laporan":/PDF|laporan/i.test(message)?"ASPI belum memberikan PDF atau laporan pengujian yang valid":"Koneksi download PDF ASPI gagal");
+              this.logger.warn(`PDF ${path}, Activity ID ${activity.activityId}, percobaan ${downloadAttempt}/3: ${failure}`);
+              if(downloadAttempt<3)await page.waitForTimeout(500);
+            }
+          }
+          return {evidencePdf:activity,activityId:activity.activityId,evidenceError:`${failure}. Download gagal setelah 3 percobaan.`};
+        }
+        if(attempt<2)await page.waitForTimeout(500);
+      }
+      return {evidenceError:`Activity ID unik untuk ${path} belum ditemukan; PDF belum tersedia.`};
+    }catch{
+      this.logger.warn(`PDF resmi ASPI untuk ${path} belum dapat diunduh.`);
+      return {evidenceError:`Download PDF resmi ASPI untuk ${path} gagal. Tidak ada PDF pengganti yang dibuat.`};
+    }
   }
   private verifyHeaders(expected:Record<string,string>,actual:Record<string,string>){const lower=Object.fromEntries(Object.entries(actual).map(([key,value])=>[key.toLowerCase(),value]));return Object.entries(expected).map(([name,value])=>{const received=lower[name.toLowerCase()],managed=name.toLowerCase()==="content-type",passed=managed?received?.toLowerCase().includes("application/json")===true:received===value;return {label:`Header ${name}`,passed,detail:passed?`${name} terkirim pada request aktual.`:`${name} tidak sesuai pada request aktual.`,sensitive:/authorization|signature|secret|private/i.test(name)};});}
   private async activateTestingPanel(page:Page){
