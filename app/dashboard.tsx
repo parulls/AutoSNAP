@@ -154,7 +154,6 @@ export default function Dashboard({
                 <th>DEV SITE CLIENT</th>
                 <th>SKENARIO</th>
                 <th>STATUS</th>
-                <th>DURASI</th>
               </tr>
             </thead>
 
@@ -192,8 +191,6 @@ export default function Dashboard({
                         {run.status}
                       </span>
                     </td>
-
-                    <td>{run.duration_ms ?? 0} ms</td>
                   </tr>
                 );
               })}
@@ -223,10 +220,7 @@ export default function Dashboard({
 
           <span>
             {history.total
-              ? `${offset + 1}–${Math.min(
-                  offset + 15,
-                  history.total
-                )}`
+              ? `${offset + 1}`
               : "0 hasil"}
           </span>
 
