@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import type { Api,State } from "./model";
-import UiIcon from "./ui-icon";
 import HistoryFilter from "./history-filter";
 import {rangeForPeriod} from "./history-period";
 import {useHistory} from "./use-history";
@@ -12,7 +11,6 @@ export default function Dashboard({state,api,navigate}:{state:State;api:Api;navi
   const [range,setRange]=useState(()=>rangeForPeriod("today")),[offset,setOffset]=useState(0);
   const history=useHistory(api,range,"all","",offset,15,state.runs),recent=history.runs;
   const {dev,simulator,passed,failed,errors}=history.summary;
-  const can=(privilege:string)=>state.user?.role==="admin"||(state.user?.privileges??[]).includes(privilege);
   const contextOf=(run:(typeof recent)[number])=>run.request&&typeof run.request==="object"&&!Array.isArray(run.request)&&"context" in run.request&&run.request.context&&typeof run.request.context==="object"&&!Array.isArray(run.request.context)?run.request.context as Record<string,unknown>:{};
   const cards=[
     {label:"Dev Site diuji",value:dev,target:"Dev Site Client" as const},
