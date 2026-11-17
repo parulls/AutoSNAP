@@ -29,6 +29,8 @@ test("official PDF download preserves original bytes and rejects HTML login/erro
 });
 
 test("PDF batch shares one activity lookup, limits concurrency and preserves IDs on download failure",async()=>{
+  const originalConcurrency=process.env.AUTOSNAP_PDF_CONCURRENCY;
+  process.env.AUTOSNAP_PDF_CONCURRENCY="2";
   const paths=["/api/v1.0/utilities/signature-auth","/api/v1.0/access-token/b2b","/api/v1.0/utilities/signature-service","/api/v1.0/balance-inquiry"];
   const names=["Signature Auth","Access Token B2B","Signature Service","Balance Inquiry"];
   const rows=names.map((service,index)=>({...activity,service,activityId:`activity-${index}`}));
@@ -40,6 +42,7 @@ test("PDF batch shares one activity lookup, limits concurrency and preserves IDs
   assert.equal(reads,1);assert.equal(max,2);assert.equal(results.filter(item=>item.pdf).length,3);
   assert.equal(results[2].activity.activityId,"activity-2");assert.match(results[2].error,/Batas waktu/);
   assert.equal(attempts.get("activity-2"),2);assert.ok(logs.some(item=>item.status==="failed"));
+  if(originalConcurrency===undefined)delete process.env.AUTOSNAP_PDF_CONCURRENCY;else process.env.AUTOSNAP_PDF_CONCURRENCY=originalConcurrency;
 });
 
 test("PDF collection never guesses IDs, starts work past its budget, or downloads after cancellation",async()=>{
@@ -61,6 +64,8 @@ test("headless hit executes all four APIs without fetching PDFs between calls",a
   portal.execute=async(page,url,path)=>{events.push(path);return {status:200,body:path.endsWith("signature-auth")||path.endsWith("signature-service")?{signature:"fixture"}:path.endsWith("/b2b")?{accessToken:"fixture"}:{responseCode:"2001100",responseMessage:"Successful"},request:{name:path,httpStatus:200}};};
   const result=await portal.hit({portalUrl:activity.downloadUrl.replace("/sandboxactivity/downloadreportactivity", "/api-services/informasi-saldo"),method:"POST",path:"/api/v1.0/balance-inquiry",body:{accountNo:"2000100101"},client:{data:{clientId:"test",privateKey:encrypt("private"),clientSecret:encrypt("secret"),channelId:"95221"}},user:{data:{}},externalId:"test",extraHeaders:{}});
   assert.equal(result.status,200);assert.deepEqual(result.activityBaseline,[activityId]);
+  assert.ok(result.evidenceSession,"testing hands the authenticated session to the evidence phase");
+  await result.evidenceSession.release();
   assert.deepEqual(events,["baseline","/api/v1.0/utilities/signature-auth","/api/v1.0/access-token/b2b","/api/v1.0/utilities/signature-service","/api/v1.0/balance-inquiry","release"]);
   assert.equal(result.request.steps.length,3);assert.equal(JSON.stringify(result.request).includes("evidencePdf"),false);
 });
@@ -108,4 +113,23 @@ test("PDF and ZIP download use persisted bytes, isolate owners and never contact
   res=response();await controller.downloadAspiActivitiesZip(res,{id:run.id},{id:"user-b"});assert.equal(res.code,404);
   cached=false;res=response();await controller.downloadAspiActivityPdf(res,{id:run.id,activityId},{id:"user-a"});assert.equal(res.code,409);
   assert.equal(networkCalls,0);
+});
+
+test("native navigation saves an attachment and rejects a redirected login page",{skip:!chrome},async()=>{
+  const browser=await chromium.launch({executablePath:chrome,headless:true});
+  try{
+    const context=await browser.newContext({acceptDownloads:true}),pdf=Buffer.from("%PDF-1.7\nOfficial ASPI attachment");let mode="attachment",calls=0;
+    await context.route("https://apidevportal.aspi-indonesia.or.id/**",route=>{
+      if(!route.request().url().includes("downloadreportactivity"))return route.fulfill({contentType:"text/html",body:"<h1>Activity</h1>"});
+      calls++;
+      if(mode==="login")return route.fulfill({contentType:"text/html",body:'<form><input type="password"></form>'});
+      if(mode==="html")return route.fulfill({contentType:"text/html",body:"<h1>ASPI Report</h1><h2>Request</h2><pre>{}</pre><h2>Response</h2><pre>{}</pre>"});
+      return route.fulfill({contentType:"application/pdf",headers:{"content-disposition":'attachment; filename="ASPI.pdf"'},body:pdf});
+    });
+    const page=await context.newPage();await page.goto("https://apidevportal.aspi-indonesia.or.id/aktivitas-aplikasi-pengujian");
+    assert.deepEqual(await fetchOfficialPdf(page,activity.downloadUrl,Date.now()+5000,"navigation"),pdf);assert.equal(calls,1);
+    mode="html";assert.equal((await fetchOfficialPdf(page,activity.downloadUrl,Date.now()+5000,"navigation")).subarray(0,5).toString(),"%PDF-");assert.equal(calls,2,"HTML report needs only one navigation");
+    mode="login";await assert.rejects(fetchOfficialPdf(page,activity.downloadUrl,Date.now()+5000,"navigation"),/halaman login/);
+    assert.equal(context.pages().length,1,"report tabs are closed after success and failure");
+  }finally{await browser.close();}
 });

@@ -38,7 +38,21 @@ export class AspiSessionManager{
         if(!acquired)throw new AspiAutomationError("AUTOMATION_ERROR","Akun ASPI sedang digunakan pengujian lain. Tunggu hingga selesai.");
       }
       context=await this.openContext(lease);signal?.throwIfAborted();const page=context.pages()[0]??await context.newPage();
-      if(!await validate(page))await this.loginIfRequired(page,user);
+
+      const sessionValid = await validate(page);
+
+      if (!sessionValid) {
+        await this.loginIfRequired(page, user);
+
+        const validAfterLogin = await validate(page);
+
+        if (!validAfterLogin) {
+          throw new AspiAutomationError(
+            "AUTH_SESSION_EXPIRED",
+            "Login ASPI selesai, tetapi halaman tujuan belum dapat diakses."
+          );
+        }
+      }
       signal?.throwIfAborted();
       return {context,page,release};
     }catch(error){await release().catch(()=>undefined);throw error;}

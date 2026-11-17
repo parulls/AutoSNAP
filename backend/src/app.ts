@@ -397,6 +397,7 @@ export class AutoSnapController {
     await this.updateProgress(progressId,operator.id,"preparing","completed","Konfigurasi tervalidasi");
     const progress=async(stage:string,status:"running"|"completed"|"failed",detail="")=>{await this.updateProgress(progressId,operator.id,stage,status,detail);};
     const control=new RunControl(this.db,progressId,operator.id);await control.start();
+    let activePortalSession:HitResult["evidenceSession"];
     try{
     const started=Date.now();let result:HitResult;
     if(control.signal.aborted){result={status:null,outcome:"CANCELLED",body:{error:"Pengujian dibatalkan sebelum request dikirim."},request:{method,path,body}};}
@@ -408,7 +409,10 @@ export class AutoSnapController {
       result={status:Number(code.slice(0,3)),body:response,request:{method,path,timestamp,externalId,body:method==="GET"?null:body,headers:{"Content-Type":"application/json","Authorization":"[MOCK TOKEN]","X-TIMESTAMP":timestamp,"X-SIGNATURE":"[MOCK SIGNATURE]","X-PARTNER-ID":client.data.partnerIdSource==="client_id"?value(client,"clientId"):client.partner_id,"X-EXTERNAL-ID":externalId,"CHANNEL-ID":value(client,"channelId"),...(useCase==="B2B2C"?{"Authorization-Customer":"[MOCK CUSTOMER TOKEN]"}:{}),...(value(client,"deviceId")?{"X-DEVICE-ID":value(client,"deviceId")}:{}),...requestHeaders}}};
       await progress("balance_inquiry","completed","Simulasi selesai");
     }else if(mode==="portal"){
-      try{result=await this.portal.hit({portalUrl:value(endpoint,"portalUrl"),path,method,body,client,user:snapUser!,externalId,extraHeaders:requestHeaders,negativeAccessToken,signal:control.signal,onProgress:progress,registration:automaticRegistration?{...automaticRegistration,externalId:Date.now().toString()+String(Math.floor(Math.random()*1000000)).padStart(6,"0")}:null});}
+      try{
+        result=await this.portal.hit({portalUrl:value(endpoint,"portalUrl"),path,method,body,client,user:snapUser!,externalId,extraHeaders:requestHeaders,negativeAccessToken,signal:control.signal,onProgress:progress,registration:automaticRegistration?{...automaticRegistration,externalId:Date.now().toString()+String(Math.floor(Math.random()*1000000)).padStart(6,"0")}:null});
+        activePortalSession=result.evidenceSession;
+      }
       catch{result={status:null,outcome:"AUTOMATION_ERROR",body:{error:"Automasi Portal ASPI gagal. Periksa konfigurasi dan koneksi portal."},request:{method,path,portalUrl:value(endpoint,"portalUrl"),externalId,body}};}
     }else{
       await progress("balance_inquiry","running","Mengirim request ke target");
@@ -476,7 +480,7 @@ export class AutoSnapController {
       const executedSteps=[...(Array.isArray(cleanRequest.steps)?cleanRequest.steps.filter(object):[]),cleanRequest].filter(item=>typeof item.name==="string");
       const paths=executedSteps.map(item=>String(item.name));
       let evidence:Awaited<ReturnType<PortalEngine["collectEvidence"]>>=[];
-      try{evidence=await this.portal.collectEvidence({user:snapUser!,before:result.activityBaseline,paths,deadline:started+240000,signal:control.signal,onProgress:progress});}
+      try{evidence=await this.portal.collectEvidence({user:snapUser!,before:result.activityBaseline,paths,deadline:started+240000,session:activePortalSession,signal:control.signal,onProgress:progress});}
       catch{evidence=paths.map(path=>({path,error:"Download PDF ASPI gagal; hasil pengujian tetap tersimpan."}));}
       const errors:Array<{path:string;activityId?:string;error:string}>=[];
       for(const item of evidence){
@@ -504,7 +508,12 @@ export class AutoSnapController {
     const finalProgress=await this.db.one<{steps:unknown}>("SELECT steps FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[progressId,operator.id]);
     await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({progressLog:finalProgress?.steps??[]}),id,operator.id]);
     return res.json({ok:true,id,progressId,status,outcome:result.outcome??null,failedStage:responseBody.failedStage??null,httpStatus:result.status,responseCode,expectedCode:expected,durationMs:duration,response:redact(result.body),checks,notes});
-    }finally{control.stop();}
+    }finally{
+      // Important: release the borrowed ASPI browser even if DB writes,
+      // cancellation, or evidence collection fails before normal completion.
+      try{await activePortalSession?.release();}catch{/* preserve original result/error */}
+      control.stop();
+    }
   }
 }
 
