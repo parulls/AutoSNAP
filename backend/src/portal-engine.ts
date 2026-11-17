@@ -7,7 +7,8 @@ import { decrypt, redact } from "./security";
 import { AspiFormResolver, normalizedParameterName } from "./aspi-form-resolver";
 import { AspiSessionManager } from "./aspi-session-manager";
 import { AspiAutomationError, type HitOutcome } from "./aspi-types";
-import { correlateActivity, fetchOfficialPdf, readActivities } from "./aspi-evidence";
+import { ACTIVITY_PAGE, fetchOfficialPdf, readActivities } from "./aspi-evidence";
+import { collectActivityPdfs, type PdfEvidence } from "./aspi-pdf-batch";
 
 export {normalizedParameterName};
 type RegistrationStep={portalUrl:string;path:string;body:Record<string,unknown>;externalId:string};
@@ -100,7 +101,8 @@ export class PortalEngine{
   async hit(input:PortalInput):Promise<HitResult>{
     const timestamp=isoJakarta();let release:(()=>Promise<void>)|undefined,page:Page|undefined,currentStage="preparing";
     const completedRequests:Record<string,unknown>[]=[];
-    const execute:typeof this.execute=async(...args)=>{input.signal?.throwIfAborted();const [page,url,path,method,headers,body]=args;const result=await this.execute(page,url,path,method,headers,body,report);completedRequests.push(result.request);input.signal?.throwIfAborted();return result;};
+    let activityBaseline:string[]|undefined;
+    const execute:typeof this.execute=async(...args)=>{input.signal?.throwIfAborted();const [page,url,path,method,headers,body]=args;const result=await this.execute(page,url,path,method,headers,body);completedRequests.push(result.request);input.signal?.throwIfAborted();return result;};
     const report:ProgressReporter=async(stage,status,detail)=>{currentStage=stage;await input.onProgress?.(stage,status,detail).catch(()=>undefined);};
     try{
       // Validate before opening a browser or handling any credentials.
@@ -108,6 +110,8 @@ export class PortalEngine{
       checkHeaders(input.extraHeaders);
       const acquired=await this.sessions.getAuthenticatedContext(input.user,new URL(input.portalUrl).hostname,async page=>{await page.goto(PORTAL_URLS.signatureAuth,{waitUntil:"domcontentloaded",timeout:60000});await this.activateTestingPanel(page);return await this.hasSwagger(page);},input.signal);
       release=acquired.release;page=acquired.page;const clientId=value(input.client,"clientId"),channelId=value(input.client,"channelId"),partnerId=value(input.client,"partnerIdSource")==="client_id"?clientId:input.client.partner_id??"";
+      try{activityBaseline=(await this.activitiesInContext(page,Date.now()+15000)).map(item=>item.activityId);}
+      catch{await report("evidence","failed","Daftar aktivitas awal ASPI tidak tersedia; pengujian tetap berjalan tanpa menebak Activity ID.");}
       await report("signature_auth","running");
       const signatureAuth=await execute(page,PORTAL_URLS.signatureAuth,"/api/v1.0/utilities/signature-auth","POST",{"X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId,"Private_Key":decrypt(value(input.client,"privateKey"))},{});
       await report("signature_auth","completed");
@@ -133,8 +137,7 @@ export class PortalEngine{
       await report("balance_inquiry","running");
       const result=await execute(page,portalUrl(input.portalUrl),input.path,input.method,headers,serviceBody);
       await report("balance_inquiry","completed");
-      await report("evidence","running","Menyiapkan PDF resmi ASPI");
-      return {...result,request:{...result.request,method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:serviceBody,registrationOutput,steps:[...steps,signatureService.request]}};
+      return {...result,activityBaseline,request:{...result.request,method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:serviceBody,registrationOutput,steps:[...steps,signatureService.request]}};
     }catch(error){
       const timeout=error instanceof Error&&/timeout/i.test(`${error.name} ${error.message}`);
       const typed=input.signal?.aborted?new AspiAutomationError("CANCELLED","Pengujian dibatalkan pengguna. Request yang sudah terkirim tidak dapat ditarik kembali."):error instanceof AspiAutomationError?error:new AspiAutomationError(timeout?"TIMEOUT":"AUTOMATION_ERROR",timeout?"Automasi Portal ASPI melewati batas waktu.":"Automasi Portal ASPI gagal sebelum respons API target diterima.");
@@ -184,7 +187,7 @@ export class PortalEngine{
       }finally{await reportPage.close();}
     }finally{await release?.();}
   }
-  private async execute(page:Page,url:string,path:string,method:string,headers:Record<string,string>,body:Record<string,unknown>,onEvidence?:ProgressReporter):Promise<HitResult>{
+  private async execute(page:Page,url:string,path:string,method:string,headers:Record<string,string>,body:Record<string,unknown>):Promise<HitResult>{
     let operation!:Locator;
     // Swagger ASPI kadang selesai memuat body editor lebih dahulu, tetapi event
     // Try it out belum terpasang. Muat ulang satu kali sebelum ada Execute/API
@@ -233,9 +236,6 @@ export class PortalEngine{
       });
     }
 
-    let before:Set<string>|null=null;
-    try{before=new Set((await this.activitiesInContext(page)).map(item=>item.activityId));}
-    catch{this.logger.warn(`Daftar aktivitas sebelum ${path} tidak tersedia; PDF tidak akan dikaitkan dengan menebak ID.`);}
     const browserIssues: string[] = [];
     const onPageError = () => { if (browserIssues.length < 10) browserIssues.push("Unhandled JavaScript error"); };
     const onConsole = (message: {type():string}) => {
@@ -268,41 +268,45 @@ export class PortalEngine{
     }
     const requestHeaders=await captured.request().allHeaders(),verification=this.verifyHeaders(headers,requestHeaders),raw=await captured.text().catch(()=>"");let parsed:unknown=raw;try{parsed=JSON.parse(raw);}catch{}
     const status=captured.status(),outcome=classifyHttpOutcome(status,parsed);
-    await onEvidence?.("pdf_download","running",`Mengambil Activity ID dan PDF: ${path}`);
-    const evidence=await this.collectActivityPdf(page,before,path);
-    await onEvidence?.("pdf_download",evidence.evidenceError?"failed":"completed",evidence.evidenceError?`${path}: ${evidence.evidenceError}`:`PDF ${path} berhasil diunduh; Activity ID ${evidence.activityId}.`);
-    return {status,outcome,body:parsed,request:{name:path,portalUrl:url,httpStatus:status,actualUrl:captured.url(),automationChecks:verification,headers:redact(requestHeaders),...evidence}};
+    return {status,outcome,body:parsed,request:{name:path,portalUrl:url,httpStatus:status,actualUrl:captured.url(),automationChecks:verification,headers:redact(requestHeaders)}};
   }
-  private async activitiesInContext(page:Page){
+  private async activitiesInContext(page:Page,deadline?:number){
     const activityPage=await page.context().newPage();
-    try{return await readActivities(activityPage);}finally{await activityPage.close();}
+    try{return await readActivities(activityPage,deadline);}finally{await activityPage.close();}
   }
-  private async collectActivityPdf(page:Page,before:Set<string>|null,path:string):Promise<Record<string,unknown>>{
-    if(!before)return {evidenceError:"Daftar aktivitas awal tidak tersedia; Activity ID belum dapat dikorelasikan."};
+  /** Called by the controller only after all API calls are validated and History is saved. */
+  async collectEvidence(input:{user:RecordRow;before:string[]|undefined;paths:string[];deadline:number;signal?:AbortSignal;onProgress?:ProgressReporter}):Promise<PdfEvidence[]>{
+    const deadline=Math.min(input.deadline,Date.now()+60000);
+    const report=async(status:"running"|"completed"|"failed",detail:string)=>{
+      await input.onProgress?.("pdf_download",status,detail).catch(()=>undefined);
+    };
+    if(!input.before||input.signal?.aborted||Date.now()>=deadline){
+      return input.paths.map(path=>({path,error:input.signal?.aborted?"Download PDF dibatalkan.":!input.before?"Daftar aktivitas awal tidak tersedia; Activity ID tidak ditebak.":"Batas waktu pengambilan PDF tercapai."}));
+    }
+    let release:(()=>Promise<void>)|undefined;
+    // Close the evidence-only context when its budget expires. API execution is already over.
+    const controller=new AbortController(),abort=()=>controller.abort();
+    input.signal?.addEventListener("abort",abort,{once:true});
+    const timer=setTimeout(abort,Math.max(1,deadline-Date.now()));
     try{
-      for(let attempt=0;attempt<3;attempt++){
-        const activity=correlateActivity(before,await this.activitiesInContext(page),path);
-        if(activity){
-          let failure="";
-          for(let downloadAttempt=1;downloadAttempt<=3;downloadAttempt++){
-            try{
-              const pdf=await fetchOfficialPdf(page,activity.downloadUrl);
-              return {evidencePdf:{...activity,pdf},activityId:activity.activityId};
-            }catch(error){
-              const message=error instanceof Error?error.message:"";
-              failure=/HTTP \d{3}/.exec(message)?.[0]??(/timeout/i.test(message)?"Batas waktu download terlewati":/login|sesi/i.test(message)?"Sesi ASPI tidak dapat membuka laporan":/PDF|laporan/i.test(message)?"ASPI belum memberikan PDF atau laporan pengujian yang valid":"Koneksi download PDF ASPI gagal");
-              this.logger.warn(`PDF ${path}, Activity ID ${activity.activityId}, percobaan ${downloadAttempt}/3: ${failure}`);
-              if(downloadAttempt<3)await page.waitForTimeout(500);
-            }
-          }
-          return {evidencePdf:activity,activityId:activity.activityId,evidenceError:`${failure}. Download gagal setelah 3 percobaan.`};
-        }
-        if(attempt<2)await page.waitForTimeout(500);
-      }
-      return {evidenceError:`Activity ID unik untuk ${path} belum ditemukan; PDF belum tersedia.`};
+      const session=await this.sessions.getAuthenticatedContext(input.user,"apidevportal.aspi-indonesia.or.id",async page=>{
+        const response=await page.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:Math.max(1,Math.min(10000,deadline-Date.now()))});
+        return !!response?.ok()&&new URL(page.url()).pathname==="/aktivitas-aplikasi-pengujian";
+      },controller.signal);
+      release=session.release;
+      return await collectActivityPdfs({
+        before:input.before,paths:input.paths,deadline,signal:controller.signal,
+        read:()=>this.activitiesInContext(session.page,deadline),
+        download:activity=>fetchOfficialPdf(session.page,activity.downloadUrl,deadline,"browser"),
+        report
+      });
     }catch{
-      this.logger.warn(`PDF resmi ASPI untuk ${path} belum dapat diunduh.`);
-      return {evidenceError:`Download PDF resmi ASPI untuk ${path} gagal. Tidak ada PDF pengganti yang dibuat.`};
+      const error=input.signal?.aborted?"Download PDF dibatalkan.":controller.signal.aborted?"Batas waktu pengambilan PDF tercapai.":"Sesi atau daftar aktivitas ASPI tidak dapat diakses untuk mengambil PDF.";
+      await report("failed",error);
+      return input.paths.map(path=>({path,error}));
+    }finally{
+      clearTimeout(timer);input.signal?.removeEventListener("abort",abort);
+      await release?.();
     }
   }
   private verifyHeaders(expected:Record<string,string>,actual:Record<string,string>){const lower=Object.fromEntries(Object.entries(actual).map(([key,value])=>[key.toLowerCase(),value]));return Object.entries(expected).map(([name,value])=>{const received=lower[name.toLowerCase()],managed=name.toLowerCase()==="content-type",passed=managed?received?.toLowerCase().includes("application/json")===true:received===value;return {label:`Header ${name}`,passed,detail:passed?`${name} terkirim pada request aktual.`:`${name} tidak sesuai pada request aktual.`,sensitive:/authorization|signature|secret|private/i.test(name)};});}

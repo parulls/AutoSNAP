@@ -6,6 +6,7 @@ const require=createRequire(import.meta.url);
 const {correlateActivity,fetchOfficialPdf,validateOfficialPdf}=require("../backend/dist/aspi-evidence.js");
 const {AutoSnapController}=require("../backend/dist/app.js");
 const {PortalEngine}=require("../backend/dist/portal-engine.js");
+const {collectActivityPdfs}=require("../backend/dist/aspi-pdf-batch.js");
 const {chromium}=require("playwright-core");
 const chrome=[process.env.AUTOSNAP_CHROME_PATH,"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe","C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"].filter(Boolean).find(existsSync);
 const activityId="93f163ae-e2fc-4f2e-9a03-518094515b49";
@@ -27,15 +28,41 @@ test("official PDF download preserves original bytes and rejects HTML login/erro
   await assert.rejects(fetchOfficialPdf(page,"https://evil.example/report"),/URL PDF/);
 });
 
-test("automation prefetches PDF in its current ASPI session and preserves Activity ID on download failure",async()=>{
-  const engine=new PortalEngine(null,null),pdf=Buffer.from("%PDF-1.7\nASPI result");
-  engine.activitiesInContext=async()=>[activity];
-  let calls=0,valid=true;
-  const page={waitForTimeout:async()=>{},context:()=>({request:{get:async()=>{calls++;return {ok:()=>true,body:async()=>valid?pdf:Buffer.from("<html>Login</html>"),dispose:async()=>{}};}}})};
-  let result=await engine.collectActivityPdf(page,new Set(),"/api/v1.0/balance-inquiry");
-  assert.equal(result.activityId,activityId);assert.deepEqual(result.evidencePdf.pdf,pdf);assert.equal(calls,1);
-  valid=false;result=await engine.collectActivityPdf(page,new Set(),"/api/v1.0/balance-inquiry");
-  assert.equal(result.evidencePdf.activityId,activityId);assert.equal(result.evidencePdf.pdf,undefined);assert.match(result.evidenceError,/3 percobaan/);assert.equal(calls,4);
+test("PDF batch shares one activity lookup, limits concurrency and preserves IDs on download failure",async()=>{
+  const paths=["/api/v1.0/utilities/signature-auth","/api/v1.0/access-token/b2b","/api/v1.0/utilities/signature-service","/api/v1.0/balance-inquiry"];
+  const names=["Signature Auth","Access Token B2B","Signature Service","Balance Inquiry"];
+  const rows=names.map((service,index)=>({...activity,service,activityId:`activity-${index}`}));
+  const attempts=new Map(),logs=[];let reads=0,active=0,max=0;
+  const results=await collectActivityPdfs({before:[],paths,deadline:Date.now()+10000,read:async()=>{reads++;return rows;},download:async row=>{
+    active++;max=Math.max(max,active);attempts.set(row.activityId,(attempts.get(row.activityId)??0)+1);
+    try{await new Promise(resolve=>setTimeout(resolve,5));if(row.service==="Signature Service")throw Error("timeout");return Buffer.from("%PDF-1.7\nASPI result");}finally{active--;}
+  },report:async(status,detail)=>logs.push({status,detail})});
+  assert.equal(reads,1);assert.equal(max,2);assert.equal(results.filter(item=>item.pdf).length,3);
+  assert.equal(results[2].activity.activityId,"activity-2");assert.match(results[2].error,/Batas waktu/);
+  assert.equal(attempts.get("activity-2"),2);assert.ok(logs.some(item=>item.status==="failed"));
+});
+
+test("PDF collection never guesses IDs, starts work past its budget, or downloads after cancellation",async()=>{
+  let calls=0;
+  const input={before:[],paths:["/api/v1.0/balance-inquiry"],deadline:Date.now()+10000,read:async()=>{calls++;return [activity];},download:async()=>{calls++;throw Error("must not download");},report:async()=>{}};
+  const cancelled=new AbortController();cancelled.abort();
+  let result=await collectActivityPdfs({...input,signal:cancelled.signal});assert.match(result[0].error,/dibatalkan/);assert.equal(calls,0);
+  result=await collectActivityPdfs({...input,deadline:Date.now()-1});assert.match(result[0].error,/Batas waktu/);assert.equal(calls,0);
+  result=await collectActivityPdfs({...input,before:undefined});assert.match(result[0].error,/tidak ditebak/);assert.equal(calls,0);
+  result=await collectActivityPdfs({...input,before:[activityId]});assert.match(result[0].error,/unik/);assert.equal(calls,3);
+});
+
+test("headless hit executes all four APIs without fetching PDFs between calls",async()=>{
+  const {randomBytes}=await import("node:crypto"),{encrypt}=require("../backend/dist/security.js");
+  process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
+  const events=[],portal=new PortalEngine({getAuthenticatedContext:async()=>({page:{},release:async()=>events.push("release")})},null);
+  portal.activitiesInContext=async()=>{events.push("baseline");return [activity];};
+  portal.collectEvidence=async()=>{throw Error("hit must not collect PDFs");};
+  portal.execute=async(page,url,path)=>{events.push(path);return {status:200,body:path.endsWith("signature-auth")||path.endsWith("signature-service")?{signature:"fixture"}:path.endsWith("/b2b")?{accessToken:"fixture"}:{responseCode:"2001100",responseMessage:"Successful"},request:{name:path,httpStatus:200}};};
+  const result=await portal.hit({portalUrl:activity.downloadUrl.replace("/sandboxactivity/downloadreportactivity", "/api-services/informasi-saldo"),method:"POST",path:"/api/v1.0/balance-inquiry",body:{accountNo:"2000100101"},client:{data:{clientId:"test",privateKey:encrypt("private"),clientSecret:encrypt("secret"),channelId:"95221"}},user:{data:{}},externalId:"test",extraHeaders:{}});
+  assert.equal(result.status,200);assert.deepEqual(result.activityBaseline,[activityId]);
+  assert.deepEqual(events,["baseline","/api/v1.0/utilities/signature-auth","/api/v1.0/access-token/b2b","/api/v1.0/utilities/signature-service","/api/v1.0/balance-inquiry","release"]);
+  assert.equal(result.request.steps.length,3);assert.equal(JSON.stringify(result.request).includes("evidencePdf"),false);
 });
 
 test("printable ASPI report becomes PDF, while an HTML login form is rejected",{skip:!chrome},async()=>{
@@ -47,6 +74,25 @@ test("printable ASPI report becomes PDF, while an HTML login form is rejected",{
     const page={context:()=>session};
     const pdf=await fetchOfficialPdf(page,activity.downloadUrl);assert.equal(pdf.subarray(0,5).toString(),"%PDF-");
     login=true;await assert.rejects(fetchOfficialPdf(page,activity.downloadUrl),/halaman login/);
+  }finally{await browser.close();}
+});
+
+test("headless evidence uses authenticated browser transport and preserves the official PDF bytes",{skip:!chrome},async()=>{
+  const browser=await chromium.launch({executablePath:chrome,headless:true});
+  try{
+    const context=await browser.newContext(),pdf=Buffer.from("%PDF-1.7\nASPI browser report");let reportRequests=0;
+    await context.addCookies([{name:"ASPI-session",value:"fixture-session",url:"https://apidevportal.aspi-indonesia.or.id"}]);
+    await context.route("https://apidevportal.aspi-indonesia.or.id/**",async route=>{
+      if(route.request().url().includes("downloadreportactivity")){
+        reportRequests++;assert.match(await route.request().headerValue("cookie"),/ASPI-session=fixture-session/);
+        return route.fulfill({contentType:"application/pdf",body:pdf});
+      }
+      return route.fulfill({contentType:"text/html",body:"<h1>Activity</h1>"});
+    });
+    const page=await context.newPage();await page.goto("https://apidevportal.aspi-indonesia.or.id/aktivitas-aplikasi-pengujian");
+    context.request.get=async()=>{throw Error("must not use Node transport for batch evidence");};
+    assert.deepEqual(await fetchOfficialPdf(page,activity.downloadUrl,Date.now()+5000,"browser"),pdf);assert.equal(reportRequests,1);
+    await assert.rejects(fetchOfficialPdf(page,activity.downloadUrl,Date.now()-1,"browser"),/Batas waktu/);
   }finally{await browser.close();}
 });
 

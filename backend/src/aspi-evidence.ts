@@ -17,10 +17,15 @@ export function correlateActivity(before:Set<string>,after:AspiActivity[],path:s
   return matches.length===1?matches[0]:null;
 }
 
-export async function readActivities(page:Page):Promise<AspiActivity[]>{
-  const response=await page.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:15000});
+function remaining(deadline:number|undefined,limit:number){
+  if(deadline!==undefined&&Date.now()>=deadline)throw Error("Batas waktu pengambilan PDF tercapai.");
+  return deadline===undefined?limit:Math.max(1,Math.min(limit,deadline-Date.now()));
+}
+
+export async function readActivities(page:Page,deadline?:number):Promise<AspiActivity[]>{
+  const response=await page.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:remaining(deadline,15000)});
   if(!response?.ok()||new URL(page.url()).pathname!=="/aktivitas-aplikasi-pengujian")throw Error("Daftar aktivitas ASPI tidak dapat diakses.");
-  await page.locator("table").first().waitFor({state:"attached",timeout:5000});
+  await page.locator("table").first().waitFor({state:"attached",timeout:remaining(deadline,5000)});
   return page.locator("table tbody tr").evaluateAll(rows=>rows.flatMap(row=>{
     const cells=row.querySelectorAll("td"),link=row.querySelector<HTMLAnchorElement>('a[href*="downloadreportactivity?activityId="]');
     if(!link)return [];
@@ -36,11 +41,36 @@ export function validateOfficialPdf(pdf:Buffer){
   return pdf;
 }
 
+/** Use the authenticated Chromium transport for the headless evidence phase.
+ * Uses browser networking and existing portal cookies; redirects are rejected.
+ * Only read this fixed-origin report URL; no API Execute is repeated. */
+async function browserReport(page:Page,url:string,timeout:number){
+  if(new URL(page.url()).origin!=="https://apidevportal.aspi-indonesia.or.id")throw Error("Sesi ASPI tidak dapat membuka laporan.");
+  const result=await page.evaluate(async({url,timeout})=>{
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
+    try{
+      const response=await fetch(url,{credentials:"same-origin",redirect:"error",cache:"no-store",signal:controller.signal});
+      const reader=response.body?.getReader(),parts:string[]=[];let size=0;
+      if(Number(response.headers.get("content-length"))>15*1024*1024)throw Error("Laporan ASPI melebihi 15 MB.");
+      try{
+        if(reader)while(true){
+          const item=await reader.read();if(item.done)break;size+=item.value.byteLength;
+          if(size>15*1024*1024){await reader.cancel();throw Error("Laporan ASPI melebihi 15 MB.");}
+          for(let offset=0;offset<item.value.length;offset+=32768)parts.push(String.fromCharCode(...item.value.subarray(offset,offset+32768)));
+        }
+      }finally{reader?.releaseLock();}
+      return {status:response.status,contentType:response.headers.get("content-type")??"",data:btoa(parts.join(""))};
+    }finally{clearTimeout(timer);}
+  },{url,timeout});
+  return {ok:()=>result.status>=200&&result.status<300,status:()=>result.status,headers:()=>({"content-type":result.contentType}),body:async()=>Buffer.from(result.data,"base64"),dispose:async()=>{}};
+}
+
 /** Use ASPI's report only: original PDF bytes, or its official printable HTML. */
-export async function fetchOfficialPdf(page:Page,downloadUrl:string){
+export async function fetchOfficialPdf(page:Page,downloadUrl:string,deadline?:number,transport:"browser"|"request"="request"){
   const url=new URL(downloadUrl);
   if(url.origin!=="https://apidevportal.aspi-indonesia.or.id"||url.pathname!=="/sandboxactivity/downloadreportactivity"||!url.searchParams.get("activityId")||url.username||url.password)throw Error("URL PDF ASPI tidak valid.");
-  const response=await page.context().request.get(url.toString(),{timeout:20000,maxRedirects:0});
+  const timeout=remaining(deadline,20000);
+  const response=transport==="browser"?await browserReport(page,url.toString(),timeout):await page.context().request.get(url.toString(),{timeout,maxRedirects:0});
   try{
     if(!response.ok())throw Error(`Download PDF ASPI ditolak: HTTP ${response.status()}.`);
     const data=await response.body();
@@ -50,14 +80,15 @@ export async function fetchOfficialPdf(page:Page,downloadUrl:string){
     if(!response.headers?.()["content-type"]?.includes("text/html"))throw Error("ASPI belum memberikan file PDF atau halaman laporan resmi.");
     const report=await page.context().newPage();
     try{
-      const loaded=await report.goto(url.toString(),{waitUntil:"domcontentloaded",timeout:20000});
+      const loaded=await report.goto(url.toString(),{waitUntil:"domcontentloaded",timeout:remaining(deadline,deadline===undefined?20000:10000)});
       const current=new URL(report.url());
       if(!loaded?.ok()||current.origin!==url.origin||current.pathname!==url.pathname||current.searchParams.get("activityId")!==url.searchParams.get("activityId"))throw Error("Sesi ASPI tidak dapat mengakses laporan resmi.");
       if(await report.locator('input[type="password"],form[action*="sign-in"],form[action*="login"]').count())throw Error("ASPI mengembalikan halaman login, bukan laporan.");
-      const text=await report.locator("body").innerText();
+      const text=await report.locator("body").innerText({timeout:remaining(deadline,5000)});
       if(!/request/i.test(text)||!/response/i.test(text))throw Error("Isi halaman bukan laporan hasil pengujian ASPI.");
       await report.emulateMedia({media:"print"});
       await report.evaluate(()=>Promise.race([document.fonts.ready,new Promise(resolve=>setTimeout(resolve,1000))]));
+      remaining(deadline,10000);
       return validateOfficialPdf(await report.pdf({format:"A4",printBackground:true,preferCSSPageSize:true,margin:{top:"12mm",right:"12mm",bottom:"12mm",left:"12mm"}}));
     }finally{await report.close();}
   }finally{await response.dispose();}

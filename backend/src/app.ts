@@ -19,6 +19,7 @@ import { hasPrivilege } from "./privileges";
 import { createZip } from "./zip";
 import { RunControl } from "./run-control";
 import { readHistory } from "./history";
+import type { AspiActivity } from "./aspi-evidence";
 
 type Scenario={id:string;group:string;service:string;scenario:string;expected:string;expectedCode:string|null};
 type Input=Record<string,unknown>;
@@ -33,20 +34,6 @@ function publicRecord(row:RecordRow){
   return {id:row.id,kind:row.kind,name:row.name,parentId:row.parent_id,partnerId:row.partner_id,data,createdAt:row.created_at,updatedAt:row.updated_at};
 }
 function clientError(message:string,status=400){return {error:message,status};}
-type CapturedEvidence={activityId:string;service:string;timestamp:string;downloadUrl:string;pdf?:Buffer};
-function stripEvidence(value:unknown,evidence:CapturedEvidence[]):unknown{
-  if(Array.isArray(value))return value.map(item=>stripEvidence(item,evidence));
-  if(!object(value)||Buffer.isBuffer(value))return value;
-  const output:Record<string,unknown>={};
-  for(const [key,item] of Object.entries(value)){
-    if(key==="evidencePdf"&&object(item)&&typeof item.activityId==="string"){
-      evidence.push({activityId:item.activityId,service:String(item.service),timestamp:String(item.timestamp),downloadUrl:String(item.downloadUrl),pdf:Buffer.isBuffer(item.pdf)?item.pdf:undefined});
-      continue;
-    }
-    output[key]=stripEvidence(item,evidence);
-  }
-  return output;
-}
 
 @Controller("autosnap")
 export class AutoSnapController {
@@ -478,24 +465,36 @@ export class AutoSnapController {
         notes+=" Data hasil disimpan terenkripsi ke User SNAP terpilih.";
       }else notes+=" Tidak ada field hasil yang dikenali; isi User SNAP dari respons provider yang sudah dikonfirmasi.";
     }else if(savesPrerequisite&&mode==="mock")notes+=" Hasil mock tidak disimpan sebagai kredensial.";
-    const capturedEvidence:CapturedEvidence[]=[],cleanRequest=stripEvidence(result.request,capturedEvidence) as Record<string,unknown>;
-    const evidenceRows=[...new Map(capturedEvidence.map(item=>[item.activityId,item])).values()];
-    const evidenceMetadata=evidenceRows.map(({activityId,service,timestamp,downloadUrl})=>({activityId,service,timestamp,downloadUrl,pdfReady:false}));
+    const cleanRequest=result.request;
+    const evidenceMetadata:Array<AspiActivity&{pdfReady:boolean}>=[];
     const requestSnapshot:Record<string,unknown>={...cleanRequest,outcome:result.outcome??null,validation:checks,aspiActivities:evidenceMetadata,context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
     await this.db.query("INSERT INTO autosnap_runs (id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19)",[id,operator.id,client.id,project.id,environment.id,snapUser?.id??null,service.id,endpoint.id,scenarioId,mode,status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,now]);
-    if(mode==="portal"){
-      await progress("evidence","running","Menyimpan PDF resmi ASPI ke server");
-      for(const item of evidenceRows){
-        if(!item.pdf){await progress("pdf_store","failed",`${item.service}: PDF tidak tersedia untuk Activity ID ${item.activityId}.`);continue;}
-        try{await this.storeEvidencePdf(id,item.activityId,item.service,item.pdf);evidenceMetadata.find(entry=>entry.activityId===item.activityId)!.pdfReady=true;await progress("pdf_store","completed",`${item.service}: PDF tersimpan di server; Activity ID ${item.activityId}.`);}
-        catch{notes+=` PDF aktivitas ${item.activityId} gagal disimpan.`;await progress("pdf_store","failed",`${item.service}: gagal menyimpan PDF ke database; Activity ID ${item.activityId}.`);}
+    // Persist the actual test result before any potentially slow ASPI report download.
+    // Evidence failures never turn a valid test result into a transport/validation error.
+    if(mode==="portal"&&status==="Passed"&&!control.signal.aborted){
+      await progress("evidence","running","Semua API selesai dan hasil Passed. Mengambil PDF resmi ASPI.");
+      const executedSteps=[...(Array.isArray(cleanRequest.steps)?cleanRequest.steps.filter(object):[]),cleanRequest].filter(item=>typeof item.name==="string");
+      const paths=executedSteps.map(item=>String(item.name));
+      let evidence:Awaited<ReturnType<PortalEngine["collectEvidence"]>>=[];
+      try{evidence=await this.portal.collectEvidence({user:snapUser!,before:result.activityBaseline,paths,deadline:started+240000,signal:control.signal,onProgress:progress});}
+      catch{evidence=paths.map(path=>({path,error:"Download PDF ASPI gagal; hasil pengujian tetap tersimpan."}));}
+      const errors:Array<{path:string;activityId?:string;error:string}>=[];
+      for(const item of evidence){
+        if(item.error){errors.push({path:item.path,activityId:item.activity?.activityId,error:item.error});await progress("pdf_download","failed",`${item.path}: ${item.error}`);}
+        if(!item.activity)continue;
+        const metadata={...item.activity,pdfReady:false};evidenceMetadata.push(metadata);
+        if(!item.pdf||control.signal.aborted)continue;
+        try{await this.storeEvidencePdf(id,metadata.activityId,metadata.service,item.pdf);metadata.pdfReady=true;await progress("pdf_store","completed",`${item.path}: PDF tersimpan; Activity ID ${metadata.activityId}.`);}
+        catch{const error="Gagal menyimpan PDF ke database.";errors.push({path:item.path,activityId:metadata.activityId,error});await progress("pdf_store","failed",`${item.path}: ${error}`);}
       }
+      requestSnapshot.evidenceErrors=errors;
       const stored=evidenceMetadata.filter(item=>item.pdfReady).length;
-      const executedSteps=[cleanRequest,...(Array.isArray(cleanRequest.steps)?cleanRequest.steps.filter(object):[])].filter(item=>typeof item.name==="string");
-      await progress("evidence",stored>=executedSteps.length&&stored>0?"completed":"failed",stored?`${stored} dari ${executedSteps.length} PDF resmi ASPI tersimpan`:"PDF resmi ASPI belum tersedia");
-      if(stored<executedSteps.length)notes+=` PDF resmi ASPI tersimpan ${stored} dari ${executedSteps.length} operasi. Periksa detail bukti yang belum tersedia.`;
-      if(!stored)notes+=" PDF resmi ASPI belum tersedia; hasil pengujian tetap disimpan pada History.";
+      await progress("evidence",stored===paths.length&&stored>0?"completed":"failed",`${stored} dari ${paths.length} PDF resmi ASPI tersimpan.`);
+      notes+=` PDF resmi ASPI tersimpan ${stored} dari ${paths.length} operasi.`;
+      if(stored<paths.length)notes+=" Periksa log download PDF pada detail History.";
       await this.db.query("UPDATE autosnap_runs SET request_json=$1::jsonb,notes=$2 WHERE id=$3",[JSON.stringify(redact(requestSnapshot)),notes,id]);
+    }else if(mode==="portal"){
+      await progress("evidence","completed","Download PDF dilewati karena pengujian tidak Passed atau dibatalkan.");
     }
     const finalStatus=await this.updateProgress(progressId,operator.id,"finished",status==="Cancelled"?"cancelled":status==="Passed"?"completed":"failed",notes);
     if(finalStatus==="cancelled"&&status!=="Cancelled"){

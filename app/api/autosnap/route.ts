@@ -26,9 +26,10 @@ async function forward(request:NextRequest){
   // Vercel overwrites its own forwarded IP header; never forward client proxy headers.
   headers.set("X-AutoSnap-Client-IP",process.env.VERCEL?request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim()??"unknown":"local");
   const cookie=request.headers.get("cookie");if(cookie)headers.set("Cookie",cookie);
-  const timeoutMs=request.method==="POST"
-    ?Math.max(180000,Number(process.env.AUTOSNAP_PROXY_TIMEOUT_MS??600000))
-    :30000;
+  const configuredTimeout=Number(process.env.AUTOSNAP_PROXY_TIMEOUT_MS??(process.env.VERCEL?280000:600000));
+  const postTimeout=Number.isFinite(configuredTimeout)?Math.max(180000,configuredTimeout):280000;
+  // Return a useful JSON timeout before the 300-second Vercel function deadline.
+  const timeoutMs=request.method==="POST"?(process.env.VERCEL?Math.min(280000,postTimeout):postTimeout):30000;
   try{
     const backendUrl=new URL(apiBaseUrl);
     if(backendUrl.username||backendUrl.password||(process.env.VERCEL&&backendUrl.protocol!=="https:"))throw new Error("Invalid backend URL");
@@ -40,7 +41,7 @@ async function forward(request:NextRequest){
   }catch(error){
     if(error instanceof RangeError)return Response.json({error:"Ukuran request maksimal 256 KB."},{status:413});
     if(error instanceof Error&&(error.name==="TimeoutError"||error.name==="AbortError")){
-      return Response.json({error:`Proses testing belum selesai dalam ${Math.round(timeoutMs/60000)} menit. Backend tetap berjalan; periksa History Testing sebelum mencoba ulang agar request tidak terkirim dua kali.`,code:"UPSTREAM_TIMEOUT"},{status:504});
+      return Response.json({error:"Batas waktu menunggu backend tercapai. Status proses belum dapat dipastikan; periksa History Testing sebelum mencoba ulang agar request tidak terkirim dua kali.",code:"UPSTREAM_TIMEOUT"},{status:504});
     }
     return Response.json({error:"Backend AutoSNAP tidak dapat dihubungi. Pastikan backend NestJS aktif dan konfigurasi API benar.",code:"BACKEND_UNREACHABLE"},{status:503});
   }

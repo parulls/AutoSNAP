@@ -31,7 +31,10 @@ export class AspiSessionManager{
     };
     try{
       if(this.db){
-        const acquired=await this.db.one("INSERT INTO autosnap_automation_leases (key,owner,expires_at) VALUES ($1,$2,$3) ON CONFLICT (key) DO UPDATE SET owner=EXCLUDED.owner,expires_at=EXCLUDED.expires_at WHERE autosnap_automation_leases.expires_at<$4 RETURNING owner",[lease,owner,new Date(Date.now()+15*60_000).toISOString(),new Date().toISOString()]);
+        // Vercel terminates this function after 300 seconds. A crashed invocation
+        // must not keep the account locked for 15 minutes; allow a short grace period.
+        const leaseDuration=process.env.VERCEL?330000:15*60_000;
+        const acquired=await this.db.one("INSERT INTO autosnap_automation_leases (key,owner,expires_at) VALUES ($1,$2,$3) ON CONFLICT (key) DO UPDATE SET owner=EXCLUDED.owner,expires_at=EXCLUDED.expires_at WHERE autosnap_automation_leases.expires_at<$4 RETURNING owner",[lease,owner,new Date(Date.now()+leaseDuration).toISOString(),new Date().toISOString()]);
         if(!acquired)throw new AspiAutomationError("AUTOMATION_ERROR","Akun ASPI sedang digunakan pengujian lain. Tunggu hingga selesai.");
       }
       context=await this.openContext(lease);signal?.throwIfAborted();const page=context.pages()[0]??await context.newPage();

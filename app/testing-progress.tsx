@@ -12,7 +12,7 @@ export default function TestingProgress({progress,running,onCancel,onClose}:{pro
   useEffect(()=>{end.current?.scrollIntoView({block:"nearest"});},[progress.steps.length,cancelError]);
   async function cancel(){setCancelling(true);setCancelError("");try{await onCancel();}catch(error){setCancelError((error as Error).message);setCancelling(false);}}
   return <div className="modal-backdrop"><section className="card testing-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="terminal-title">
-    <div className="section-header"><div><h2 id="terminal-title">Log Testing</h2><p>{running?cancelling||progress.status==="cancel_requested"?"Menghentikan proses…":"Proses berjalan":"Proses selesai"}</p></div>{!running&&<button type="button" className="close-button" onClick={onClose} aria-label="Tutup" title="Tutup"><UiIcon name="close"/></button>}</div>
+    <div className="section-header"><div><h2 id="terminal-title">Log Testing</h2><p>{running?cancelling||progress.status==="cancel_requested"?"Menghentikan proses…":"Proses berjalan":progress.status==="unknown"?"Status belum dapat dipastikan":"Proses selesai"}</p></div>{!running&&<button type="button" className="close-button" onClick={onClose} aria-label="Tutup" title="Tutup"><UiIcon name="close"/></button>}</div>
     <div className="testing-terminal" role="log" aria-live="polite" aria-relevant="additions" tabIndex={0}>
       <div className="terminal-heading">AutoSNAP — execution log</div>
       {!progress.steps.length&&<div className="terminal-pending">Menunggu log backend…</div>}

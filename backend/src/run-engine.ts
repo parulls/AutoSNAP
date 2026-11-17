@@ -4,7 +4,7 @@ import { decrypt, hmacSignature, redact, rsaSignature, sha256 } from "./security
 import type { RecordRow } from "./database.service";
 import type { HitOutcome } from "./aspi-types";
 
-export type HitResult={status:number|null;outcome?:HitOutcome;body:unknown;request:Record<string,unknown>};
+export type HitResult={status:number|null;outcome?:HitOutcome;body:unknown;request:Record<string,unknown>;activityBaseline?:string[]};
 export type HitInput={baseUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow|null;scenarioId:string|null;externalId:string;extraHeaders:Record<string,string>;authFlow:string;useCase?:string;tokenPath?:string;rsaEncoding?:string;hmacEncoding?:string;negativeAccessToken?:boolean;signal?:AbortSignal};
 const value=(row:RecordRow,key:string)=>String(row.data[key]??"");
 export function isoJakarta(){return new Date(Date.now()+7*3600000).toISOString().replace(/\.\d{3}Z$/,"+07:00");}

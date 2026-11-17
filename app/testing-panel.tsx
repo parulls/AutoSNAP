@@ -7,6 +7,7 @@ import HistoryFilter from "./history-filter";
 import {rangeForPeriod} from "./history-period";
 import {useHistory} from "./use-history";
 import TestingProgress, {type TestProgress} from "./testing-progress";
+import {ApiError} from "./api-client";
 
 const value=(row:Item|undefined,key:string)=>String(row?.data[key]??"");
 const object=(entry:unknown):entry is Record<string,unknown>=>!!entry&&typeof entry==="object"&&!Array.isArray(entry);
@@ -55,7 +56,17 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
       await reload();setResultId(String(result.id??""));
       if(result.status==="Failed"){const response=object(result.response)?result.response:{};setTestingError({stage:String(result.failedStage??lastStage.current),summary:"Pengujian tidak berhasil.",technical:String(response.error??result.notes??"Actual result tidak sesuai expected result."),outcome:String(result.outcome??"FAILED"),httpStatus:result.httpStatus===null||result.httpStatus===undefined?"Tidak ada":String(result.httpStatus),suggestion:result.httpStatus===null||result.httpStatus===undefined?"Periksa tahap gagal, sesi ASPI, dan konfigurasi Master Data lalu coba kembali.":"Periksa response code dan expected result pada detail History."});}
       else setNotice(`${result.status} · HTTP ${result.httpStatus??"—"}`);
-    }catch(error){setProgress(null);setTestingError({stage:lastStage.current,summary:"Proses testing berhenti.",technical:(error as Error).message,outcome:"VALIDATION_ERROR",httpStatus:"Tidak ada",suggestion:"Periksa input dan konfigurasi yang disebutkan, lalu jalankan kembali."});}
+    }catch(error){
+      polling=false;
+      const timeout=error instanceof ApiError&&(error.code==="UPSTREAM_TIMEOUT"||error.status===504);
+      const outcome=timeout?"TIMEOUT":error instanceof ApiError?error.code:error instanceof TypeError?"NETWORK_ERROR":"AUTOMATION_ERROR";
+      // A proxy timeout says nothing about whether the target API already ran.
+      // Refresh saved History, but never resend the test automatically.
+      try{const current=await api("getProgress",{id:progressId}) as unknown as TestProgress;lastStage.current=current.stage;setProgress(current);}catch{}
+      if(timeout)setProgress(current=>current?{...current,status:"unknown"}:null);
+      await reload().catch(()=>undefined);historyData.refresh();
+      setTestingError({stage:lastStage.current,summary:timeout?"Waktu tunggu habis; status proses belum dapat dipastikan.":"Proses testing tidak dapat diselesaikan.",technical:(error as Error).message,outcome,httpStatus:"Tidak ada",suggestion:timeout?"Periksa History Testing terlebih dahulu. Jangan langsung menjalankan ulang karena request mungkin sudah terkirim.":outcome==="VALIDATION_ERROR"?"Periksa input yang disebutkan.":"Periksa log proses dan koneksi backend sebelum mencoba kembali."});
+    }
     finally{polling=false;clearInterval(timer);setRunning(false);activeProgressId.current="";}
   }
   async function refreshPage(){
