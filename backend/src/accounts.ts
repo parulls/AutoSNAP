@@ -23,6 +23,7 @@ export async function verifyRecaptcha(input:Record<string,unknown>,remoteIp?:str
     const response=await fetch("https://www.google.com/recaptcha/api/siteverify",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body,signal:AbortSignal.timeout(8000)});
     if(!response.ok)throw new Error(`HTTP ${response.status}`);result=await response.json() as RecaptchaResponse;
   }catch{fail("Verifikasi Google reCAPTCHA tidak dapat dihubungi. Coba lagi.",503);}
+  if(result!["error-codes"]?.some(code=>["invalid-input-secret","missing-input-secret"].includes(code)))fail("Konfigurasi secret Google reCAPTCHA tidak valid. Hubungi administrator server.",503);
   if(!result!.success)fail(result!["error-codes"]?.includes("timeout-or-duplicate")?"reCAPTCHA kedaluwarsa atau sudah digunakan. Centang kembali.":"Verifikasi reCAPTCHA gagal. Coba lagi.");
   const allowed=String(process.env.AUTOSNAP_RECAPTCHA_HOSTNAMES??"").split(",").map(value=>value.trim().toLowerCase()).filter(Boolean);
   if(process.env.NODE_ENV==="production"&&!allowed.length)fail("Hostname reCAPTCHA belum dikonfigurasi.",503);

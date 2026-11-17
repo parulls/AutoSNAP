@@ -18,7 +18,7 @@ export default function UserManagement({state,api,reload,setError,setNotice}:{st
     event.preventDefault();setBusy(true);setError("");
     try{
       await api(target==="new"?"userCreate":"userUpdate",{...form,id:target&&target!=="new"?target.id:undefined});
-      setTarget(null);setNotice(target==="new"?"Akun petugas dibuat.":"Akun berhasil diperbarui.");await reload();
+      setTarget(null);setNotice(target==="new"?(form.role==="admin"?"Akun admin dibuat.":"Akun petugas dibuat."):"Akun berhasil diperbarui.");await reload();
     }catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
   async function change(user:Operator,action:"active"|"delete"){
@@ -28,7 +28,7 @@ export default function UserManagement({state,api,reload,setError,setNotice}:{st
     catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
   return <section className="card master-card">
-    <div className="section-header"><div><h2>Akun AutoSNAP</h2><p>Admin mengelola konfigurasi dan akun. Petugas menjalankan testing serta melihat hasil.</p></div>{admin&&<button className="primary-button" onClick={()=>open("new")}>Tambah Petugas</button>}</div>
+    <div className="section-header"><div><h2>Akun AutoSNAP</h2><p>Admin mengelola konfigurasi dan akun. Petugas menjalankan testing serta melihat hasil.</p></div>{admin&&<button className="primary-button" onClick={()=>open("new")}>Tambah Akun</button>}</div>
     <div className="table-wrap"><table><thead><tr><th>USER</th><th>ROLE</th><th>PRIVILEGE</th><th>STATUS</th><th>AKSI</th></tr></thead><tbody>{(state.operators??[]).map(user=><tr key={user.id}>
       <td><strong>{user.username}</strong>{user.id===state.user?.id&&<span className="cell-caption">Akun Anda</span>}</td>
       <td>{user.role==="admin"?"Admin":"Petugas"}</td><td><div className="privilege-list">{(user.role==="admin"?privilegeOptions.map(item=>item.key):user.privileges??[]).map(key=><span key={key}>{privilegeOptions.find(item=>item.key===key)?.label??key}</span>)}</div></td><td><span className={`status-badge ${user.active?"passed":"skipped"}`}>{user.active?"Aktif":"Menunggu aktivasi / nonaktif"}</span></td>

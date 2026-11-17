@@ -84,6 +84,30 @@ Jika ASPI meminta CAPTCHA, OTP, MFA, atau interaksi lain, run berhenti dengan ou
 
 ## Persiapan release publik
 
+### Membuka data dan menambah admin
+
+Project Supabase AutoSNAP: `hdbhycjmwuhvpgwojrjt`. Buka Table Editor, lalu ubah schema dari `public` ke `autosnap`. Akun aplikasi ada di `autosnap_users`, master data di `autosnap_records`, history di `autosnap_runs`, dan PDF resmi di `autosnap_evidence_pdfs`. Login AutoSNAP memakai akun serta session dari backend NestJS, bukan Supabase Auth; menu Authentication Supabase dapat kosong meskipun akun AutoSNAP tersedia.
+
+Untuk menambah admin, masuk dengan admin yang ada → User Management → Tambah Akun → pilih Peran Admin. Backend membuat salt dan hash password. Jangan mengisi password biasa langsung ke kolom `password_hash`. Untuk melihat akun melalui SQL Editor:
+
+```sql
+SELECT id, username, email, role, active
+FROM autosnap.autosnap_users
+ORDER BY created_at;
+```
+
+### reCAPTCHA pada domain publik
+
+Pada Google reCAPTCHA Admin Console, gunakan kunci reCAPTCHA v2 checkbox. Daftarkan `autosnap-web-two.vercel.app` pada Domains tanpa `https://` atau path; tambahkan `localhost` jika diperlukan untuk development. Domain Google dan allowlist backend adalah dua pengaturan berbeda. Error Google "Domain tidak valid untuk kunci situs" harus diperbaiki pada konfigurasi kunci Google, bukan dengan menonaktifkan verifikasi.
+
+Di proyek Vercel **auto-snap-api**, set `AUTOSNAP_RECAPTCHA_SITE_KEY`, `AUTOSNAP_RECAPTCHA_SECRET_KEY`, dan `AUTOSNAP_RECAPTCHA_HOSTNAMES` untuk Production. Site key boleh dikirim ke browser; secret key tetap server-only. Gunakan pasangan kunci dari situs Google yang sama. Jangan memakai kunci pengujian Google pada produksi.
+
+### Memperbarui versi publik
+
+Setelah mengubah kode, jalankan `npm.cmd run build`, `npm.cmd run lint`, dan test yang sesuai. Periksa `git status`, commit file yang diubah, kemudian `git push origin main`. Repository `parulls/AutoSNAP` terhubung ke proyek Vercel `autosnap-web` dan `auto-snap-api`; push main memicu deployment Production keduanya. Tunggu status Ready pada menu Deployments. File `.env.local`, profil browser, dan secret tidak boleh di-commit.
+
+Untuk perubahan environment variable, simpan pada proyek yang benar → Deployments → deployment terbaru → Redeploy. Mengubah variabel Vercel tidak memperbarui deployment lama. Mengubah kode tidak otomatis mengubah struktur tabel Supabase; perubahan schema memerlukan migrasi terpisah.
+
 Alamat penggunaan:
 
 - Frontend utama (`autosnap-web`): https://autosnap-web-two.vercel.app

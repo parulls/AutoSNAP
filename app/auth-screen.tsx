@@ -21,12 +21,18 @@ function RecaptchaV2({siteKey,onChange,resetKey}:{siteKey:string;onChange:(token
     if(widgetId.current!==undefined)return true;
     const api=window.grecaptcha;
     if(!container.current||typeof api?.render!=="function")return false;
-    widgetId.current=api.render(container.current,{
-      sitekey:siteKey,theme:"light",
-      callback:(token:string)=>onChange(token),
-      "expired-callback":()=>onChange(""),"error-callback":()=>onChange("")
-    });
-    setLoadError("");return true;
+    try{
+      widgetId.current=api.render(container.current,{
+        sitekey:siteKey,theme:"light",
+        callback:(token:string)=>{setLoadError("");onChange(token);},
+        "expired-callback":()=>{onChange("");setLoadError("Verifikasi kedaluwarsa. Centang kembali reCAPTCHA.");},
+        "error-callback":()=>{onChange("");setLoadError("Google reCAPTCHA gagal memverifikasi. Periksa koneksi atau hubungi administrator jika ada pesan kunci/domain tidak valid.");}
+      });
+      setLoadError("");
+    }catch{
+      onChange("");setLoadError("reCAPTCHA tidak dapat ditampilkan. Hubungi administrator untuk memeriksa kunci v2 dan domain situs.");
+    }
+    return true;
   },[siteKey,onChange]);
   useEffect(()=>{
     let attempts=0,timer:ReturnType<typeof setTimeout>;
@@ -42,7 +48,7 @@ function RecaptchaV2({siteKey,onChange,resetKey}:{siteKey:string;onChange:(token
     if(widgetId.current!==undefined&&typeof reset==="function"){reset(widgetId.current);onChange("");}
   },[resetKey,onChange]);
   return <>
-    <Script src="https://www.google.com/recaptcha/api.js?render=explicit&hl=id" strategy="afterInteractive" onError={()=>setLoadError("Skrip Google reCAPTCHA tidak dapat dimuat. Periksa koneksi, VPN, atau pemblokir iklan.")}/>
+    <Script id="autosnap-recaptcha-v2" src="https://www.google.com/recaptcha/api.js?render=explicit&hl=id" strategy="afterInteractive" onReady={()=>{render();}} onError={()=>{onChange("");setLoadError("Skrip Google reCAPTCHA tidak dapat dimuat. Periksa koneksi, VPN, atau pemblokir iklan.");}}/>
     <div className="recaptcha-wrap" ref={container}/>
     {loadError&&<div className="captcha-config-error" role="alert">{loadError}</div>}
   </>;
