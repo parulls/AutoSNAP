@@ -18,6 +18,7 @@ import { requestPasswordReset, resetPasswordWithOtp } from "./password-reset";
 import { hasPrivilege } from "./privileges";
 import { createZip } from "./zip";
 import { RunControl } from "./run-control";
+import { readHistory } from "./history";
 
 type Scenario={id:string;group:string;service:string;scenario:string;expected:string;expectedCode:string|null};
 type Input=Record<string,unknown>;
@@ -124,6 +125,7 @@ export class AutoSnapController {
         const progress=await this.db.one("SELECT id,status,stage,steps,updated_at FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[String(input.id??""),user.id]);
         return progress?res.json(progress):this.fail(res,clientError("Progress testing tidak ditemukan.",404));
       }
+      if(action==="getHistory")return res.json(await readHistory(this.db,user.id,input));
       if(["save","saveConnection","delete","userCreate","userDelete"].includes(action)&&user.role!=="admin")return this.fail(res,clientError("Hanya admin yang boleh mengubah master data atau mengelola akun.",403));
       if(action==="save")return await this.save(res,input);
       if(action==="saveConnection")return res.json(await saveConnection(this.db,input));

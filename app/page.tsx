@@ -34,7 +34,7 @@ export default function Home(){
       <header className="topbar"><div className="topbar-title"><div><div className="breadcrumb">Workspace <span>/</span> {visiblePage??"Tidak ada akses"}</div><h1>{visiblePage??"Tidak ada akses menu"}</h1></div></div><div className="profile-menu"><button className="profile-trigger" aria-expanded={profileOpen} onClick={()=>setProfileOpen(value=>!value)}><span className="avatar">{state.user.username.slice(0,2).toUpperCase()}</span><span><strong>{state.user.username}</strong><small>{state.user.role==="admin"?"Admin":"Petugas"}</small></span></button>{profileOpen&&<div className="profile-dropdown">{allowedPages.some(entry=>entry.label==="User Management")&&<button onClick={()=>{setPage("User Management");setProfileOpen(false);}}>Ubah password</button>}<button className="danger-action" onClick={logout}><UiIcon name="logout"/>Keluar</button></div>}</div></header>
       {error&&<div className="form-error" role="alert">{error}<button aria-label="Tutup pesan kesalahan" onClick={()=>setError("")}>×</button></div>}
       {notice&&<div className="form-notice" role="status">{notice}<button aria-label="Tutup pemberitahuan" onClick={()=>setNotice("")}>×</button></div>}
-      {visiblePage==="Dashboard"&&<Dashboard state={state} navigate={setPage}/>}
+      {visiblePage==="Dashboard"&&<Dashboard state={state} api={api} navigate={setPage}/>}
       {visiblePage==="Master Data"&&<MasterData {...common}/>}
       {visiblePage==="Dev Site Client"&&<Testing {...common} variant="dev_site"/>}
       {visiblePage==="Client Simulator"&&<Testing {...common} variant="simulator"/>}

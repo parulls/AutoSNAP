@@ -247,3 +247,10 @@ dt { font-weight:500; } dd { margin:0; color:var(--text-secondary); overflow-wra
 .terminal-actions .danger-button:disabled { opacity: .65; cursor: wait; }
 .status-badge.cancelled { color: #92400e; background: #fffbeb; border-color: #fde68a; }
 @media (max-width: 640px) { .terminal-line { display: block; margin-bottom: 8px; } .terminal-line time, .terminal-level { margin-right: 8px; } .terminal-actions { align-items: stretch; flex-direction: column; } }
+.history-filter { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 16px; }
+.history-filter label { display: grid; gap: 5px; min-width: 160px; }
+.history-filter label > span { color: var(--text-secondary); font-size: 13px; font-weight: 500; }
+.history-filter select, .history-filter input { min-height: 38px; padding: 7px 10px; background: #fff; color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; font-size: 14px; }
+.history-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 14px; }
+.history-pagination > span { color: var(--text-secondary); font-size: 13px; }
+@media(max-width:640px) { .history-filter label { flex: 1; min-width: 130px; } .history-pagination { justify-content: space-between; gap: 8px; } }
