@@ -43,7 +43,7 @@ function publicRecord(row:RecordRow){
   for(const field of secretFields)if(data[field])data[field]="••••••••";
   return {id:row.id,kind:row.kind,name:row.name,parentId:row.parent_id,partnerId:row.partner_id,data,createdAt:row.created_at,updatedAt:row.updated_at};
 }
-function clientError(message:string,status=400){return {error:message,status};}
+function clientError(message:string,status=400,code?:string){return {error:message,status,...(code?{code}:{})};}
 
 @Controller("autosnap")
 export class AutoSnapController {
@@ -65,8 +65,8 @@ export class AutoSnapController {
     res.cookie("autosnap_session",token,{httpOnly:true,sameSite:"strict",secure:process.env.NODE_ENV==="production"||req.headers["x-autosnap-proto"]==="https",path:"/",expires:expiry});
   }
   private fail(res:Response,error:unknown){
-    const e=error as {error?:string;status?:number;message?:string};
-    return res.status(e.status??500).json({error:e.error??"Terjadi kesalahan server. Hubungi administrator."});
+    const e=error as {error?:string;status?:number;message?:string;code?:string};
+    return res.status(e.status??500).json({error:e.error??"Terjadi kesalahan server. Hubungi administrator.",...(e.code?{code:e.code}:{})});
   }
   @Get()
   async state(@Req() req:Request,@Res() res:Response){
@@ -198,6 +198,7 @@ export class AutoSnapController {
         if(!hasPrivilege(user,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege download bukti Dev Site.",403));
         return await this.downloadAspiActivitiesZip(res,input,user);
       }
+      if(action==="aspiBusy")return res.json({busyUserIds:await this.evidenceService.busyUserIds(await this.allRecords())});
       if(action==="run")await this.enforceRateLimit(`run:${user.id}`,20,10*60_000);
       if(action==="run"){
         const environment=await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='environment'",[String(input.environmentId??"")]);
@@ -409,6 +410,7 @@ export class AutoSnapController {
     if(project.parent_id!==client.id||environment.parent_id!==project.id||!serviceEndpointValid||!userValid)return this.fail(res,clientError("Relasi data pengujian tidak sesuai."));
     if(input.templateId&&(!template||template.parent_id!==endpoint.id))return this.fail(res,clientError("Template tidak melekat pada endpoint terpilih."));
     const mode=value(environment,"mode");
+    if(mode==="portal"&&snapUser&&await this.evidenceService.accountBusy(snapUser))return this.fail(res,clientError("Akun ASPI ini sedang dipakai untuk pengujian atau pengambilan bukti. Tunggu hingga selesai.",409,"ASPI_SESSION_BUSY"));
     const {method,path,serviceCode,config,legacyBalance}=resolveEndpoint(endpoint,service);
     const isBalance=method==="POST"&&path===BALANCE_PATH;
     const workflow=authenticationWorkflow(config??{authFlow:"b2b",parameters:[]});

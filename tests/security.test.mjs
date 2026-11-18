@@ -62,5 +62,12 @@ test("ASPI session lock spans backend instances and releases only its own lease"
     await session.release();
     const next=await second.getAuthenticatedContext(user,"aspi",async()=>true);await next.release();
     assert.equal((await db.query("SELECT * FROM autosnap_automation_leases")).length,0);assert.equal(closed,2);
+    const held=await first.getAuthenticatedContext(user,"aspi",async()=>true);
+    await db.query("UPDATE autosnap_automation_leases SET heartbeat_at=$1",[new Date(Date.now()-181000).toISOString()]);
+    const taken=await second.getAuthenticatedContext(user,"aspi",async()=>true);
+    await held.release();
+    assert.equal((await db.query("SELECT * FROM autosnap_automation_leases")).length,1);
+    await taken.release();
+    assert.equal((await db.query("SELECT * FROM autosnap_automation_leases")).length,0);
   }finally{await db.onModuleDestroy();}
 });

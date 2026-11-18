@@ -5,7 +5,7 @@ import type { RecordRow } from "./database.service";
 import type { HitOutcome } from "./aspi-types";
 
 /** Ephemeral browser ownership handoff, never copied into persisted request_json. */
-export type AspiEvidenceSession = {page:Page;release:()=>Promise<void>};
+export type AspiEvidenceSession = {page:Page;release:()=>Promise<void>;beat?:()=>Promise<unknown>|undefined|void};
 export type HitResult={
   status:number|null;
   outcome?:HitOutcome;

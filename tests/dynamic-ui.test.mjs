@@ -31,6 +31,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
         records.push({id:"endpoint",kind:"endpoint",name:"Update VA",data:{method:"PUT",path:draft.path,portalUrl:url}},{id:"service",kind:"service",parentId:"endpoint",name:"Update VA",data:{module:draft.module,code:"28",requestBody:draft.requestBody,config:input.draft.config}});data={ok:true};
       }else if(input.action==="getProgress")data={status:"completed",stage:"finished",steps:[{stage:"evaluation",status:"completed",detail:"COMPLETED — HTTP 200 sesuai expected 200."}]};
       else if(input.action==="run"){runs++;assert.equal(input.serviceId,"service");assert.equal(input.parameters.merchantId,"merchant-qa");assert.equal(JSON.parse(input.body).virtualAccountNo,"456");data={id:"fixture",status:"COMPLETED",outcome:"COMPLETED",evaluation,httpStatus:200,responseCode:"2002800",expectedCode:null,pdfCounts:{ready:0,required:4},reprocess:{retryEvidence:true}};}
+      else if(input.action==="aspiBusy")data={busyUserIds:[]};
       else throw Error(`Unexpected UI action ${input.action}`);
       return route.fulfill({contentType:"application/json",body:JSON.stringify(data)});
     });

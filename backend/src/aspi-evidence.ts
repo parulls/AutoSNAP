@@ -31,12 +31,17 @@ function remaining(deadline:number|undefined,limit:number){
 }
 
 export async function readActivities(page:Page,deadline?:number):Promise<AspiActivity[]>{
-  const response=await page.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:remaining(deadline,20000)});
-  const location=new URL(page.url());
-  if(location.origin!=="https://apidevportal.aspi-indonesia.or.id"||location.pathname!=="/aktivitas-aplikasi-pengujian"){
-    throw Error("Halaman aktivitas ASPI dialihkan; periksa autentikasi.");
+  let location:URL;
+  try{location=new URL(page.url());}catch{location=new URL("https://invalid.local/");}
+  const already=location.origin==="https://apidevportal.aspi-indonesia.or.id"&&location.pathname==="/aktivitas-aplikasi-pengujian";
+  if(!already){
+    const response=await page.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:remaining(deadline,20000)});
+    location=new URL(page.url());
+    if(location.origin!=="https://apidevportal.aspi-indonesia.or.id"||location.pathname!=="/aktivitas-aplikasi-pengujian"){
+      throw Error("Halaman aktivitas ASPI dialihkan; periksa autentikasi.");
+    }
+    if(!response?.ok())throw Error(`Halaman aktivitas ASPI mengembalikan HTTP ${response?.status()??"unknown"}.`);
   }
-  if(!response?.ok())throw Error(`Halaman aktivitas ASPI mengembalikan HTTP ${response?.status()??"unknown"}.`);
   const table=page.locator("table").first();
   await table.waitFor({state:"attached",timeout:remaining(deadline,8000)});
   // AJAX may populate the table after DOMContentLoaded. Wait a short bounded

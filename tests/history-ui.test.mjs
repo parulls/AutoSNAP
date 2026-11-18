@@ -18,7 +18,7 @@ test("Refresh clears filled testing form and response, retains history, and both
     browser=await chromium.launch({executablePath:chrome,headless:true});const page=await browser.newPage();
     const records=[{id:"user",kind:"snap_user",name:"User SNAP QA",data:{}},{id:"client",kind:"client",name:"Client QA",partnerId:"client-key",data:{clientId:"client-key",clientSecret:"fixture-secret",privateKey:"fixture-key",channelId:"95221"}},{id:"project",kind:"project",name:"Project QA",parentId:"client",data:{}},{id:"site",kind:"environment",name:"Dev Site QA",parentId:"project",data:{mode:"portal",category:"Dev Site",defaultUserId:"user"}},{id:"endpoint",kind:"endpoint",name:"Balance Inquiry",data:{method:"POST",path:"/api/v1.0/balance-inquiry",portalUrl:"https://apidevportal.aspi-indonesia.or.id/api-services/informasi-saldo"}},{id:"service",kind:"service",name:"Balance Inquiry",parentId:"endpoint",data:{module:"Informasi Saldo",code:"11",requestBody:JSON.stringify({accountNo:"2000100101"})}}];
     const run={id:"new-run",operator_id:"operator",environment_id:"site",service_id:"service",endpoint_id:"endpoint",user_id:"user",mode:"portal",status:"PASSED",http_status:200,response_code:"2001100",duration_ms:50,created_at:new Date().toISOString(),request:{context:{service:"Balance Inquiry",environment:"Dev Site QA"}},response:{responseCode:"2001100",responseMessage:"Successful"}};
-    let ran=false,timeoutRun=false,runCalls=0;const historyRequests=[];
+    let ran=false,timeoutRun=false,accountBusy=false,runCalls=0;const historyRequests=[];
     await page.route("**/api/autosnap",async route=>{
       const body=route.request().method()==="POST"?route.request().postDataJSON():{},action=body.action;
       let data;
@@ -30,12 +30,17 @@ test("Refresh clears filled testing form and response, retains history, and both
         ran=true;data={id:run.id,status:"PASSED",httpStatus:200};
       }
       else if(action==="getProgress")data=timeoutRun?{status:"running",stage:"pdf_download",steps:[]}:{status:"completed",stage:"finished",steps:[]};
+      else if(action==="aspiBusy")data={busyUserIds:accountBusy?["user"]:[]};
       else throw Error(`Unexpected test action ${action}`);
       await route.fulfill({contentType:"application/json",body:JSON.stringify(data)});
     });
     await page.goto(base);await page.getByRole("navigation").getByRole("button",{name:"Dev Site Client",exact:true}).click();
     const choose=async()=>{for(const [label,id] of [["User SNAP","user"],["Dev Site Client","site"],["Endpoint URL","endpoint"],["API Service","service"]])await page.getByRole("combobox",{name:label,exact:true}).selectOption(id);};
-    await choose();await page.getByLabel("Request Body",{exact:true}).fill('{"accountNo":"edited-draft"}');await page.getByRole("button",{name:"Jalankan Testing",exact:true}).click();
+    await choose();await page.getByLabel("Request Body",{exact:true}).fill('{"accountNo":"edited-draft"}');
+    accountBusy=true;await page.getByRole("status").filter({hasText:"Akun ASPI ini sedang dipakai"}).waitFor({timeout:5000});
+    assert.equal(await page.getByRole("button",{name:"Pengambilan bukti sedang berlangsung"}).isDisabled(),true);assert.equal(runCalls,0);
+    accountBusy=false;await page.getByRole("button",{name:"Jalankan Testing",exact:true}).waitFor({timeout:5000});
+    await page.getByRole("button",{name:"Jalankan Testing",exact:true}).click();
     await page.getByRole("dialog").getByRole("button",{name:"Tutup",exact:true}).click();
     await page.locator(".response-card .status-badge").getByText("PASSED",{exact:true}).waitFor();
     assert.match(await page.locator(".response-card").innerText(),/2001100/);

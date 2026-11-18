@@ -200,3 +200,71 @@ test("partial PDF reprocessing stays COMPLETED and lists the missing evidence",a
     assert.equal(row.request_json.evidenceErrors.length,1);
   }finally{await db.onModuleDestroy();}
 });
+
+test("ASPI account lock blocks the same session, allows another account, and keeps a stored PDF after a late timeout",async()=>{
+  process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
+  const db=new DatabaseService();await db.onModuleInit();
+  try{
+    const {sha256}=require("../backend/dist/security.js");
+    const {AspiAutomationError}=require("../backend/dist/aspi-types.js");
+    const {pdfAccountLease}=require("../backend/dist/aspi-session-manager.js");
+    const owner=await createAccount(db,{username:"lock-owner",email:"lock@example.test",password:"lock-password-123"},"admin",true);
+    const now=new Date().toISOString();
+    const fresh=new Date(Date.now()+10*60_000).toISOString();
+    const userA={id:"user-a",kind:"snap_user",data:{email:"a@example.test",password:encrypt("fixture")}};
+    const userB={id:"user-b",kind:"snap_user",data:{email:"b@example.test",password:encrypt("fixture")}};
+    await db.query("INSERT INTO autosnap_records(id,kind,name,parent_id,data,created_at,updated_at) VALUES('client-lock','client','Client',null,'{}'::jsonb,$1,$1),('project-lock','project','Project','client-lock','{}'::jsonb,$1,$1),('env-a','environment','Env A','project-lock',$2::jsonb,$1,$1),('env-b','environment','Env B','project-lock',$3::jsonb,$1,$1),('user-a','snap_user','A',null,$4::jsonb,$1,$1),('user-b','snap_user','B',null,$5::jsonb,$1,$1),('ep-lock','endpoint','Endpoint',null,$6::jsonb,$1,$1),('svc-lock','service','Service','ep-lock','{}'::jsonb,$1,$1)",[now,JSON.stringify({mode:"portal",category:"Dev Site",defaultUserId:"user-a"}),JSON.stringify({mode:"portal",category:"Dev Site",defaultUserId:"user-b"}),JSON.stringify(userA.data),JSON.stringify(userB.data),JSON.stringify({method:"POST",path:"/api/v1.0/balance-inquiry",portalUrl:"https://apidevportal.aspi-indonesia.or.id/test"})]);
+    const evaluation={mode:"HTTP_ONLY",snapValidationPerformed:false,outcome:"COMPLETED",stage:"evaluation",stageLabel:"Validasi HTTP",detail:"HTTP 200 sesuai expected 200.",suggestion:"",httpValidation:{expectedStatus:200,actualStatus:200,performed:true,matches:true,source:"target_api"}};
+    const op=(email,activity)=>({key:"op-0",path:"/api/v1.0/balance-inquiry",service:"balance",attempts:0,pdfReady:false,activity:{activityId:activity,service:"balance",timestamp:now,downloadUrl:"https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity"}});
+    const insert=async(id,userId,email,activity)=>db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,mode,status,http_status,response_code,expected_code,duration_ms,notes,request_json,response_json,created_at) VALUES($1,$2,'client-lock','project-lock','env-a',$3,'svc-lock','ep-lock','portal','COMPLETED',200,'2001100',null,10,'open',$4::jsonb,'{}'::jsonb,$5)",[id,owner,userId,JSON.stringify({evaluation,evidence:{version:1,phase:"INCOMPLETE",retryCount:0,accountHash:sha256(email),beforeIds:[],operations:[op(email,activity)]},outcome:"COMPLETED",progressLog:[{stage:"evidence",status:"failed",detail:"awal",at:now}]}),now]);
+    let calls=0;
+    const portal={collectEvidence:async input=>{
+      calls++;
+      if(input.user.data.email==="b@example.test")return input.operations.map(item=>({key:item.key,path:item.path,activity:item.activity,pdf:Buffer.from("%PDF-1.7\nother"),attempts:1}));
+      await input.onEvidence({key:input.operations[0].key,path:input.operations[0].path,activity:input.operations[0].activity,pdf:Buffer.from("%PDF-1.7\nstored"),attempts:1});
+      throw new AspiAutomationError("TIMEOUT","Timeout saat mengambil PDF ASPI.");
+    }};
+    const service=new RunEvidenceService(db,portal);
+    const controller=new AutoSnapController(db,null,portal,null,service);
+    controller.user=async()=>({id:owner,role:"admin",privileges:["dev_site"]});controller.enforceRateLimit=async()=>{};
+    const action=async(name,input={})=>{const res={code:200,status(c){this.code=c;return this;},json(body){return {status:this.code,body};}};return controller.action({body:{action:name,...input},headers:{}},res);};
+    await db.query("INSERT INTO autosnap_automation_leases(key,owner,expires_at,heartbeat_at) VALUES($1,'holder',$2,$3)",[pdfAccountLease(userA),fresh,now]);
+    const busy=await action("aspiBusy");
+    assert.deepEqual(busy.body.busyUserIds,["user-a"]);
+    const blocked=await controller.run({code:200,status(c){this.code=c;return this;},json(body){return {status:this.code,body};}},{clientId:"client-lock",projectId:"project-lock",environmentId:"env-a",userId:"user-a",serviceId:"svc-lock",endpointId:"ep-lock",testType:"positive"},{id:owner,role:"admin"});
+    assert.equal(blocked.status,409);assert.equal(blocked.body.code,"ASPI_SESSION_BUSY");
+    let other;
+    try{other=await controller.run({code:200,status(c){this.code=c;return this;},json(body){return {status:this.code,body};}},{clientId:"client-lock",projectId:"project-lock",environmentId:"env-b",userId:"user-b",serviceId:"svc-lock",endpointId:"ep-lock",testType:"positive"},{id:owner,role:"admin"});}
+    catch(error){other={body:{code:error.code}};}
+    assert.notEqual(other.body.code,"ASPI_SESSION_BUSY");
+    const busyRun=randomUUID();
+    await insert(busyRun,"user-a","a@example.test","aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeea");
+    const processing=await action("retryAspiEvidence",{id:busyRun});
+    assert.equal(processing.status,200,JSON.stringify(processing.body));
+    assert.equal(processing.body.processing,true);assert.equal(calls,0);
+    await db.query("DELETE FROM autosnap_automation_leases WHERE key=$1",[pdfAccountLease(userA)]);
+    const late=randomUUID();
+    await insert(late,"user-a","a@example.test","aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeeb");
+    const saved=await action("retryAspiEvidence",{id:late});
+    assert.equal(saved.status,200,JSON.stringify(saved.body));
+    assert.equal(saved.body.status,"PASSED");
+    assert.equal((await db.one("SELECT COUNT(*)::int AS n FROM autosnap_evidence_pdfs WHERE run_id=$1",[late])).n,1);
+    assert.equal((await db.one("SELECT status FROM autosnap_runs WHERE id=$1",[late])).status,"PASSED");
+    const otherRun=randomUUID();
+    await insert(otherRun,"user-b","b@example.test","aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeec");
+    const parallel=await action("retryAspiEvidence",{id:otherRun});
+    assert.equal(parallel.body.status,"PASSED");
+    assert.equal(calls,2);
+    const expired=randomUUID();
+    await insert(expired,"user-a","a@example.test","aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeed");
+    const authPortal={collectEvidence:async()=>{throw new AspiAutomationError("AUTH_SESSION_EXPIRED","Sesi ASPI tidak valid. Login ulang diperlukan sebelum mengunduh PDF.");}};
+    const authController=new AutoSnapController(db,null,authPortal,null,new RunEvidenceService(db,authPortal));
+    authController.user=async()=>({id:owner,role:"admin"});authController.enforceRateLimit=async()=>{};
+    const authRes={code:200,status(c){this.code=c;return this;},json(body){return {status:this.code,body};}};
+    const auth=await authController.action({body:{action:"retryAspiEvidence",id:expired},headers:{}},authRes);
+    assert.equal(auth.status,200,JSON.stringify(auth.body));
+    assert.equal(auth.body.status,"COMPLETED");
+    assert.match(auth.body.missing[0].error,/Sesi ASPI tidak valid/);
+    assert.equal(auth.body.status!=="AUTOMATION_ERROR",true);
+  }finally{await db.onModuleDestroy();}
+});

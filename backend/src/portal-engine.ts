@@ -108,9 +108,10 @@ export class PortalEngine{
   async hit(input:PortalInput):Promise<HitResult>{
     const timestamp=isoJakarta();
     let release:(()=>Promise<void>)|undefined,page:Page|undefined,currentStage="preparing",sessionHandedOff=false;
+    let sessionBeat:(()=>Promise<unknown>|undefined|void)|undefined;
     const completedRequests:Record<string,unknown>[]=[];
     let activityBaseline:string[]|undefined;
-    const report:ProgressReporter=async(stage,status,detail)=>{currentStage=stage;await input.onProgress?.(stage,status,detail).catch(()=>undefined);};
+    const report:ProgressReporter=async(stage,status,detail)=>{currentStage=stage;await Promise.resolve(sessionBeat?.()).catch(()=>undefined);await input.onProgress?.(stage,status,detail).catch(()=>undefined);};
     const execute:typeof this.execute=async(...args)=>{
       input.signal?.throwIfAborted();
       const startedAt=new Date().toISOString();
@@ -134,7 +135,7 @@ export class PortalEngine{
         await page.goto(targetUrl,{waitUntil:"domcontentloaded",timeout:60000});
         await this.activateTestingPanel(page);return this.hasSwagger(page);
       },input.signal);
-      release=acquired.release;page=acquired.page;
+      release=acquired.release;page=acquired.page;sessionBeat=acquired.beat;
       const clientId=value(input.client,"clientId"),channelId=value(input.client,"channelId");
       const partnerId=value(input.client,"partnerIdSource")==="client_id"?clientId:input.client.partner_id??"";
       try{activityBaseline=(await this.activitiesInContext(page,Date.now()+15000)).map(item=>item.activityId);}
@@ -202,7 +203,7 @@ export class PortalEngine{
         await report(node.stage,"running",detail);await handlers[node.stage]();await report(node.stage,"completed",detail);
       }])) as Record<AuthStage,()=>Promise<void>>);
       if(!target)throw new AspiAutomationError("AUTOMATION_ERROR","Workflow belum mengeksekusi API target.");
-      const evidenceSession:AspiEvidenceSession={page,release};sessionHandedOff=true;
+      const evidenceSession:AspiEvidenceSession={page,release,beat:sessionBeat};sessionHandedOff=true;
       return {...target,activityBaseline,evidenceSession,request:{...target.request,method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:omitBody?null:serviceBody,registrationOutput,steps:completedRequests.slice(0,-1)}};
     }catch(error){
       const timeout=error instanceof Error&&/timeout/i.test(`${error.name} ${error.message}`);
@@ -356,6 +357,9 @@ export class PortalEngine{
     return {status,outcome,body:parsed,request:{name:path,method,path,portalUrl:url,httpStatus:status,actualUrl:storedUrl.toString(),automationChecks:verification,headers:redact(safeHeaders)}};
   }
   private async activitiesInContext(page:Page,deadline?:number){
+    let location:URL|undefined;
+    try{location=new URL(page.url());}catch{location=undefined;}
+    if(location?.origin==="https://apidevportal.aspi-indonesia.or.id"&&location.pathname==="/aktivitas-aplikasi-pengujian")return readActivities(page,deadline);
     const activityPage=await page.context().newPage();
     try{return await readActivities(activityPage,deadline);}finally{await activityPage.close();}
   }
@@ -421,6 +425,7 @@ export class PortalEngine{
         controller.signal
       );
       if(!input.session)release=session.release;
+      await Promise.resolve(session.beat?.()).catch(()=>undefined);
       this.logger.log(`[ASPI PDF] Menggunakan ${input.session?"sesi testing aktif":"sesi baru"} untuk membaca bukti.`);
       return await collectActivityPdfs({
         before:input.before,paths:input.paths,operations:input.operations,knownActivities:input.knownActivities,activityNames:input.activityNames,deadline,signal:controller.signal,
@@ -433,7 +438,7 @@ export class PortalEngine{
       const reason=cause instanceof AspiAutomationError?cause.outcome:isTimeout?"TIMEOUT":cause instanceof Error?cause.name:"UNKNOWN";
       // Never record raw browser errors: they may contain URLs or credentials.
       this.logger.error(`[ASPI PDF] Gagal membuka aktivitas/laporan: ${reason}`);
-      const error=input.signal?.aborted?"Download PDF dibatalkan.":controller.signal.aborted?"Batas waktu pengambilan PDF tercapai.":isTimeout?"Timeout mengakses halaman aktivitas ASPI.":cause instanceof AspiAutomationError?`Sesi ASPI gagal: ${cause.outcome}.`:`Halaman aktivitas ASPI gagal diakses (${reason}).`;
+      const error=input.signal?.aborted?"Download PDF dibatalkan.":controller.signal.aborted?"Batas waktu pengambilan PDF tercapai.":cause instanceof AspiAutomationError?cause.message:isTimeout?"Timeout mengakses halaman aktivitas ASPI.":`Halaman aktivitas ASPI gagal diakses (${reason}).`;
       await report("failed",error);
       return input.paths.map(path=>({path,error}));
     }finally{

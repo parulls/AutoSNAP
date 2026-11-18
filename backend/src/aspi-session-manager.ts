@@ -9,14 +9,22 @@ import { decrypt, sha256 } from "./security";
 import { AspiAutomationError } from "./aspi-types";
 
 const value=(row:RecordRow,key:string)=>String(row.data[key]??"");
+export function aspiAccountLease(user:{data?:Record<string,unknown>},environment:string){
+  const data=user.data??{};
+  const identity=String(data.email??data.username??"").toLowerCase();
+  return sha256(`${identity}|${environment}`).slice(0,24);
+}
+export function pdfAccountLease(user:{data?:Record<string,unknown>},environment="apidevportal.aspi-indonesia.or.id"){
+  return `pdf:${aspiAccountLease(user,environment)}`;
+}
 @Injectable()
 export class AspiSessionManager{
   private leases=new Set<string>();
   constructor(@Optional() private readonly db?:DatabaseService){}
   async getAuthenticatedContext(user:RecordRow,environment:string,validate:(page:Page)=>Promise<boolean>,signal?:AbortSignal){
     signal?.throwIfAborted();
-    const identity=(value(user,"email")||value(user,"username")).toLowerCase(),lease=sha256(`${identity}|${environment}`).slice(0,24);
-    if(this.leases.has(lease))throw new AspiAutomationError("AUTOMATION_ERROR","Sesi ASPI untuk akun dan environment ini sedang digunakan pengujian lain.");
+    const lease=aspiAccountLease(user,environment);
+    if(this.leases.has(lease))throw new AspiAutomationError("ASPI_SESSION_BUSY","Sesi ASPI untuk akun dan environment ini sedang digunakan pengujian lain.");
     this.leases.add(lease);let context:BrowserContext|undefined;
     const owner=randomUUID();
     const abort=()=>{void context?.close().catch(()=>undefined);};
@@ -30,12 +38,13 @@ export class AspiSessionManager{
       }
     };
     try{
+      const now=new Date(),leaseDuration=process.env.VERCEL?330000:6*60_000;
       if(this.db){
-        // Vercel terminates this function after 300 seconds. A crashed invocation
-        // must not keep the account locked for 15 minutes; allow a short grace period.
-        const leaseDuration=process.env.VERCEL?330000:15*60_000;
-        const acquired=await this.db.one("INSERT INTO autosnap_automation_leases (key,owner,expires_at) VALUES ($1,$2,$3) ON CONFLICT (key) DO UPDATE SET owner=EXCLUDED.owner,expires_at=EXCLUDED.expires_at WHERE autosnap_automation_leases.expires_at<$4 RETURNING owner",[lease,owner,new Date(Date.now()+leaseDuration).toISOString(),new Date().toISOString()]);
-        if(!acquired)throw new AspiAutomationError("AUTOMATION_ERROR","Akun ASPI sedang digunakan pengujian lain. Tunggu hingga selesai.");
+        // A crashed process must not keep the account locked until expires_at.
+        // Heartbeat older than three minutes can be taken over.
+        const stale=new Date(now.getTime()-180000).toISOString();
+        const acquired=await this.db.one("INSERT INTO autosnap_automation_leases (key,owner,expires_at,heartbeat_at) VALUES ($1,$2,$3,$4) ON CONFLICT (key) DO UPDATE SET owner=EXCLUDED.owner,expires_at=EXCLUDED.expires_at,heartbeat_at=EXCLUDED.heartbeat_at WHERE autosnap_automation_leases.expires_at<$5 OR COALESCE(autosnap_automation_leases.heartbeat_at,autosnap_automation_leases.expires_at)<$6 RETURNING owner",[lease,owner,new Date(now.getTime()+leaseDuration).toISOString(),now.toISOString(),now.toISOString(),stale]);
+        if(!acquired)throw new AspiAutomationError("ASPI_SESSION_BUSY","Akun ASPI sedang digunakan pengujian lain. Tunggu hingga selesai.");
       }
       context=await this.openContext(lease);signal?.throwIfAborted();const page=context.pages()[0]??await context.newPage();
 
@@ -54,7 +63,8 @@ export class AspiSessionManager{
         }
       }
       signal?.throwIfAborted();
-      return {context,page,release};
+      const beat=()=>this.db?.query("UPDATE autosnap_automation_leases SET heartbeat_at=$1,expires_at=$2 WHERE key=$3 AND owner=$4",[new Date().toISOString(),new Date(Date.now()+leaseDuration).toISOString(),lease,owner]);
+      return {context,page,release,beat};
     }catch(error){await release().catch(()=>undefined);throw error;}
   }
   async validateSession(page:Page,validate:(page:Page)=>Promise<boolean>){return validate(page);}
@@ -81,7 +91,8 @@ export class AspiSessionManager{
     const interactive=page.locator('iframe[src*="recaptcha" i],.g-recaptcha,input[name*="captcha" i],input[name*="otp" i]').first();
     if(await interactive.count()&&await interactive.isVisible().catch(()=>false))throw new AspiAutomationError("AUTH_INTERACTION_REQUIRED","Login ASPI memerlukan CAPTCHA, OTP, MFA, atau verifikasi interaktif. Siapkan sesi secara sah sebelum menjalankan headless.");
     const submit=page.locator('form button[type="submit"],form input[type="submit"]').first();if(!await submit.count())throw new AspiAutomationError("AUTH_SESSION_EXPIRED","Tombol submit login ASPI tidak ditemukan.");
-    await Promise.all([page.waitForNavigation({waitUntil:"domcontentloaded",timeout:60000}),submit.click()]).catch(()=>undefined);await page.waitForTimeout(750);
+    await Promise.all([page.waitForNavigation({waitUntil:"domcontentloaded",timeout:60000}),submit.click()]).catch(()=>undefined);
+    await page.waitForURL(url=>!String(url).includes("/sign-in"),{timeout:8000}).catch(()=>undefined);
     if(page.url().includes("/sign-in"))throw new AspiAutomationError("AUTH_SESSION_EXPIRED","Login ASPI ditolak. Periksa kredensial dan aktivasi akun.");
   }
 }
