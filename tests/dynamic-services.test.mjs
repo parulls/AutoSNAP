@@ -123,7 +123,7 @@ test("dynamic import is admin-only, atomic/idempotent and PUT runs with explicit
     const evidence=new RunEvidenceService(db,portal);
     const controller=new AutoSnapController(db, null, portal, {inspect:async()=>parseOperation(spec,url,catalog)}, evidence);controller.user=async()=>actor;controller.enforceRateLimit=async()=>{};
     const action=async(action,input={})=>{const res={code:200,status(n){this.code=n;return this;},json(body){return {status:this.code,body};}};return controller.action({body:{action,...input},headers:{}},res);};
-    actor={id,role:"tester"};assert.equal((await action("inspectDocumentation",{url,userId:"dynamic-user"})).status,403);actor={id,role:"admin"};
+    actor={id,role:"petugas"};assert.equal((await action("inspectDocumentation",{url,userId:"dynamic-user"})).status,403);actor={id,role:"admin"};
     const draft=(await action("inspectDocumentation",{url,userId:"dynamic-user"})).body;assert.equal(calls,0);
     draft.config.authFlow="b2b";draft.config.reviewed=true;
     const saved=await action("saveImportedService",{draft});assert.equal(saved.status,200);const again=await action("saveImportedService",{draft});assert.equal(saved.body.serviceId,again.body.serviceId);
@@ -139,7 +139,7 @@ test("dynamic import is admin-only, atomic/idempotent and PUT runs with explicit
     const edited=await action("saveImportedService",{draft});assert.equal(edited.status,200);assert.equal(edited.body.endpointId,saved.body.endpointId);assert.equal(edited.body.serviceId,saved.body.serviceId);
     assert.equal((await db.one("SELECT data FROM autosnap_records WHERE id=$1",[saved.body.serviceId])).data.requestBody,"");
     const empty=await action("run",{...input,progressId:randomUUID(),body:""});assert.equal(empty.status,400);assert.equal(calls,1);
-    actor={id,role:"tester"};assert.equal((await action("deleteEndpointConfiguration",{id:saved.body.endpointId})).status,403);actor={id,role:"admin"};
+    actor={id,role:"petugas"};assert.equal((await action("deleteEndpointConfiguration",{id:saved.body.endpointId})).status,403);actor={id,role:"admin"};
     assert.equal((await action("deleteEndpointConfiguration",{id:saved.body.endpointId})).status,200);
     assert.equal(await db.one("SELECT id FROM autosnap_records WHERE id=$1",[saved.body.serviceId]),null);
     assert.ok(await db.one("SELECT id FROM autosnap_runs WHERE id=$1",[run.body.id]),"history survives explicit configuration deletion");

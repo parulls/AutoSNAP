@@ -63,7 +63,8 @@ export function annotateServiceData(data:Record<string,unknown>):Record<string,u
   const code=String(data.code??"");
   const capabilities={...capabilitiesForCode(code),...asCapabilities(data.capabilities)};
   if(!Object.keys(capabilities).length){
-    const {capabilities:_omit,...rest}=data;
+    const rest={...data};
+    delete rest.capabilities;
     return rest;
   }
   return {...data,capabilities};

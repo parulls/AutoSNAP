@@ -42,7 +42,10 @@ export function authStagesFromNodes(nodes:WorkflowNode[]):AuthStage[]{
 }
 
 export function canRetryEvidence(input:{status:string;httpMatched:boolean;evidenceIncomplete:boolean}){
-  return input.httpMatched&&input.evidenceIncomplete&&["COMPLETED","PASSED","RUNNING"].includes(input.status);
+  if(!input.evidenceIncomplete||input.status==="RUNNING")return false;
+  // PDF retry never reruns the API. HTTP FAILED stays FAILED in finalOutcome.
+  if(input.status==="FAILED"||input.status==="CANCELLED")return true;
+  return input.httpMatched&&["COMPLETED","PASSED"].includes(input.status);
 }
 
 export function canResumeTesting(input:{status:string;hasTargetHttp:boolean;failedStageId:string|null}){

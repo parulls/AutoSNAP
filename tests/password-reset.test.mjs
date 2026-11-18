@@ -18,7 +18,7 @@ test("email OTP resets password once, expires sessions and never stores the OTP"
   };
   const db=new DatabaseService();await db.onModuleInit();
   try{
-    const userId=await createAccount(db,{username:"reset-user",email:"reset@example.test",password:"old-password-123"},"tester",true);
+    const userId=await createAccount(db,{username:"reset-user",email:"reset@example.test",password:"old-password-123"},"petugas",true);
     await db.query("INSERT INTO autosnap_sessions (hash,user_id,expires_at) VALUES ('session',$1,$2)",[userId,new Date(Date.now()+60_000).toISOString()]);
     const request=await requestPasswordReset(db,"RESET@example.test");
     assert.match(otp,/^\d{6}$/);assert.ok(request.resetId);

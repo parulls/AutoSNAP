@@ -10,44 +10,66 @@ import {finalOutcome,type Evaluation} from "./test-evaluation";
 import type {AspiEvidenceSession} from "./run-engine";
 import {pdfSettings} from "./pdf-settings";
 import {sha256} from "./security";
+import {canRetryEvidence,markStage,type RunCheckpoint} from "./run-checkpoint";
 
 type ProcessInput={runId:string;ownerId:string;user:RecordRow;initial?:boolean;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:(stage:string,status:"running"|"completed"|"failed",detail?:string)=>Promise<void>};
+type MissingPdf={path:string;key:string;activityId?:string;error:string};
+type AuditEntry={at:string;attempt:number;stage:"pdf_reprocessing";priorStatus:string;priorOutcome:string|null;priorDetail:string;priorErrors:MissingPdf[];result:"COMPLETED"|"INCOMPLETE"|"PROCESSING"|"FAILED";statusBefore:string;statusAfter:string;stored:number;required:number;missing:MissingPdf[];note:string};
+export type EvidenceProcessResult={status:string;notes:string;complete:boolean;stored:number;required:number;processing?:boolean;missing:MissingPdf[];evidence?:EvidencePlan;reprocessAudit?:AuditEntry[];pdfCounts?:{ready:number;required:number};reprocess?:{retryEvidence:boolean;resumeTesting:boolean;requireMutatingConfirm:boolean}};
+
+const LEASE_TTL_MS=330_000;
+const STALE_HEARTBEAT_MS=180_000;
+
 /** Evidence-only reprocessing. This component deliberately has no API execution entry point. */
 @Injectable()
 export class RunEvidenceService{
   constructor(private readonly db:DatabaseService,private readonly portal:PortalEngine){}
-  async process(input:ProcessInput){
+  async process(input:ProcessInput):Promise<EvidenceProcessResult>{
     const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1 AND operator_id=$2",[input.runId,input.ownerId]);
     if(!run)throw {status:404,error:"History testing tidak ditemukan."};
     if(!input.initial&&!["PASSED","COMPLETED","FAILED","AUTOMATION_ERROR","VALIDATION_ERROR","CANCELLED"].includes(run.status))throw {status:409,error:"Pengujian masih berjalan. Tunggu proses selesai sebelum retry PDF."};
-    const requestProbe=object(run.request_json)?run.request_json:{};
-    const evaluationProbe=object(requestProbe.evaluation)?requestProbe.evaluation as Evaluation:null;
-    if(evaluationProbe&&evaluationProbe.httpValidation&&!evaluationProbe.httpValidation.matches)throw {status:409,error:"HTTP tidak sesuai expected; retry PDF tidak mengubah status FAILED."};
     const request=object(run.request_json)?run.request_json:{};
     if(!object(request.evidence)||request.evidence.version!==1||!Array.isArray(request.evidence.operations))throw {status:409,error:"History ini belum menyimpan baseline dan rencana bukti yang aman. PDF yang sudah tersimpan tetap dapat diunduh; Activity ID tidak ditebak."};
     const plan=structuredClone(request.evidence) as EvidencePlan;
     if(plan.accountHash!==sha256(String(input.user.data.email??input.user.data.username??"").trim().toLowerCase()))throw {status:409,error:"Akun ASPI berbeda dari akun saat pengujian. Gunakan kembali User SNAP yang sama untuk retry PDF."};
-    const owner=randomUUID(),lease=`evidence:${run.id}`,now=new Date().toISOString();
-    const acquired=await this.db.one("INSERT INTO autosnap_automation_leases (key,owner,expires_at) VALUES ($1,$2,$3) ON CONFLICT (key) DO UPDATE SET owner=EXCLUDED.owner,expires_at=EXCLUDED.expires_at WHERE autosnap_automation_leases.expires_at<$4 RETURNING owner",[lease,owner,new Date(Date.now()+330000).toISOString(),now]);
-    if(!acquired)throw {status:409,error:"PDF untuk history ini sedang diproses. Tidak ada API yang dijalankan ulang."};
+    const evaluation=object(request.evaluation)?request.evaluation as Evaluation:null;
+    const owner=randomUUID(),lease=`evidence:${run.id}`,started=new Date();
+    const acquired=await this.acquire(lease,owner,started);
+    if(!acquired){
+      const ready=await this.readyIds(run.id);
+      this.applyStored(plan,ready);
+      const stored=plan.operations.filter(op=>op.pdfReady).length;
+      const complete=plan.operations.length>0&&plan.operations.every(op=>op.pdfReady);
+      if(complete){
+        if(!evaluation)throw {status:409,error:"Hasil evaluasi asli tidak tersedia; status tidak diubah hanya karena PDF tersedia."};
+        return this.commitOutcome({run,request,plan,evaluation,input,complete:true,processing:false,priorErrors:[]});
+      }
+      const note="PDF untuk history ini sedang diproses. Tidak ada API yang dijalankan ulang.";
+      const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:"PROCESSING",statusAfter:run.status,stored,missing:[],note,priorErrors:this.missingOf(plan)});
+      await this.appendAudit(run.id,input.ownerId,entry,{stage:"pdf_reprocessing",status:"running",detail:note,at:entry.at});
+      return {status:"PROCESSING",processing:true,notes:note,complete:false,stored,required:plan.operations.length,missing:this.missingOf(plan),reprocessAudit:[entry]};
+    }
+    const beat=()=>this.db.query("UPDATE autosnap_automation_leases SET heartbeat_at=$1,expires_at=$2 WHERE key=$3 AND owner=$4",[new Date().toISOString(),new Date(Date.now()+LEASE_TTL_MS).toISOString(),lease,owner]);
     const emit=async(stage:string,status:"running"|"completed"|"failed",detail="")=>{
+      await beat().catch(()=>undefined);
       if(input.onProgress){await input.onProgress(stage,status,detail);return;}
       await this.db.transaction(async query=>{
         const row=(await query<{request_json:Record<string,unknown>}>("SELECT request_json FROM autosnap_runs WHERE id=$1 AND operator_id=$2 FOR UPDATE",[run.id,input.ownerId]))[0];
         const log=Array.isArray(row?.request_json.progressLog)?row.request_json.progressLog.slice(-499):[];
         log.push({stage,status,detail,at:new Date().toISOString()});
-        await query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({progressLog:log}),run.id,input.ownerId]);
+        await query("UPDATE autosnap_runs SET request_json=jsonb_set(request_json,'{progressLog}',$1::jsonb,true) WHERE id=$2 AND operator_id=$3",[JSON.stringify(log),run.id,input.ownerId]);
       });
     };
     const persist=async()=>{
       const activities=plan.operations.flatMap(op=>op.activity?[{...op.activity,pdfReady:op.pdfReady,path:op.path,key:op.key}]:[]);
-      const errors=plan.operations.filter(op=>!op.pdfReady).map(op=>({path:op.path,key:op.key,activityId:op.activity?.activityId,error:op.error??"PDF belum tersedia."}));
+      const errors=this.missingOf(plan);
       await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({evidence:plan,aspiActivities:activities,evidenceErrors:errors}),run.id,input.ownerId]);
     };
     try{
-      const stored=await this.db.query<{activity_id:string;pdf_data:Buffer}>("SELECT activity_id,pdf_data FROM autosnap_evidence_pdfs WHERE run_id=$1",[run.id]);
-      const validIds=new Set(stored.filter(row=>{try{validateOfficialPdf(Buffer.from(row.pdf_data));return true;}catch{return false;}}).map(row=>row.activity_id));
-      for(const op of plan.operations)op.pdfReady=!!op.activity&&validIds.has(op.activity.activityId);
+      await beat();
+      const ready=await this.readyIds(run.id);
+      this.applyStored(plan,ready);
+      const priorErrors=this.missingOf(plan);
       plan.phase="COLLECTING";if(!input.initial)plan.retryCount++;
       await persist();
       const deadline=Date.now()+pdfSettings().budgetMs;
@@ -81,16 +103,75 @@ export class RunEvidenceService{
       for(const op of plan.operations)if(!op.pdfReady)op.error??=input.signal?.aborted?"Pengambilan bukti dibatalkan; bukti yang sudah tersimpan dipertahankan.":"PDF belum tersedia setelah reprocessing terbatas.";
       const complete=plan.operations.length>0&&plan.operations.every(op=>op.pdfReady);
       plan.phase=complete?"COMPLETE":"INCOMPLETE";await persist();
-      const current=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1 AND operator_id=$2",[run.id,input.ownerId]);
-      const evaluation=object(current?.request_json)&&object(current.request_json.evaluation)?current.request_json.evaluation as Evaluation:null;
-      if(!evaluation?.outcome)throw {status:409,error:"Hasil evaluasi asli tidak tersedia; status tidak diubah hanya karena PDF tersedia."};
-      const status=finalOutcome(evaluation,complete);
-      const promoted={...evaluation,outcome:status,detail:complete?evaluation.detail.replace(/Pengumpulan bukti PDF belum selesai\.?/,"Bukti PDF lengkap."):evaluation.detail,suggestion:complete?"":evaluation.suggestion};
-      const count=plan.operations.filter(op=>op.pdfReady).length;
-      const notes=`${promoted.detail} Bukti PDF resmi ASPI ${count}/${plan.operations.length} tersimpan. Outcome: ${status}.`;
-      await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=request_json || $3::jsonb WHERE id=$4 AND operator_id=$5",[status,notes,JSON.stringify({outcome:status,evaluation:promoted,evidence:plan}),run.id,input.ownerId]);
-      await emit("evidence",complete?"completed":"failed",`${count}/${plan.operations.length} PDF resmi ASPI tersimpan. Outcome akhir: ${status}.`);
-      return {status,notes,complete,stored:count,required:plan.operations.length,evidence:plan};
+      if(!evaluation)throw {status:409,error:"Hasil evaluasi asli tidak tersedia; status tidak diubah hanya karena PDF tersedia."};
+      return await this.commitOutcome({run,request,plan,evaluation,input,complete,processing:false,priorErrors});
     }finally{await this.db.query("DELETE FROM autosnap_automation_leases WHERE key=$1 AND owner=$2",[lease,owner]);}
+  }
+  private async acquire(lease:string,owner:string,started:Date){
+    const now=started.toISOString(),expires=new Date(started.getTime()+LEASE_TTL_MS).toISOString(),stale=new Date(started.getTime()-STALE_HEARTBEAT_MS).toISOString();
+    return this.db.one("INSERT INTO autosnap_automation_leases (key,owner,expires_at,heartbeat_at) VALUES ($1,$2,$3,$4) ON CONFLICT (key) DO UPDATE SET owner=EXCLUDED.owner,expires_at=EXCLUDED.expires_at,heartbeat_at=EXCLUDED.heartbeat_at WHERE autosnap_automation_leases.expires_at<$5 OR COALESCE(autosnap_automation_leases.heartbeat_at,autosnap_automation_leases.expires_at)<$6 RETURNING owner",[lease,owner,expires,now,now,stale]);
+  }
+  private async readyIds(runId:string){
+    const stored=await this.db.query<{activity_id:string;pdf_data:Buffer}>("SELECT activity_id,pdf_data FROM autosnap_evidence_pdfs WHERE run_id=$1",[runId]);
+    return new Set(stored.filter(row=>{try{validateOfficialPdf(Buffer.from(row.pdf_data));return true;}catch{return false;}}).map(row=>row.activity_id));
+  }
+  private applyStored(plan:EvidencePlan,validIds:Set<string>){
+    for(const op of plan.operations)op.pdfReady=!!op.activity&&validIds.has(op.activity.activityId);
+  }
+  private missingOf(plan:EvidencePlan):MissingPdf[]{
+    return plan.operations.filter(op=>!op.pdfReady).map(op=>({path:op.path,key:op.key,activityId:op.activity?.activityId,error:op.error??"PDF belum tersedia."}));
+  }
+  private auditEntry(input:{run:RunRow;plan:EvidencePlan;evaluation:Evaluation|null;attempt:number;result:AuditEntry["result"];statusAfter:string;stored:number;missing:MissingPdf[];note:string;priorErrors:MissingPdf[]}):AuditEntry{
+    return {at:new Date().toISOString(),attempt:input.attempt,stage:"pdf_reprocessing",priorStatus:input.run.status,priorOutcome:input.evaluation?.outcome??null,priorDetail:input.evaluation?.detail??"",priorErrors:input.priorErrors,result:input.result,statusBefore:input.run.status,statusAfter:input.statusAfter,stored:input.stored,required:input.plan.operations.length,missing:input.missing,note:input.note};
+  }
+  private async appendAudit(runId:string,ownerId:string,entry:AuditEntry,log?:{stage:string;status:string;detail:string;at:string}){
+    const patch=log
+      ? "jsonb_set(jsonb_set(request_json,'{reprocessAudit}',COALESCE(request_json->'reprocessAudit','[]'::jsonb)||$1::jsonb,true),'{progressLog}',COALESCE(request_json->'progressLog','[]'::jsonb)||$2::jsonb,true)"
+      : "jsonb_set(request_json,'{reprocessAudit}',COALESCE(request_json->'reprocessAudit','[]'::jsonb)||$1::jsonb,true)";
+    const params=log?[JSON.stringify([entry]),JSON.stringify([log]),runId,ownerId]:[JSON.stringify([entry]),runId,ownerId];
+    await this.db.query(`UPDATE autosnap_runs SET request_json=${patch} WHERE id=$${log?3:2} AND operator_id=$${log?4:3}`,params);
+  }
+  private async commitOutcome(input:{run:RunRow;request:Record<string,unknown>;plan:EvidencePlan;evaluation:Evaluation;complete:boolean;processing:boolean;priorErrors:MissingPdf[];input:ProcessInput}){
+    const {run,request,plan,evaluation,complete,priorErrors}=input;
+    const status=finalOutcome(evaluation,complete);
+    const count=plan.operations.filter(op=>op.pdfReady).length;
+    const missing=this.missingOf(plan);
+    const httpFailed=!evaluation.httpValidation?.matches;
+    const promoted={...evaluation,outcome:status,detail:httpFailed?evaluation.detail:complete?evaluation.detail.replace(/Pengumpulan bukti PDF belum selesai\.?/,"Bukti PDF lengkap."):evaluation.detail,suggestion:complete||httpFailed?"":"Sebagian bukti PDF belum tersedia. Proses ulang hanya mengunduh PDF yang belum tersimpan."};
+    const notes=httpFailed
+      ? `${evaluation.detail} Bukti PDF resmi ASPI ${count}/${plan.operations.length} tersimpan. Outcome tetap FAILED karena validasi HTTP sebelumnya tidak sesuai.`
+      : complete
+        ? `HTTP sesuai expected. Bukti PDF resmi ASPI ${count}/${plan.operations.length} tersimpan. Outcome: PASSED.`
+        : `HTTP sesuai expected. Bukti PDF resmi ASPI ${count}/${plan.operations.length} tersimpan. Outcome: COMPLETED. Belum tersedia: ${missing.map(item=>item.path).join(", ")||"—"}.`;
+    let checkpoint=object(request.checkpoint)&&Array.isArray(request.checkpoint.stages)?structuredClone(request.checkpoint) as RunCheckpoint:{version:1 as const,stages:[]};
+    if(complete){
+      checkpoint=markStage(checkpoint,"evidence","COMPLETED",`${count}/${plan.operations.length} PDF resmi tersimpan`);
+      checkpoint=markStage(checkpoint,"pdf_reprocessing","COMPLETED","Proses ulang bukti selesai tanpa menjalankan API");
+      for(const id of ["pdf_download","pdf_store"])if(checkpoint.stages.some(stage=>stage.id===id&&stage.status==="FAILED"))checkpoint=markStage(checkpoint,id,"COMPLETED","PDF tersimpan pada proses ulang");
+      if(evaluation.httpValidation?.matches)checkpoint=markStage(checkpoint,"evaluation","COMPLETED",evaluation.detail);
+      checkpoint=markStage(checkpoint,"finished","COMPLETED",notes);
+    }else{
+      checkpoint=markStage(checkpoint,"evidence","FAILED",`${count}/${plan.operations.length} PDF; sebagian belum tersedia`);
+      checkpoint=markStage(checkpoint,"pdf_reprocessing","FAILED","Sebagian bukti belum tersedia");
+      checkpoint=markStage(checkpoint,"finished","COMPLETED",notes);
+    }
+    const previous=object(request.reprocess)?request.reprocess:{};
+    const flags={
+      retryEvidence:canRetryEvidence({status,httpMatched:evaluation.httpValidation?.matches===true,evidenceIncomplete:!complete&&plan.operations.length>0}),
+      resumeTesting:previous.resumeTesting===true,
+      requireMutatingConfirm:previous.requireMutatingConfirm===true,
+    };
+    const activities=plan.operations.flatMap(op=>op.activity?[{...op.activity,pdfReady:op.pdfReady,path:op.path,key:op.key}]:[]);
+    const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:httpFailed?"FAILED":complete?"COMPLETED":"INCOMPLETE",statusAfter:status,stored:count,missing,note:notes,priorErrors});
+    const summary={stage:"evidence",status:complete?"completed":"failed",detail:notes,at:entry.at};
+    await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=jsonb_set(jsonb_set(request_json || $3::jsonb,'{reprocessAudit}',COALESCE(request_json->'reprocessAudit','[]'::jsonb)||$4::jsonb,true),'{progressLog}',COALESCE(request_json->'progressLog','[]'::jsonb)||$5::jsonb,true) WHERE id=$6 AND operator_id=$7",[status,notes,JSON.stringify({outcome:status,evaluation:promoted,evidence:plan,checkpoint,pdfCounts:{ready:count,required:plan.operations.length},reprocess:flags,evidenceErrors:missing,aspiActivities:activities}),JSON.stringify([entry]),JSON.stringify([summary]),run.id,input.input.ownerId]);
+    await this.touchProgress(request,input.input.ownerId,status==="FAILED"?"failed":"completed",notes);
+    return {status,notes,complete,stored:count,required:plan.operations.length,missing,evidence:plan,pdfCounts:{ready:count,required:plan.operations.length},reprocess:flags,reprocessAudit:[entry]};
+  }
+  private async touchProgress(request:Record<string,unknown>,ownerId:string,status:"completed"|"failed"|"running",detail:string){
+    const progressId=typeof request.progressId==="string"?request.progressId:"";
+    if(!/^[0-9a-f-]{36}$/i.test(progressId))return;
+    const at=new Date().toISOString();
+    await this.db.query("UPDATE autosnap_test_progress SET status=$1,stage='pdf_reprocessing',steps=COALESCE(steps,'[]'::jsonb)||$2::jsonb,updated_at=$3 WHERE id=$4 AND user_id=$5",[status==="running"?"running":status==="failed"?"failed":"completed",JSON.stringify([{stage:"pdf_reprocessing",status,detail,at}]),at,progressId,ownerId]).catch(()=>undefined);
   }
 }

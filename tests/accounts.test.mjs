@@ -10,7 +10,7 @@ const {DatabaseService}=require("../backend/dist/database.service.js");
 const {AutoSnapController}=require("../backend/dist/app.js");
 const {RunEngine}=require("../backend/dist/run-engine.js");
 
-test("signup verifies one-use CAPTCHA; pending accounts and testers cannot manage other users",async()=>{
+test("signup verifies one-use CAPTCHA; pending accounts and petugas cannot manage other users",async()=>{
   process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
   process.env.AUTOSNAP_RECAPTCHA_SITE_KEY="test-site";process.env.AUTOSNAP_RECAPTCHA_SECRET_KEY="test-secret";process.env.AUTOSNAP_RECAPTCHA_HOSTNAMES="localhost";
   const used=new Set(),savedFetch=globalThis.fetch;
@@ -34,7 +34,7 @@ test("signup verifies one-use CAPTCHA; pending accounts and testers cannot manag
     assert.equal((await invoke("register",{username:"qa-petugas",email:"qa-petugas@example.test",password:"long-password-123",...singleUse})).status,200);
     assert.equal((await invoke("register",{username:"qa-replay",password:"long-password-123",...singleUse})).status,400);
     const account=await db.one("SELECT * FROM autosnap_users WHERE username='qa-petugas'");
-    assert.equal(account.active,false);assert.equal(account.role,"tester");
+    assert.equal(account.active,false);assert.equal(account.role,"petugas");
     assert.equal((await invoke("login",{username:"qa-petugas",password:"long-password-123"})).status,403);
     session=adminSession;
     assert.equal((await invoke("userUpdate",{id:account.id,active:true})).status,200);

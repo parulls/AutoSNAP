@@ -10,9 +10,9 @@ const privilegeOptions=[
 
 export default function UserManagement({state,api,reload,setError,setNotice}:{state:State;api:Api;reload:()=>Promise<void>;setError:(s:string)=>void;setNotice:(s:string)=>void}){
   const [target,setTarget]=useState<Operator|"new"|null>(null),[busy,setBusy]=useState(false);
-  const [form,setForm]=useState({username:"",email:"",password:"",currentPassword:"",role:"tester",privileges:["dashboard","dev_site","client_simulator"] as string[]});
+  const [form,setForm]=useState({username:"",email:"",password:"",currentPassword:"",role:"petugas",privileges:["dashboard","dev_site","client_simulator"] as string[]});
   const admin=state.user?.role==="admin";
-  function open(user:Operator|"new"){setTarget(user);setForm({username:user==="new"?"":user.username,email:user==="new"?"":user.email??"",password:"",currentPassword:"",role:user==="new"?"tester":user.role,privileges:user==="new"?["dashboard","dev_site","client_simulator"]:user.privileges??["dashboard","dev_site","client_simulator"]});}
+  function open(user:Operator|"new"){setTarget(user);setForm({username:user==="new"?"":user.username,email:user==="new"?"":user.email??"",password:"",currentPassword:"",role:user==="new"||user.role!=="admin"?"petugas":"admin",privileges:user==="new"?["dashboard","dev_site","client_simulator"]:user.privileges??["dashboard","dev_site","client_simulator"]});}
   function togglePrivilege(key:string){setForm(current=>({...current,privileges:current.privileges.includes(key)?current.privileges.filter(item=>item!==key):[...current.privileges,key]}));}
   async function save(event:FormEvent){
     event.preventDefault();setBusy(true);setError("");
@@ -37,7 +37,7 @@ export default function UserManagement({state,api,reload,setError,setNotice}:{st
     {target&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save}>
       <div className="section-header"><div><h2>{target==="new"?"Tambah Akun":`Kelola Akun — ${target.username}`}</h2></div></div>
       <div className="form-grid">
-        {target==="new"&&<><label className="form-field"><span>Username AutoSNAP *</span><input required minLength={3} maxLength={40} autoComplete="off" value={form.username} onChange={e=>setForm({...form,username:e.target.value})}/></label><label className="form-field"><span>Peran</span><select value={form.role} onChange={e=>setForm({...form,role:e.target.value})}><option value="tester">Petugas</option><option value="admin">Admin</option></select></label></>}
+        {target==="new"&&<><label className="form-field"><span>Username AutoSNAP *</span><input required minLength={3} maxLength={40} autoComplete="off" value={form.username} onChange={e=>setForm({...form,username:e.target.value})}/></label><label className="form-field"><span>Peran</span><select value={form.role} onChange={e=>setForm({...form,role:e.target.value})}><option value="petugas">Petugas</option><option value="admin">Admin</option></select></label></>}
         <label className="form-field wide"><span>Email AutoSNAP *</span><input type="email" required maxLength={254} autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label>
         {admin&&form.role!=="admin"&&<fieldset className="privilege-field wide"><legend>Privilege menu</legend><div className="privilege-options">{privilegeOptions.map(item=><label key={item.key}><input type="checkbox" checked={form.privileges.includes(item.key)} onChange={()=>togglePrivilege(item.key)}/><span>{item.label}</span></label>)}</div><small className="helper">Privilege diperiksa kembali oleh backend saat pengguna menjalankan testing.</small></fieldset>}
         {target!=="new"&&target.id===state.user?.id&&<label className="form-field wide"><span>Password saat ini *</span><PasswordInput required autoComplete="current-password" value={form.currentPassword} onChange={e=>setForm({...form,currentPassword:e.target.value})}/></label>}

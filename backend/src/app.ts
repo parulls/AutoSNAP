@@ -15,7 +15,7 @@ import { AspiFormResolver } from "./aspi-form-resolver";
 import { AspiSessionManager } from "./aspi-session-manager";
 import { clientAddress } from "./http-security";
 import { requestPasswordReset, resetPasswordWithOtp } from "./password-reset";
-import { hasPrivilege } from "./privileges";
+import { hasPrivilege, normalizeRole } from "./privileges";
 import { createZip } from "./zip";
 import { RunControl } from "./run-control";
 import { readHistory } from "./history";
@@ -54,7 +54,9 @@ export class AutoSnapController {
   private async user(req:Request){
     const token=req.headers.cookie?.split(";").map(x=>x.trim()).find(x=>x.startsWith("autosnap_session="))?.slice("autosnap_session=".length);
     if(!token)return null;
-    return this.db.one<Operator>("SELECT u.id,u.email,u.username,u.name,u.role,u.active,u.privileges,u.created_at FROM autosnap_users u JOIN autosnap_sessions s ON s.user_id=u.id WHERE s.hash=$1 AND s.expires_at>$2 AND u.active=TRUE",[sha256(token),new Date().toISOString()]);
+    const row=await this.db.one<Operator>("SELECT u.id,u.email,u.username,u.name,u.role,u.active,u.privileges,u.created_at FROM autosnap_users u JOIN autosnap_sessions s ON s.user_id=u.id WHERE s.hash=$1 AND s.expires_at>$2 AND u.active=TRUE",[sha256(token),new Date().toISOString()]);
+    const role=row?normalizeRole(row.role):null;
+    return row&&role?{...row,role}:null;
   }
   private async newSession(req:Request,res:Response,userId:string){
     const token=randomBytes(32).toString("hex"),expiry=new Date(Date.now()+8*3600000);
@@ -76,7 +78,7 @@ export class AutoSnapController {
       }
       const user=await this.user(req);if(!user)return res.json({loginRequired:true,...recaptchaPublicConfig()});
       const [records,runs,scenarios,operators]=await Promise.all([this.allRecords(),this.db.query<RunRow>("SELECT * FROM autosnap_runs WHERE operator_id=$1 ORDER BY created_at DESC LIMIT 500",[user.id]),this.catalog(),this.db.query<Operator>("SELECT id,name,email,username,role,active,privileges,created_at FROM autosnap_users WHERE ($1=TRUE OR id=$2) ORDER BY created_at",[user.role==="admin",user.id])]);
-      return res.json({user,operators:operators.map(item=>({...item,createdAt:item.created_at})),records:records.map(publicRecord),runs:runs.map(run=>({...run,request:run.request_json,response:run.response_json})),scenarios});
+      return res.json({user,operators:operators.map(item=>({...item,role:normalizeRole(item.role)??"petugas",createdAt:item.created_at})),records:records.map(publicRecord),runs:runs.map(run=>({...run,request:run.request_json,response:run.response_json})),scenarios});
     }catch(error){return this.fail(res,error);}
   }
   @Post()
@@ -89,7 +91,7 @@ export class AutoSnapController {
         await verifyRecaptcha(input,req.ip);
         const count=await this.db.one<{n:string}>("SELECT COUNT(*)::text AS n FROM autosnap_users");
         if(!Number(count?.n))return this.fail(res,clientError("Buat administrator pertama terlebih dahulu."));
-        await createAccount(this.db,input,"tester",false);
+        await createAccount(this.db,input,"petugas",false);
         return res.json({ok:true,message:"Pendaftaran berhasil. Tunggu admin mengaktifkan akun."});
       }
       if(action==="login")return await this.login(req,res,input);
@@ -175,7 +177,7 @@ export class AutoSnapController {
       if(action==="save")return await this.save(res,input);
       if(action==="saveConnection")return res.json(await saveConnection(this.db,input));
       if(action==="delete")return await this.remove(res,input);
-      if(action==="userCreate"){await createAccount(this.db,input,input.role==="admin"?"admin":"tester",true);return res.json({ok:true});}
+      if(action==="userCreate"){await createAccount(this.db,input,input.role==="admin"?"admin":"petugas",true);return res.json({ok:true});}
       if(action==="userDelete"||action==="userUpdate"){await updateAccount(this.db,input,user);return res.json({ok:true});}
       if(action==="downloadAspiActivityPdf"){
         await this.enforceRateLimit(`pdf:${user.id}`,20,10*60_000);
@@ -598,7 +600,7 @@ export class AutoSnapController {
     const evidenceMetadata:Array<AspiActivity&{pdfReady:boolean}>=[];
     const email=String(snapUser?.data.email??snapUser?.data.username??"");
     const evidencePlan=mode==="portal"&&snapUser&&evaluation.httpValidation.matches?buildEvidencePlan(result,path,method,service.name,email):null;
-    const requestSnapshot:Record<string,unknown>={...cleanRequest,outcome:status,executionOutcome,evaluation,validation:checks,endpointConfiguration:config,workflow:workflow.profile,checkpoint,evidence:evidencePlan,configurationIds:{endpointId:endpoint.id,serviceId:service.id,endpointRevision:endpoint.updated_at,serviceRevision:service.updated_at},expectation:{...expectation,expectedCode:expected,expectedHttpStatus:expectedHttp},aspiActivities:evidenceMetadata,reprocess:{retryEvidence:false,resumeTesting:false},context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
+    const requestSnapshot:Record<string,unknown>={...cleanRequest,outcome:status,executionOutcome,evaluation,validation:checks,endpointConfiguration:config,workflow:workflow.profile,checkpoint,evidence:evidencePlan,progressId,configurationIds:{endpointId:endpoint.id,serviceId:service.id,endpointRevision:endpoint.updated_at,serviceRevision:service.updated_at},expectation:{...expectation,expectedCode:expected,expectedHttpStatus:expectedHttp},aspiActivities:evidenceMetadata,reprocess:{retryEvidence:false,resumeTesting:false},context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
     if(resumeRunId){
       notes+=" (Resume Testing).";
       await this.db.query("UPDATE autosnap_runs SET status=$1,http_status=$2,response_code=$3,expected_code=$4,duration_ms=$5,request_json=$6::jsonb,response_json=$7::jsonb,notes=$8 WHERE id=$9 AND operator_id=$10",[status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,id,operator.id]);

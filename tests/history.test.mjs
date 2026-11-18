@@ -23,8 +23,8 @@ test("history filters are inclusive in WIB, owner scoped, paginated and not limi
   process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";
   const db=new DatabaseService();await db.onModuleInit();
   try{
-    const user=await createAccount(db,{username:"history-a",email:"history-a@example.test",password:"history-password-123"},"tester",true);
-    const other=await createAccount(db,{username:"history-b",email:"history-b@example.test",password:"history-password-123"},"tester",true);
+    const user=await createAccount(db,{username:"history-a",email:"history-a@example.test",password:"history-password-123"},"petugas",true);
+    const other=await createAccount(db,{username:"history-b",email:"history-b@example.test",password:"history-password-123"},"petugas",true);
     const insert=async(id,owner,time,mode="portal")=>db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,service_id,endpoint_id,mode,status,request_json,response_json,created_at) VALUES($1,$2,'c','p','e','s','ep',$3,'PASSED',$4::jsonb,'{}'::jsonb,$5)",[id,owner,mode,JSON.stringify({context:{service:"Balance Inquiry",environment:"Dev Site A"}}),time]);
     await insert("before",user,"2026-11-16T16:59:59.999Z");
     await insert("start",user,"2026-11-16T17:00:00.000Z");
