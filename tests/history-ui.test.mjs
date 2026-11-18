@@ -17,7 +17,7 @@ test("Refresh clears filled testing form and response, retains history, and both
     for(let i=0;i<50;i++){try{if((await fetch(base)).ok){ready=true;break;}}catch{}await new Promise(resolve=>setTimeout(resolve,150));}assert.ok(ready,"production web server must start");
     browser=await chromium.launch({executablePath:chrome,headless:true});const page=await browser.newPage();
     const records=[{id:"user",kind:"snap_user",name:"User SNAP QA",data:{}},{id:"client",kind:"client",name:"Client QA",partnerId:"client-key",data:{clientId:"client-key",clientSecret:"fixture-secret",privateKey:"fixture-key",channelId:"95221"}},{id:"project",kind:"project",name:"Project QA",parentId:"client",data:{}},{id:"site",kind:"environment",name:"Dev Site QA",parentId:"project",data:{mode:"portal",category:"Dev Site",defaultUserId:"user"}},{id:"endpoint",kind:"endpoint",name:"Balance Inquiry",data:{method:"POST",path:"/api/v1.0/balance-inquiry",portalUrl:"https://apidevportal.aspi-indonesia.or.id/api-services/informasi-saldo"}},{id:"service",kind:"service",name:"Balance Inquiry",parentId:"endpoint",data:{module:"Informasi Saldo",code:"11",requestBody:JSON.stringify({accountNo:"2000100101"})}}];
-    const run={id:"new-run",operator_id:"operator",environment_id:"site",service_id:"service",endpoint_id:"endpoint",user_id:"user",mode:"portal",status:"Passed",http_status:200,response_code:"2001100",duration_ms:50,created_at:new Date().toISOString(),request:{context:{service:"Balance Inquiry",environment:"Dev Site QA"}},response:{responseCode:"2001100",responseMessage:"Successful"}};
+    const run={id:"new-run",operator_id:"operator",environment_id:"site",service_id:"service",endpoint_id:"endpoint",user_id:"user",mode:"portal",status:"PASSED",http_status:200,response_code:"2001100",duration_ms:50,created_at:new Date().toISOString(),request:{context:{service:"Balance Inquiry",environment:"Dev Site QA"}},response:{responseCode:"2001100",responseMessage:"Successful"}};
     let ran=false,timeoutRun=false,runCalls=0;const historyRequests=[];
     await page.route("**/api/autosnap",async route=>{
       const body=route.request().method()==="POST"?route.request().postDataJSON():{},action=body.action;
@@ -27,7 +27,7 @@ test("Refresh clears filled testing form and response, retains history, and both
       else if(action==="run"){
         runCalls++;
         if(timeoutRun){await route.fulfill({status:504,contentType:"application/json",body:JSON.stringify({error:"Batas waktu menunggu backend tercapai. Periksa History Testing.",code:"UPSTREAM_TIMEOUT"})});return;}
-        ran=true;data={id:run.id,status:"Passed",httpStatus:200};
+        ran=true;data={id:run.id,status:"PASSED",httpStatus:200};
       }
       else if(action==="getProgress")data=timeoutRun?{status:"running",stage:"pdf_download",steps:[]}:{status:"completed",stage:"finished",steps:[]};
       else throw Error(`Unexpected test action ${action}`);
@@ -37,7 +37,8 @@ test("Refresh clears filled testing form and response, retains history, and both
     const choose=async()=>{for(const [label,id] of [["User SNAP","user"],["Dev Site Client","site"],["Endpoint URL","endpoint"],["API Service","service"]])await page.getByRole("combobox",{name:label,exact:true}).selectOption(id);};
     await choose();await page.getByLabel("Request Body",{exact:true}).fill('{"accountNo":"edited-draft"}');await page.getByRole("button",{name:"Jalankan Testing",exact:true}).click();
     await page.getByRole("dialog").getByRole("button",{name:"Tutup",exact:true}).click();
-    await page.locator(".response-card").getByText("2001100",{exact:true}).waitFor();
+    await page.locator(".response-card .status-badge").getByText("PASSED",{exact:true}).waitFor();
+    assert.match(await page.locator(".response-card").innerText(),/2001100/);
     await page.getByRole("button",{name:"Refresh",exact:true}).click();
     for(const label of ["User SNAP","Dev Site Client","Endpoint URL","API Service"])assert.equal(await page.getByRole("combobox",{name:label,exact:true}).inputValue(),"");
     assert.equal(await page.locator("textarea").count(),0);assert.doesNotMatch(await page.locator(".response-card").innerText(),/2001100/);

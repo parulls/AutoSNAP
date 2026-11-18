@@ -1,21 +1,28 @@
 import {pdfSettings} from "./pdf-settings";
 import type { Page } from "playwright-core";
 
+import {activityAliasesFor} from "./service-capabilities";
+
 export const ACTIVITY_PAGE="https://apidevportal.aspi-indonesia.or.id/aktivitas-aplikasi-pengujian";
 export type AspiActivity={activityId:string;service:string;timestamp:string;downloadUrl:string};
 const normalize=(text:string)=>text.toLowerCase().replace(/[^a-z0-9]/g,"");
-const aliases:Record<string,string[]>={
-  "/api/v1.0/utilities/signature-auth":["signatureauth","signatureauthentication","signatureaccesstoken"],
-  "/api/v1.0/access-token/b2b":["accesstokenb2b","b2baccesstoken"],
-  "/api/v1.0/utilities/signature-service":["signatureservice"],
-  "/api/v1.0/balance-inquiry":["balanceinquiry","informasisaldo"]
-};
 
 /** A new row must uniquely match the executed service. Never choose the latest arbitrary ID. */
-export function correlateActivity(before:Set<string>,after:AspiActivity[],path:string,configuredNames:string[]=[]){
-  const names=[...(aliases[path]??[normalize(path.split("/").at(-1)??path)]),...configuredNames.map(normalize).map(name=>name.replace(/^api/,""))];
-  const matches=after.filter(row=>!before.has(row.activityId)&&names.some(name=>normalize(row.service).replace(/^api/,"")===name||normalize(row.service)===normalize(path)));
+export function correlateActivity(before:Set<string>,after:AspiActivity[],path:string,configuredNames:string[]=[],window?:{startedAt?:string;finishedAt?:string}){
+  const pathAliases=activityAliasesFor(path);
+  const names=[...(pathAliases.length?pathAliases:[normalize(path.split("/").at(-1)??path)]),...configuredNames.map(normalize).map(name=>name.replace(/^api/,""))];
+  const matches=after.filter(row=>!before.has(row.activityId)&&names.some(name=>normalize(row.service).replace(/^api/,"")===name||normalize(row.service)===normalize(path))&&(!window?.startedAt||activityWithinWindow(row.timestamp,window.startedAt,window.finishedAt)));
   return matches.length===1?matches[0]:null;
+}
+export function activityWithinWindow(raw:string,start:string,end?:string){
+  const from=Date.parse(start)-60000,to=Date.parse(end??start)+60000;
+  if(!Number.isFinite(from)||!Number.isFinite(to)||!/[T\s]\d{1,2}[:.]\d{2}/.test(raw))return false;
+  const candidates:number[]=[];
+  const local=(text:string)=>Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(text)?text:text.replace(" ","T")+"+07:00");
+  if(/^\d{4}-\d{2}-\d{2}/.test(raw))candidates.push(local(raw));
+  const date=/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*(AM|PM)?$/i.exec(raw.trim());
+  if(date){const [,a,b,year,h,m,s="00",ampm]=date;let hour=Number(h);if(ampm)hour=hour%12+(ampm.toUpperCase()==="PM"?12:0);for(const [day,month]of [[a,b],[b,a]])if(Number(day)<=31&&Number(month)<=12)candidates.push(local(`${year}-${month.padStart(2,"0")}-${day.padStart(2,"0")}T${String(hour).padStart(2,"0")}:${m}:${s}`));}
+  return new Set(candidates.filter(time=>Number.isFinite(time)&&time>=from&&time<=to)).size===1;
 }
 
 function remaining(deadline:number|undefined,limit:number){

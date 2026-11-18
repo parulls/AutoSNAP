@@ -1,3 +1,6 @@
+import {createRequire as __createRequireHttp} from "node:module";
+const __requireHttp=__createRequireHttp(import.meta.url);
+const {RunEvidenceService}=__requireHttp("../backend/dist/run-evidence.js");
 import assert from "node:assert/strict";
 import test from "node:test";
 import {createRequire} from "node:module";
@@ -18,7 +21,7 @@ test("durable cancel is owner-scoped, aborts another instance, and preserves pro
     const a=await createAccount(db,{username:"cancel-a",email:"cancel-a@example.test",password:"test-password-123"},"tester",true);
     const b=await createAccount(db,{username:"cancel-b",email:"cancel-b@example.test",password:"test-password-123"},"tester",true);
     const id=randomUUID();await db.query("INSERT INTO autosnap_test_progress(id,user_id,status,stage,steps,updated_at) VALUES($1,$2,'running','signature_auth','[]'::jsonb,$3)",[id,a,new Date().toISOString()]);
-    const controller=new AutoSnapController(db,null,null);let actor=a;
+    const controller=new AutoSnapController(db, null, null, null, new RunEvidenceService(db, null));let actor=a;
     controller.user=async()=>({id:actor,role:"tester",privileges:["dev_site"]});controller.enforceRateLimit=async()=>{};
     const call=async()=>{const res={code:200,status(n){this.code=n;return this;},json(body){return {code:this.code,body};}};return controller.action({body:{action:"cancelRun",id},headers:{}},res);};
     actor=b;assert.equal((await call()).code,409);assert.equal((await db.one("SELECT status FROM autosnap_test_progress WHERE id=$1",[id])).status,"running");

@@ -1,3 +1,6 @@
+import {createRequire as __createRequireHttp} from "node:module";
+const __requireHttp=__createRequireHttp(import.meta.url);
+const {RunEvidenceService}=__requireHttp("../backend/dist/run-evidence.js");
 import assert from "node:assert/strict";
 import test from "node:test";
 import {configureBalanceExpectation} from "./balance-expectation-fixture.mjs";
@@ -16,7 +19,7 @@ test("Dev Site drafts and endpoint-first services run with the right owner and p
   process.env.AUTOSNAP_RECAPTCHA_SITE_KEY="test-site";process.env.AUTOSNAP_RECAPTCHA_SECRET_KEY="test-secret";process.env.AUTOSNAP_RECAPTCHA_HOSTNAMES="localhost";
   const savedFetch=globalThis.fetch;globalThis.fetch=async()=>({ok:true,json:async()=>({success:true,hostname:"localhost"})});
   const db=new DatabaseService();await db.onModuleInit();
-  const engine=new RunEngine(),controller=new AutoSnapController(db,engine);
+  const engine=new RunEngine(),controller=new AutoSnapController(db, engine, null, null, new RunEvidenceService(db, null));
   let session="";
   const invoke=async(action,payload={})=>{
     const req={headers:{cookie:session},hostname:"localhost",body:{action,...payload}};
@@ -42,9 +45,9 @@ test("Dev Site drafts and endpoint-first services run with the right owner and p
     await saveConnection(db,{environmentId:connection.id,userId:user.id,client:{clientId:"client-qa",clientSecret:"secret",privateKey:"fake-for-stub-only"},environment:{mode:"live",baseUrl:"https://bank.example",tokenPath:"/bank/security/token",rsaEncoding:"base64",hmacEncoding:"hex"}});
     await db.query("UPDATE autosnap_records SET data=data || '{\"authFlow\":\"provided_token\"}'::jsonb WHERE id=$1",[connection.id]);
     engine.hit=async(args)=>{assert.equal(args.authFlow,"token_b2b","legacy manual token configuration must not bypass Security");return {status:200,body:{responseCode:"2001100",responseMessage:"Successful"},request:{method:args.method,path:args.path}};};
-    assert.equal((await invoke("run",input)).body.status,"Passed");
+    assert.equal((await invoke("run",input)).body.status,"PASSED");
     await saveConnection(db,{environmentId:connection.id,userId:user.id,environment:{mode:"mock"}});
-    const result=await invoke("run",input);assert.equal(result.status,200);assert.equal(result.body.status,"Passed");
+    const result=await invoke("run",input);assert.equal(result.status,200);assert.equal(result.body.status,"PASSED");
     assert.equal((await invoke("run",{...input,userId:other.id})).status,400);
     const customBody=JSON.stringify({accountNo:"9876543210"});
     await invoke("save",{kind:"service",id:savedService.body.id,name:"Saldo baru",parentId:endpointId,data:{requestBody:customBody}});

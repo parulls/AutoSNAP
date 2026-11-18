@@ -42,7 +42,7 @@ export default function Dashboard({
   );
 
   const recent = history.runs;
-  const { dev, simulator, passed, failed, errors,notEvaluated=0,passedHttp=0 } = history.summary;
+  const { dev, simulator, passed, failed, errors, completed=0 } = history.summary as typeof history.summary & {completed?:number};
 
   const contextOf = (run: (typeof recent)[number]) =>
     run.request &&
@@ -81,8 +81,7 @@ export default function Dashboard({
       value: errors,
       status: "warning",
     },
-    ...(notEvaluated?[{label:"Belum dievaluasi",value:notEvaluated,status:"warning" as const}]:[]),
-    ...(passedHttp?[{label:"HTTP 200 - SNAP belum divalidasi",value:passedHttp,status:"passed_http" as const}]:[]),
+    ...(completed?[{label:"Completed (PDF belum lengkap)",value:completed,status:"warning" as const}]:[]),
   ];
 
   return (

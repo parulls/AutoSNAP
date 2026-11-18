@@ -57,11 +57,12 @@ export function schemaErrors(value:unknown,schema:unknown,path="body",depth=0):s
 }
 export function configuredChecks(status:number|null,body:unknown,config:EndpointConfig,expectation:Expectation=config){
   const expected=expectation.expectedCode;
-  const checks=[{label:"HTTP status",passed:status===expectation.expectedHttpStatus,detail:`Expected ${expectation.expectedHttpStatus??"belum dikonfigurasi"}, actual ${status??"tidak ada response"}.`}];
-  if(expected)checks.push({label:"SNAP responseCode",passed:object(body)&&body.responseCode===expected,detail:`Expected ${expected}; actual ${object(body)?String(body.responseCode??"missing"):"non-JSON"}.`});
-  if(expected)checks.push({label:"SNAP responseMessage",passed:object(body)&&typeof body.responseMessage==="string"&&body.responseMessage.length<=150,detail:"responseMessage wajib string, maksimal 150 karakter."});
+  // HTTP is decisive for pass/fail. SNAP fields remain informational (passed:null).
+  const checks:Array<{label:string;passed:boolean|null;detail:string}>=[{label:"HTTP status",passed:status===expectation.expectedHttpStatus,detail:`Expected ${expectation.expectedHttpStatus??"belum dikonfigurasi"}, actual ${status??"tidak ada response"}.`}];
+  if(expected)checks.push({label:"SNAP responseCode",passed:null,detail:`Dokumentasi: ${expected}; actual ${object(body)?String(body.responseCode??"missing"):"non-JSON"} (informasional).`});
+  if(expected)checks.push({label:"SNAP responseMessage",passed:null,detail:object(body)&&typeof body.responseMessage==="string"?`responseMessage: ${String(body.responseMessage).slice(0,150)}`:"responseMessage tidak tersedia (informasional)."});
   if(config.responseFormat!=="none")checks.push({label:"Response JSON",passed:object(body),detail:"Response harus object JSON."});
   const response=object(config.responses[String(status)])?config.responses[String(status)] as Record<string,unknown>:null;
-  if(response?.schema)for(const error of schemaErrors(body,response.schema,"response"))checks.push({label:"Response schema",passed:false,detail:error});
+  if(response?.schema)for(const error of schemaErrors(body,response.schema,"response"))checks.push({label:"Response schema",passed:null,detail:`${error} (informasional; tidak menggugurkan validasi HTTP).`});
   return checks;
 }

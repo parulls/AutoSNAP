@@ -1,3 +1,6 @@
+import {createRequire as __createRequireHttp} from "node:module";
+const __requireHttp=__createRequireHttp(import.meta.url);
+const {RunEvidenceService}=__requireHttp("../backend/dist/run-evidence.js");
 import assert from "node:assert/strict";
 import test from "node:test";
 import {createRequire} from "node:module";
@@ -107,8 +110,8 @@ test("six services execute the real headless form pipeline, signatures, positive
     const portal=new PortalEngine({getAuthenticatedContext:async(user,host,validate)=>{assert.equal(user.id,"execution-user");const page=await context.newPage();assert.equal(await validate(page),true);return {page,release:async()=>page.close()};}},new AspiFormResolver());
     portal.activitiesInContext=async()=>[];
     let evidencePaths=[];
-    portal.collectEvidence=async input=>{evidencePaths=input.paths;return input.paths.map((path,index)=>({path,activity:{activityId:randomUUID(),service:path,timestamp:now},pdf:Buffer.from(`%PDF-1.7\nFixture ${index}`)}));};
-    const controller=new AutoSnapController(db,null,portal);controller.user=async()=>({id:owner,role:"admin"});controller.enforceRateLimit=async()=>{};
+    portal.collectEvidence=async input=>{evidencePaths=input.paths;return input.paths.map((path,index)=>({key:input.operations?.[index]?.key,path,activity:{activityId:randomUUID(),service:path,timestamp:now,downloadUrl:"https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity"},pdf:Buffer.from(`%PDF-1.7\nFixture ${index}`)}));};
+    const controller=new AutoSnapController(db, null, portal, null, new RunEvidenceService(db, portal));controller.user=async()=>({id:owner,role:"admin"});controller.enforceRateLimit=async()=>{};
     const action=async(action,input={})=>{const res={code:200,status(code){this.code=code;return this;},json(body){return {status:this.code,body};}};return controller.action({body:{action,...input},headers:{}},res);};
     for(const f of fixtures){
       const draft=draftFor(f);draft.config.reviewed=true;
@@ -116,7 +119,7 @@ test("six services execute the real headless form pipeline, signatures, positive
       const input={progressId:randomUUID(),clientId:connection.clientId,projectId:connection.projectId,environmentId:connection.id,userId:"execution-user",serviceId:saved.body.serviceId,endpointId:saved.body.endpointId,body:JSON.stringify(f.body)};
       for(const testType of ["positive","invalid_access_token"]){
         const before=observed.length;
-        const result=await action("run",{...input,progressId:randomUUID(),testType});assert.equal(result.status,200,JSON.stringify(result.body));assert.equal(result.body.status,"Passed",`${f.name} ${testType}: ${JSON.stringify(result.body.checks)}`);
+        const result=await action("run",{...input,progressId:randomUUID(),testType});assert.equal(result.status,200,JSON.stringify(result.body));assert.equal(result.body.status,"PASSED",`${f.name} ${testType}: ${JSON.stringify(result.body.checks)}`);
         assert.equal(result.body.httpStatus,testType==="positive"?200:401);assert.equal(result.body.responseCode,testType==="positive"?f.expected:f.negative);
         assert.deepEqual(observed.slice(before).map(req=>req.path),[...security,f.path],`${f.name}: no unrelated service or duplicate request`);
         assert.deepEqual(evidencePaths,[...security,f.path]);
@@ -124,21 +127,21 @@ test("six services execute the real headless form pipeline, signatures, positive
         assert.equal(history.request_json.configurationIds.endpointId,saved.body.endpointId);
         assert.ok(history.request_json.progressLog.some(step=>step.stage==="api_request"&&step.detail.includes(f.name)&&step.detail.includes(f.path)));
         assert.ok(!history.request_json.progressLog.some(step=>step.stage==="balance_inquiry"));
-        assert.equal((await db.one("SELECT COUNT(*)::int AS n FROM autosnap_evidence_pdfs WHERE run_id=$1",[history.id])).n,4);
+        assert.equal((await db.one("SELECT COUNT(*)::int AS n FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id<>'autosnap-report-v1'",[history.id])).n,4);
         assert.ok(!JSON.stringify(history).includes(secret));assert.ok(!JSON.stringify(history).includes("fixture-token-execution-client"));
       }
       if(f.name==="Bank Statement"){
-        missingResponseField=true;const failed=await action("run",{...input,progressId:randomUUID()});missingResponseField=false;
-        assert.equal(failed.body.status,"Failed","HTTP/code match must not override failing response schema");assert.ok(failed.body.checks.some(c=>c.label==="Response schema"&&!c.passed));
+        missingResponseField=true;const informational=await action("run",{...input,progressId:randomUUID()});missingResponseField=false;
+        assert.equal(informational.body.status,"PASSED","HTTP-only: response schema is informational");assert.ok(informational.body.checks.some(c=>c.label==="Response schema"&&c.passed===null));
         const old=observed.length;const invalid=await action("run",{...input,progressId:randomUUID(),body:JSON.stringify({accountNo:"2000100101",balanceTypes:["Cash"]})});assert.equal(invalid.status,400);assert.equal(observed.length,old,"Balance payload is refused before any browser/API request");
-        const retry={...input,progressId:randomUUID()};assert.equal((await action("run",retry)).body.status,"Passed");const sent=observed.length;assert.equal((await action("run",retry)).status,409);assert.equal(observed.length,sent,"no automatic transaction retry");
+        const retry={...input,progressId:randomUUID()};assert.equal((await action("run",retry)).body.status,"PASSED");const sent=observed.length;assert.equal((await action("run",retry)).status,409);assert.equal(observed.length,sent,"no automatic transaction retry");
         const optionalDraft=structuredClone(draft);optionalDraft.config.expectedCode=null;optionalDraft.config.negativeToken.expectedCode=null;
         assert.equal((await action("saveImportedService",{draft:optionalDraft})).status,200);
         for(const testType of ["positive","invalid_access_token"]){
           const before=observed.length,notEvaluated=await action("run",{...input,progressId:randomUUID(),testType});
-          assert.equal(notEvaluated.body.status,"NOT_EVALUATED");assert.equal(notEvaluated.body.outcome,"NOT_EVALUATED");assert.equal(notEvaluated.body.expectedCode,null);assert.equal(notEvaluated.body.httpStatus,testType==="positive"?200:401);assert.equal(notEvaluated.body.responseCode,testType==="positive"?f.expected:f.negative);
+          assert.equal(notEvaluated.body.status,"PASSED");assert.equal(notEvaluated.body.outcome,"PASSED");assert.equal(notEvaluated.body.expectedCode,null);assert.equal(notEvaluated.body.httpStatus,testType==="positive"?200:401);assert.equal(notEvaluated.body.responseCode,testType==="positive"?f.expected:f.negative);
           assert.deepEqual(observed.slice(before).map(req=>req.path),[...security,f.path],"missing expected does not bypass the actual security or API procedure");
-          const row=await db.one("SELECT * FROM autosnap_runs WHERE id=$1",[notEvaluated.body.id]);assert.equal(row.expected_code,null);assert.equal(row.request_json.evaluation.outcome,"NOT_EVALUATED");assert.ok(row.request_json.progressLog.some(step=>step.stage==="finished"&&step.status==="not_evaluated"));
+          const row=await db.one("SELECT * FROM autosnap_runs WHERE id=$1",[notEvaluated.body.id]);assert.equal(row.expected_code,null);assert.equal(row.request_json.evaluation.outcome,"PASSED");assert.ok(row.request_json.progressLog.some(step=>step.stage==="finished"&&step.status==="completed"));
         }
       }
     }

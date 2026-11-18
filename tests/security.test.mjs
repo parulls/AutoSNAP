@@ -1,3 +1,6 @@
+import {createRequire as __createRequireHttp} from "node:module";
+const __requireHttp=__createRequireHttp(import.meta.url);
+const {RunEvidenceService}=__requireHttp("../backend/dist/run-evidence.js");
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createRequire} from "node:module";
@@ -35,7 +38,7 @@ test("template headers cannot override managed headers or inject cookies and CRL
 test("login limits persist across controllers and stored keys contain no usernames",async()=>{
   process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";
   const db=new DatabaseService();await db.onModuleInit();
-  const first=new AutoSnapController(db),second=new AutoSnapController(db);
+  const first=new AutoSnapController(db, null, null, null, new RunEvidenceService(db, null)),second=new AutoSnapController(db, null, null, null, new RunEvidenceService(db, null));
   try{
     for(let i=0;i<3;i++)await first.enforceRateLimit("private@example.com",5,60000);
     for(let i=0;i<2;i++)await second.enforceRateLimit("private@example.com",5,60000);

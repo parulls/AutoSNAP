@@ -14,7 +14,7 @@ export function assertOperationIdentity(method:string,path:string,portalUrl:stri
 }
 
 export function resolveEndpoint(endpoint:RecordRow,service:RecordRow){
-  if(service.parent_id!==endpoint.id&&endpoint.parent_id!==service.id)throw new MetadataError("API service tidak melekat pada endpoint terpilih.");
+  if(service.parent_id!==endpoint.id||endpoint.parent_id)throw new MetadataError("API service tidak melekat pada endpoint terpilih.");
   const method=value(endpoint,"method"),path=value(endpoint,"path"),portalUrl=value(endpoint,"portalUrl"),serviceCode=value(service,"code");
   const config=service.data.config?validateConfig(service.data.config):null;
   const legacyBalance=!config&&serviceCode==="11"&&method==="POST"&&path==="/api/v1.0/balance-inquiry";

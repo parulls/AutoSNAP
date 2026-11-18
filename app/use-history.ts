@@ -4,9 +4,9 @@ import {useEffect,useState} from "react";
 import type {Api,Run} from "./model";
 import type {HistoryRange} from "./history-period";
 
-type Summary={total:number;dev:number;simulator:number;passed:number;failed:number;errors:number;cancelled:number;notEvaluated:number;passedHttp:number};
+type Summary={total:number;dev:number;simulator:number;passed:number;completed:number;failed:number;errors:number;cancelled:number};
 type HistoryData={runs:Run[];total:number;summary:Summary};
-const empty:HistoryData={runs:[],total:0,summary:{total:0,dev:0,simulator:0,passed:0,failed:0,errors:0,cancelled:0,notEvaluated:0,passedHttp:0}};
+const empty:HistoryData={runs:[],total:0,summary:{total:0,dev:0,simulator:0,passed:0,completed:0,failed:0,errors:0,cancelled:0}};
 
 export function useHistory(api:Api,range:HistoryRange,mode:string,search:string,offset:number,limit:number,revision:unknown){
   const [result,setResult]=useState<{key:string;data:HistoryData;error:string}|null>(null);

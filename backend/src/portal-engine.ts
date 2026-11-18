@@ -25,7 +25,8 @@ export function aspiActivityDownloadUrl(activityId:string){
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(activityId))throw new Error("Activity ID ASPI tidak valid.");
   return `https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity?activityId=${activityId}`;
 }
-export const PORTAL_URLS={registrationOtp:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/post_api_v1_0_otp",registrationAccountBinding:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/post_api_v1_0_registration_account_binding",registrationAccountInquiry:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/post_api_v1_0_registration_account_inquiry",getAuthCode:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/get_api_v1_0_get_auth_code",registrationCardBindLimit:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/post_api_v1_0_registration_card_bind_limit",registrationCardInquiry:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/get_api_v1_0_registration_card_inquiry",otpVerification:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/post_api_v1_0_otp_verification",registrationCardUnbind:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/post_api_v1_0_registration_card_unbind",registrationAccountCreation:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/post_api_v1_0_registration_account_creation",registrationAccountUnbinding:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/post_api_v1_0_registration_account_unbinding",registrationCardBind:"https://apidevportal.aspi-indonesia.or.id/api-services/registrasi#/Registrasi/post_api_v1_0_registration_card_bind",balanceInquiry:"https://apidevportal.aspi-indonesia.or.id/api-services/informasi-saldo#/BalanceInquiry/post_api_v1_0_balance_inquiry",signatureAuth:"https://apidevportal.aspi-indonesia.or.id/api-services/keamanan#/Keamanan/post_api_v1_0_utilities_signature_auth",signatureService:"https://apidevportal.aspi-indonesia.or.id/api-services/keamanan#/Keamanan/post_api_v1_0_utilities_signature_service",accessTokenB2B:"https://apidevportal.aspi-indonesia.or.id/api-services/keamanan#/Keamanan/post_api_v1_0_access_token_b2b",accessTokenB2B2C:"https://apidevportal.aspi-indonesia.or.id/api-services/keamanan#/Keamanan/post_api_v1_0_access_token_b2b2c"} as const;
+/** ASPI platform auth pages only. Service-under-test URLs come from endpoint.portalUrl / registration.portalUrl in Master Data. */
+export const PORTAL_URLS={signatureAuth:"https://apidevportal.aspi-indonesia.or.id/api-services/keamanan#/Keamanan/post_api_v1_0_utilities_signature_auth",signatureService:"https://apidevportal.aspi-indonesia.or.id/api-services/keamanan#/Keamanan/post_api_v1_0_utilities_signature_service",accessTokenB2B:"https://apidevportal.aspi-indonesia.or.id/api-services/keamanan#/Keamanan/post_api_v1_0_access_token_b2b"} as const;
 function portalUrl(raw:string){let url:URL;try{url=new URL(raw);}catch{throw new AspiAutomationError("FORM_NOT_READY","URL Aplikasi Pengujian ASPI tidak valid.");}if(url.protocol!=="https:"||url.hostname!=="apidevportal.aspi-indonesia.or.id"||!url.pathname.startsWith("/api-services/"))throw new AspiAutomationError("FORM_NOT_READY","URL harus berasal dari halaman api-services ASPI Developer Portal.");return url.toString();}
 export function classifyHttpOutcome(status:number,body:unknown):HitOutcome{const parsed=body&&typeof body==="object"&&!Array.isArray(body)?body as Record<string,unknown>:{};return status<200||status>=300?"HTTP_ERROR":typeof parsed.responseCode==="string"&&!String(parsed.responseCode).startsWith("2")?"SNAP_BUSINESS_ERROR":"SUCCESS";}
 export function correlatesTarget(method:string,path:string,requestMethod:string,url:string){try{return requestMethod.toUpperCase()===method.toUpperCase()&&new URL(url).pathname.replace(/\/$/,"").endsWith(path.replace(/\/$/,""));}catch{return false;}}
@@ -112,7 +113,9 @@ export class PortalEngine{
     const report:ProgressReporter=async(stage,status,detail)=>{currentStage=stage;await input.onProgress?.(stage,status,detail).catch(()=>undefined);};
     const execute:typeof this.execute=async(...args)=>{
       input.signal?.throwIfAborted();
+      const startedAt=new Date().toISOString();
       const result=await this.execute(...args);
+      Object.assign(result.request,{method:args[3],httpStatus:result.status,startedAt,finishedAt:new Date().toISOString()});
       completedRequests.push(result.request);
       input.signal?.throwIfAborted();
       if(args[2]!==input.path&&Array.isArray(result.request.automationChecks)&&result.request.automationChecks.some(check=>check&&typeof check==="object"&&(check as {passed?:boolean}).passed!==true))throw new AspiAutomationError("AUTOMATION_ERROR","Request aktual berbeda dari konfigurasi; tahap berikutnya dihentikan.");
@@ -357,12 +360,12 @@ export class PortalEngine{
     try{return await readActivities(activityPage,deadline);}finally{await activityPage.close();}
   }
   /** Called by the controller only after all API calls are validated and History is saved. */
-  async collectEvidence(input:{activityNames?:Record<string,string[]>;user:RecordRow;before:string[]|undefined;paths:string[];deadline:number;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:ProgressReporter}):Promise<PdfEvidence[]>{
+  async collectEvidence(input:{activityNames?:Record<string,string[]>;operations?:import("./evidence-plan").EvidenceOperation[];knownActivities?:Record<string,import("./aspi-evidence").AspiActivity>;onEvidence?:(result:PdfEvidence)=>Promise<void>;user:RecordRow;before:string[]|undefined;paths:string[];deadline:number;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:ProgressReporter}):Promise<PdfEvidence[]>{
     const deadline=Math.min(input.deadline,Date.now()+pdfSettings().budgetMs);
     const report=async(status:"running"|"completed"|"failed",detail:string)=>{
       await input.onProgress?.("pdf_download",status,detail).catch(()=>undefined);
     };
-    if(!input.before||input.signal?.aborted||Date.now()>=deadline){
+    if(!input.before&&!input.knownActivities||input.signal?.aborted||Date.now()>=deadline){
       return input.paths.map(path=>({path,error:input.signal?.aborted?"Download PDF dibatalkan.":!input.before?"Daftar aktivitas awal tidak tersedia; Activity ID tidak ditebak.":"Batas waktu pengambilan PDF tercapai."}));
     }
     let release:(()=>Promise<void>)|undefined;
@@ -420,10 +423,10 @@ export class PortalEngine{
       if(!input.session)release=session.release;
       this.logger.log(`[ASPI PDF] Menggunakan ${input.session?"sesi testing aktif":"sesi baru"} untuk membaca bukti.`);
       return await collectActivityPdfs({
-        before:input.before,paths:input.paths,activityNames:input.activityNames,deadline,signal:controller.signal,
+        before:input.before,paths:input.paths,operations:input.operations,knownActivities:input.knownActivities,activityNames:input.activityNames,deadline,signal:controller.signal,
         read:()=>this.activitiesInContext(session.page,deadline),
         download:activity=>fetchOfficialPdf(session.page,activity.downloadUrl,deadline,"navigation"),
-        report
+        report,onResult:input.onEvidence
       });
     }catch(cause){
       const isTimeout=cause instanceof Error&&/timeout|batas waktu/i.test(`${cause.name} ${cause.message}`);

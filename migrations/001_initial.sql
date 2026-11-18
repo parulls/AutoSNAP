@@ -13,9 +13,11 @@ CREATE TABLE IF NOT EXISTS autosnap_users (
   active BOOLEAN NOT NULL DEFAULT TRUE
 );
 UPDATE autosnap_users SET username=LOWER(email) WHERE username IS NULL;
+ALTER TABLE autosnap_users ALTER COLUMN username SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS autosnap_users_username ON autosnap_users (LOWER(username));
 CREATE TABLE IF NOT EXISTS autosnap_captchas (id TEXT PRIMARY KEY,answer_hash TEXT NOT NULL,expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS autosnap_sessions (hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES autosnap_users(id) ON DELETE CASCADE,expires_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS autosnap_sessions_user_id ON autosnap_sessions(user_id);
 CREATE TABLE IF NOT EXISTS autosnap_records (id TEXT PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,parent_id TEXT,partner_id TEXT UNIQUE,data JSONB NOT NULL DEFAULT '{}'::jsonb,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS autosnap_records_kind ON autosnap_records(kind);
 CREATE INDEX IF NOT EXISTS autosnap_records_parent ON autosnap_records(parent_id);

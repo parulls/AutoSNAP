@@ -1,3 +1,6 @@
+import {createRequire as __createRequireHttp} from "node:module";
+const __requireHttp=__createRequireHttp(import.meta.url);
+const {RunEvidenceService}=__requireHttp("../backend/dist/run-evidence.js");
 import assert from "node:assert/strict";
 import test from "node:test";
 import {configureBalanceExpectation} from "./balance-expectation-fixture.mjs";
@@ -22,15 +25,17 @@ test("Balance Inquiry validates conditional identity, data types and header valu
   assert.deepEqual(validateHeaderProfile({ ipAddress: "172.31.255.255", latitude: "-6.1617169", longitude: "106.664394" }), []);
 });
 
-test("HTTP 200 alone is not a pass; optional response fields and negative cases follow expectations", () => {
+test("HTTP status is decisive; SNAP fields stay informational (passed null)", () => {
   const body = { partnerReferenceNo: "ref", accountNo: "2000100101" };
   const response = mockBalance(body, "2001100");
-  assert.ok(balanceResponseChecks(200, response, "2001100", body).every(x => x.passed));
-  assert.ok(balanceResponseChecks(200, { html: "not SNAP" }, "2001100", body).some(x => !x.passed));
-  assert.ok(balanceResponseChecks(200, { ...response, partnerReferenceNo: "other" }, "2001100", body).some(x => !x.passed));
-  assert.ok(balanceResponseChecks(200, { ...response, accountInfos: [{ amount: { value: "1000", currency: "IDR" } }] }, "2001100", body).some(x => !x.passed));
-  assert.ok(balanceResponseChecks(401, { responseCode: "4011101", responseMessage: "Invalid Token" }, "4011101", body).every(x => x.passed));
-  assert.ok(balanceResponseChecks(200, { responseCode: "2001100", responseMessage: "Successful" }, "2001100", body).every(x => x.passed));
+  const decisive = (checks) => checks.filter((x) => x.passed !== null);
+  assert.ok(decisive(balanceResponseChecks(200, response, "2001100", body)).every((x) => x.passed));
+  assert.ok(balanceResponseChecks(500, { html: "not SNAP" }, "2001100", body).some((x) => x.label === "HTTP status" && x.passed === false));
+  assert.ok(balanceResponseChecks(200, { html: "not SNAP" }, "2001100", body).some((x) => x.label === "SNAP responseCode" && x.passed === null),"SNAP mismatch is informational");
+  assert.ok(balanceResponseChecks(200, { ...response, partnerReferenceNo: "other" }, "2001100", body).some((x) => x.passed === false));
+  assert.ok(balanceResponseChecks(200, { ...response, accountInfos: [{ amount: { value: "1000", currency: "IDR" } }] }, "2001100", body).some((x) => x.passed === false));
+  assert.ok(decisive(balanceResponseChecks(401, { responseCode: "4011101", responseMessage: "Invalid Token" }, "4011101", body)).every((x) => x.passed));
+  assert.ok(decisive(balanceResponseChecks(200, { responseCode: "2001100", responseMessage: "Successful" }, "2001100", body)).every((x) => x.passed));
 });
 
 test("live engine signs the exact transmitted body, uses Client ID and separates B2B from B2B2C", async () => {
@@ -77,7 +82,7 @@ test("database/controller flow: credentials, Balance Inquiry variables and mock 
   await db.onModuleInit();
   await configureBalanceExpectation(db);
   const engine = new RunEngine();
-  const controller = new AutoSnapController(db, engine);
+  const controller = new AutoSnapController(db, engine, null, null, new RunEvidenceService(db, null));
   let session = "";
   const req = { headers: { cookie: "" }, hostname: "localhost" };
   const call = async (action, payload = {}) => {
@@ -102,12 +107,12 @@ test("database/controller flow: credentials, Balance Inquiry variables and mock 
     const input = { clientId: client.body.id, projectId: project.body.id, environmentId: environment.body.id, userId: user.body.id, serviceId: "seed-service-10", endpointId: "seed-endpoint-10", useCase: "B2B", body: JSON.stringify({ partnerReferenceNo: "{{partner_reference_no}}", accountNo: "{{registration.accountNo}}", bankCardToken: "{{registration.bankCardToken}}", balanceTypes: ["Cash"] }) };
     const result = await call("run", input);
     assert.equal(result.status, 200);
-    assert.equal(result.body.status, "Passed");
+    assert.equal(result.body.status,"PASSED");
     assert.equal(result.body.responseCode, "2001100");
     assert.equal(result.body.response.accountNo, "[REDACTED]");
     const negative = await call("run", { ...input, testType: "invalid_access_token" });
     assert.equal(negative.status, 200);
-    assert.equal(negative.body.status, "Passed");
+    assert.equal(negative.body.status,"PASSED");
     assert.equal(negative.body.httpStatus, 401);
     assert.equal(negative.body.responseCode, "4011101");
     assert.equal(negative.body.expectedCode, "4011101");
@@ -120,12 +125,12 @@ test("database/controller flow: credentials, Balance Inquiry variables and mock 
     assert.equal((await call("run", { ...input, useCase: "B2B2C" })).status, 400);
     const reusedRegistration = await call("run", { ...input, body: "{}" });
     assert.equal(reusedRegistration.status, 200,"empty Balance body reuses the selected User SNAP registration data");
-    assert.equal(reusedRegistration.body.status,"Passed");
+    assert.equal(reusedRegistration.body.status,"PASSED");
     assert.equal((await call("run", { ...input, serviceId: "seed-service-16", endpointId: "seed-endpoint-16" })).status, 400);
     assert.equal((await call("run", { ...input, scenarioId: "4.6" })).status, 400);
     assert.equal((await call("run", { ...input, externalId: "not-numeric" })).status, 400);
     const duplicate = await call("run", { ...input, scenarioId: "3.5", externalId: run.request_json.externalId });
-    assert.equal(duplicate.body.status, "Passed");
+    assert.equal(duplicate.body.status,"PASSED");
     assert.equal(duplicate.body.responseCode, "4091100");
     const savedTemplate = await db.one("SELECT data FROM autosnap_records WHERE id='seed-template-10'");
     assert.equal(JSON.parse(savedTemplate.data.body).accountNo, "2000100101");

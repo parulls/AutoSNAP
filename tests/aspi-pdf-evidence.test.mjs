@@ -1,3 +1,6 @@
+import {createRequire as __createRequireHttp} from "node:module";
+const __requireHttp=__createRequireHttp(import.meta.url);
+const {RunEvidenceService}=__requireHttp("../backend/dist/run-evidence.js");
 import assert from "node:assert/strict";
 import test from "node:test";
 import {createRequire} from "node:module";
@@ -105,7 +108,7 @@ test("PDF and ZIP download use persisted bytes, isolate owners and never contact
   const pdf=Buffer.from("%PDF-1.7\nstored"),run={id:"run-a",operator_id:"user-a",request_json:{aspiActivities:[activity]}};
   let cached=true,networkCalls=0;
   const db={one:async(sql,params)=>sql.includes("FROM autosnap_runs")?(params[1]===run.operator_id?run:null):cached?{pdf_data:pdf}:null};
-  const controller=new AutoSnapController(db,null,{downloadActivityPdf:async()=>{networkCalls++;throw Error("must not contact ASPI");}});
+  const controller=new AutoSnapController(db, null, {downloadActivityPdf:async()=>{networkCalls++;throw Error("must not contact ASPI");}}, null, new RunEvidenceService(db, null));
   const response=()=>({code:200,headers:{},status(code){this.code=code;return this;},setHeader(k,v){this.headers[k]=v;},send(body){this.body=body;return this;},json(body){this.body=body;return this;}});
   let res=response();await controller.downloadAspiActivityPdf(res,{id:run.id,activityId},{id:"user-a"});assert.deepEqual(res.body,pdf);assert.equal(res.headers["Content-Type"],"application/pdf");
   res=response();await controller.downloadAspiActivitiesZip(res,{id:run.id},{id:"user-a"});assert.equal(res.body.readUInt32LE(0),0x04034b50);assert.ok(res.body.includes(pdf));

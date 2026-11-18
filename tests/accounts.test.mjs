@@ -1,3 +1,6 @@
+import {createRequire as __createRequireHttp} from "node:module";
+const __requireHttp=__createRequireHttp(import.meta.url);
+const {RunEvidenceService}=__requireHttp("../backend/dist/run-evidence.js");
 import assert from "node:assert/strict";
 import test from "node:test";
 import {createRequire} from "node:module";
@@ -13,7 +16,7 @@ test("signup verifies one-use CAPTCHA; pending accounts and testers cannot manag
   const used=new Set(),savedFetch=globalThis.fetch;
   globalThis.fetch=async(_url,options)=>{const token=new URLSearchParams(String(options.body)).get("response"),success=!!token&&token!=="expired"&&!used.has(token);if(success)used.add(token);return {ok:true,json:async()=>success?{success:true,hostname:"localhost"}:{success:false,"error-codes":["timeout-or-duplicate"]}};};
   const db=new DatabaseService();await db.onModuleInit();
-  const controller=new AutoSnapController(db,new RunEngine());
+  const controller=new AutoSnapController(db, new RunEngine(), null, null, new RunEvidenceService(db, null));
   let session="";
   const invoke=async(action,payload={})=>{
     const request={headers:{cookie:session},hostname:"localhost",body:{action,...payload}};

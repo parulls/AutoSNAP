@@ -3,6 +3,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { Pool } from "pg";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { annotateServiceData } from "./service-capabilities";
 
 export type RecordRow = { id:string;kind:string;name:string;parent_id:string|null;partner_id:string|null;data:Record<string,unknown>;created_at:string;updated_at:string };
 export type QueryRows = <R extends object = Record<string,unknown>>(sql:string,params?:unknown[])=>Promise<R[]>;
@@ -30,12 +31,17 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       if(!connectionString)throw new Error("DATABASE_URL Supabase wajib tersedia. Tidak ada fallback database lokal.");
       this.pool=new Pool({connectionString,max:Number(process.env.DATABASE_POOL_MAX??5),connectionTimeoutMillis:30_000,idleTimeoutMillis:30_000,keepAlive:true,allowExitOnIdle:true,options:"-c search_path=autosnap,public"});
       this.pool.on("error",error=>this.logger.error(`Koneksi idle Supabase terputus: ${error.message}`));
+      // Production SoT is supabase/migrations via `npm run db:migrate`. Nest migrations/
+      // are the PGlite/test mirror only — never enable AUTOSNAP_RUN_MIGRATIONS against shared Supabase.
       const runMigrations=process.env.AUTOSNAP_RUN_MIGRATIONS==="true";
+      if(runMigrations)this.logger.warn("AUTOSNAP_RUN_MIGRATIONS=true: menerapkan migrations/ Nest. Jangan dipakai pada Supabase produksi (gunakan supabase db push).");
       await this.connectWithRetry(!runMigrations);
       if(runMigrations)await this.migrateWithRetry();
     }
     // Data contoh hanya tersedia pada database test terisolasi. Database runtime mulai kosong.
     if(this.embedded){await this.migrateWithRetry();await this.seed();}
+    // One-shot: flip legacy service→endpoint rows to canonical endpoint→service.
+    await this.upgradeDevSiteModel();
   }
   private async connectWithRetry(requireSchema=false){
     if(!this.pool)return;
@@ -139,14 +145,14 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       const description="Mengakses informasi saldo terkini atas rekening yang diizinkan.";
       const name=item.name;
       const entries=[
-        {id:serviceId,kind:"service",name,parent:null,data:{module:item.module,group:item.group,code:item.code,auth:item.auth,description,sourcePage:item.sourcePage}},
-        {id:endpointId,kind:"endpoint",name,parent:serviceId,data:{method:item.method,path:item.endpoint,configured:true,...(item.code==="11"?{portalUrl:"https://apidevportal.aspi-indonesia.or.id/api-services/informasi-saldo#/BalanceInquiry/post_api_v1_0_balance_inquiry"}:{})}},
+        {id:endpointId,kind:"endpoint",name,parent:null,data:{method:item.method,path:item.endpoint,configured:true,...(item.code==="11"?{portalUrl:"https://apidevportal.aspi-indonesia.or.id/api-services/informasi-saldo#/BalanceInquiry/post_api_v1_0_balance_inquiry"}:{})}},
+        {id:serviceId,kind:"service",name,parent:endpointId,data:annotateServiceData({module:item.module,group:item.group,code:item.code,auth:item.auth,description,sourcePage:item.sourcePage,requestBody:JSON.stringify(defaultBody(item.code),null,2)})},
         {id:`seed-template-${index}`,kind:"template",name:`${name} - default`,parent:endpointId,data:{body:JSON.stringify(defaultBody(item.code),null,2),headers:{}}},
       ];
       for(const entry of entries)await this.query("INSERT INTO autosnap_records (id,kind,name,parent_id,partner_id,data,created_at,updated_at) VALUES ($1,$2,$3,$4,NULL,$5::jsonb,$6,$6) ON CONFLICT (id) DO NOTHING",[entry.id,entry.kind,entry.name,entry.parent,JSON.stringify(entry.data),now]);
     }
   }
-  // Explicit legacy migration utility, covered by compatibility tests; never run automatically.
+  // Idempotent: only rewrites legacy service→endpoint rows (service without parent).
   async upgradeDevSiteModel(){
     // Preserve IDs/history while converting the old Service -> Endpoint links.
     await this.transaction(async query=>{
@@ -156,10 +162,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         // Ambiguous legacy relationships are left for explicit selection in Master Data.
         if(endpoints.length!==1)continue;
         const endpoint=endpoints[0],template=rows.find(row=>row.kind==="template"&&row.parent_id===endpoint.id);
-        const patch:Record<string,unknown>={};
+        const patch:Record<string,unknown>={...annotateServiceData(service.data)};
         if(!service.data.requestBody&&template?.data.body)patch.requestBody=template.data.body;
-        await query("UPDATE autosnap_records SET parent_id=$1,data=data || $2::jsonb WHERE id=$3",[endpoint.id,JSON.stringify(patch),service.id]);
+        await query("UPDATE autosnap_records SET parent_id=$1,data=$2::jsonb WHERE id=$3",[endpoint.id,JSON.stringify(patch),service.id]);
         await query("UPDATE autosnap_records SET parent_id=NULL WHERE id=$1",[endpoint.id]);
+      }
+      for(const service of rows.filter(row=>row.kind==="service"&&row.parent_id&&!row.data.capabilities)){
+        await query("UPDATE autosnap_records SET data=$1::jsonb,updated_at=$2 WHERE id=$3",[JSON.stringify(annotateServiceData(service.data)),new Date().toISOString(),service.id]);
       }
       for(const site of rows.filter(row=>row.kind==="environment"&&row.data.category!=="Client Simulator"&&!row.data.defaultUserId)){
         const users=rows.filter(row=>row.kind==="snap_user"&&row.parent_id===site.parent_id);

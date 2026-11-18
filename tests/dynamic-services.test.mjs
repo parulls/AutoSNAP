@@ -1,3 +1,6 @@
+import {createRequire as __createRequireHttp} from "node:module";
+const __requireHttp=__createRequireHttp(import.meta.url);
+const {RunEvidenceService}=__requireHttp("../backend/dist/run-evidence.js");
 import assert from "node:assert/strict";
 import test from "node:test";
 import {createRequire} from "node:module";
@@ -31,8 +34,10 @@ test("Swagger parser selects exact operation, resolves local refs and never gues
 test("required nested fields, enum and response schema are independently validated",()=>{
   const draft=parseOperation(spec,url,catalog);assert.ok(schemaErrors({},draft.config.requestSchema).length);
   assert.ok(schemaErrors({virtualAccountNo:123},draft.config.requestSchema).length);
-  assert.ok(configuredChecks(200,{responseCode:"2002800",responseMessage:"ok"},draft.config).some(check=>!check.passed),"matching HTTP/code cannot hide a missing required response field");
-  assert.ok(configuredChecks(200,{responseCode:"2002800",responseMessage:"ok",virtualAccountData:{}},draft.config).every(check=>check.passed));
+  const incomplete=configuredChecks(200,{responseCode:"2002800",responseMessage:"ok"},draft.config);
+  assert.ok(incomplete.some(check=>check.label==="Response schema"&&check.passed===null),"missing response fields stay informational under HTTP-only");
+  assert.ok(incomplete.filter(check=>check.passed!==null).every(check=>check.passed),"HTTP match still passes decisive checks");
+  assert.ok(configuredChecks(200,{responseCode:"2002800",responseMessage:"ok",virtualAccountData:{}},draft.config).filter(check=>check.passed!==null).every(check=>check.passed));
   assert.throws(()=>validateConfig({...draft.config,expectedCode:"made-up"}),/tujuh digit/);
   assert.equal(resolveRequestPath("/v1/items/{id}",[{name:"id",in:"path"},{name:"page",in:"query"}],{id:"a/b",page:"2"}),"/v1/items/a%2Fb?page=2");
 });
@@ -114,8 +119,9 @@ test("dynamic import is admin-only, atomic/idempotent and PUT runs with explicit
     const id=await createAccount(db,{username:"config-admin",email:"config@example.test",password:"config-password-123"},"admin",true);let actor={id,role:"admin"};
     const now=new Date().toISOString();await db.query("INSERT INTO autosnap_records(id,kind,name,data,created_at,updated_at) VALUES('dynamic-user','snap_user','QA',$1::jsonb,$2,$2)",[JSON.stringify({email:"qa@example.test",password:encrypt("fixture")}),now]);
     let calls=0;
-    const portal={hit:async input=>{calls++;assert.equal(input.method,"PUT");assert.equal(input.authFlow,"b2b");assert.equal(input.parameters.merchantId,"merchant");return {status:200,body:{responseCode:"2002800",responseMessage:"Successful",virtualAccountData:{}},request:{method:input.method,path:input.path,body:input.body,steps:[]}};},collectEvidence:async()=>[]};
-    const controller=new AutoSnapController(db,null,portal,{inspect:async()=>parseOperation(spec,url,catalog)});controller.user=async()=>actor;controller.enforceRateLimit=async()=>{};
+    const portal={hit:async input=>{calls++;assert.equal(input.method,"PUT");assert.equal(input.authFlow,"b2b");assert.equal(input.parameters.merchantId,"merchant");return {status:200,body:{responseCode:"2002800",responseMessage:"Successful",virtualAccountData:{}},request:{method:input.method,path:input.path,body:input.body,steps:[{name:"/api/v1.0/utilities/signature-auth",method:"POST",httpStatus:200},{name:"/api/v1.0/access-token/b2b",method:"POST",httpStatus:200},{name:"/api/v1.0/utilities/signature-service",method:"POST",httpStatus:200},{name:input.path,method:input.method,httpStatus:200}]}};},collectEvidence:async input=>input.paths.map((path,index)=>({key:input.operations?.[index]?.key,path,activity:{activityId:randomUUID(),service:path,timestamp:now,downloadUrl:"https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity"},pdf:Buffer.from(`%PDF-1.7\n${path}`)}))};
+    const evidence=new RunEvidenceService(db,portal);
+    const controller=new AutoSnapController(db, null, portal, {inspect:async()=>parseOperation(spec,url,catalog)}, evidence);controller.user=async()=>actor;controller.enforceRateLimit=async()=>{};
     const action=async(action,input={})=>{const res={code:200,status(n){this.code=n;return this;},json(body){return {status:this.code,body};}};return controller.action({body:{action,...input},headers:{}},res);};
     actor={id,role:"tester"};assert.equal((await action("inspectDocumentation",{url,userId:"dynamic-user"})).status,403);actor={id,role:"admin"};
     const draft=(await action("inspectDocumentation",{url,userId:"dynamic-user"})).body;assert.equal(calls,0);
@@ -123,7 +129,7 @@ test("dynamic import is admin-only, atomic/idempotent and PUT runs with explicit
     const saved=await action("saveImportedService",{draft});assert.equal(saved.status,200);const again=await action("saveImportedService",{draft});assert.equal(saved.body.serviceId,again.body.serviceId);
     const site=await saveConnection(db,{name:"Dynamic QA",userId:"dynamic-user",client:{clientId:"dynamic-client",clientSecret:"secret",privateKey:"private"},environment:{mode:"portal"}});
     const input={progressId:randomUUID(),clientId:site.clientId,projectId:site.projectId,environmentId:site.id,userId:"dynamic-user",serviceId:saved.body.serviceId,endpointId:saved.body.endpointId,body:JSON.stringify({virtualAccountNo:"123"}),parameters:{merchantId:"merchant"}};
-    const run=await action("run",input);assert.equal(run.status,200);assert.equal(run.body.status,"Passed");assert.equal(calls,1);
+    const run=await action("run",input);assert.equal(run.status,200);assert.equal(run.body.status,"PASSED");assert.equal(calls,1);
     assert.equal((await action("run",input)).status,409);assert.equal(calls,1,"same progress ID cannot execute twice");
     assert.equal((await action("run",{...input,body:"{}"})).status,400);assert.equal(calls,1,"invalid body never executes");
     assert.equal((await action("run",{...input,parameters:{Authorization:"injected"}})).status,400);assert.equal(calls,1);

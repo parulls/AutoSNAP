@@ -2,7 +2,7 @@ import { isIP } from "node:net";
 
 export const BALANCE_PATH = "/api/v1.0/balance-inquiry";
 export type UseCase = "B2B" | "B2B2C";
-export type Check = { label: string; passed: boolean; detail: string };
+export type Check = { label: string; passed: boolean|null; detail: string };
 export const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 
 export function validateBalanceRequest(body: Record<string, unknown>, hasCustomerToken: boolean): string[] {
@@ -34,9 +34,9 @@ export function balanceResponseChecks(status: number|null, response: unknown, ex
   const checks: Check[] = [];
   const add = (label: string, passed: boolean, detail: string) => checks.push({ label, passed, detail });
   add("HTTP status", status === Number(expected.slice(0, 3)), `Expected ${expected.slice(0, 3)}, received ${status??"no HTTP response"}.`);
-  add("SNAP responseCode", body.responseCode === expected, `Expected ${expected}, received ${String(body.responseCode ?? "missing")}.`);
+  checks.push({ label: "SNAP responseCode", passed: null, detail: `Dokumentasi: ${expected}, actual ${String(body.responseCode ?? "missing")} (informasional).` });
   add("Response JSON", object(response), "Response harus berupa object JSON.");
-  add("responseMessage", typeof body.responseMessage === "string" && body.responseMessage.length > 0 && body.responseMessage.length <= 150, "Wajib string, maksimal 150 karakter.");
+  checks.push({ label: "responseMessage", passed: null, detail: typeof body.responseMessage === "string" ? "responseMessage tersedia (informasional)." : "responseMessage tidak tersedia (informasional)." });
   if (body.responseCode !== "2001100") return checks;
   if (body.partnerReferenceNo !== undefined && request.partnerReferenceNo !== undefined) add("partnerReferenceNo", body.partnerReferenceNo === request.partnerReferenceNo, "Referensi response harus sama dengan request.");
   if (body.accountInfos !== undefined) {

@@ -25,7 +25,7 @@ test("history filters are inclusive in WIB, owner scoped, paginated and not limi
   try{
     const user=await createAccount(db,{username:"history-a",email:"history-a@example.test",password:"history-password-123"},"tester",true);
     const other=await createAccount(db,{username:"history-b",email:"history-b@example.test",password:"history-password-123"},"tester",true);
-    const insert=async(id,owner,time,mode="portal")=>db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,service_id,endpoint_id,mode,status,request_json,response_json,created_at) VALUES($1,$2,'c','p','e','s','ep',$3,'Passed',$4::jsonb,'{}'::jsonb,$5)",[id,owner,mode,JSON.stringify({context:{service:"Balance Inquiry",environment:"Dev Site A"}}),time]);
+    const insert=async(id,owner,time,mode="portal")=>db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,service_id,endpoint_id,mode,status,request_json,response_json,created_at) VALUES($1,$2,'c','p','e','s','ep',$3,'PASSED',$4::jsonb,'{}'::jsonb,$5)",[id,owner,mode,JSON.stringify({context:{service:"Balance Inquiry",environment:"Dev Site A"}}),time]);
     await insert("before",user,"2026-11-16T16:59:59.999Z");
     await insert("start",user,"2026-11-16T17:00:00.000Z");
     await insert("end",user,"2026-11-17T16:59:59.999Z","mock");
@@ -36,7 +36,7 @@ test("history filters are inclusive in WIB, owner scoped, paginated and not limi
     result=await readHistory(db,user,{...range,offset:1});assert.equal(result.runs[0].id,"start");
     result=await readHistory(db,user,{...range,mode:"dev_site",search:"Balance"});assert.equal(result.total,1);assert.equal(result.runs[0].id,"start");
     assert.equal((await readHistory(db,other,range)).runs[0].id,"foreign");
-    await db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,service_id,endpoint_id,mode,status,request_json,response_json,created_at) SELECT 'old-' || n,$1,'c','p','e','s','ep','portal','Passed','{}'::jsonb,'{}'::jsonb,'2025-01-01T00:00:00.000Z' FROM generate_series(1,505) n",[user]);
+    await db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,service_id,endpoint_id,mode,status,request_json,response_json,created_at) SELECT 'old-' || n,$1,'c','p','e','s','ep','portal','PASSED','{}'::jsonb,'{}'::jsonb,'2025-01-01T00:00:00.000Z' FROM generate_series(1,505) n",[user]);
     result=await readHistory(db,user,{from:"2025-01-01",to:"2025-01-01",offset:500,limit:20});assert.equal(result.total,505);assert.equal(result.runs.length,5);
     await assert.rejects(readHistory(db,user,{from:"2026-02-30",to:"2026-03-01"}),error=>error.status===400);
     await assert.rejects(readHistory(db,user,{from:"2026-11-18",to:"2026-11-17"}),error=>error.status===400);
