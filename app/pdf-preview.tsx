@@ -1,13 +1,13 @@
 "use client";
 import {useEffect,useRef,useState} from "react";
 
-export default function PdfPreview({runId,activityId,fileName,onClose}:{runId:string;activityId:string;fileName:string;onClose:()=>void}){
+export default function PdfPreview({runId,activityId,fileName,onClose}:{runId:string;activityId?:string;fileName:string;onClose:()=>void}){
   const dialog=useRef<HTMLDialogElement>(null),[url,setUrl]=useState(""),[error,setError]=useState("");
   useEffect(()=>{const node=dialog.current;node?.showModal();return()=>node?.close();},[]);
   useEffect(()=>{
     const controller=new AbortController();let objectUrl="",active=true;
     void (async()=>{try{
-      const response=await fetch("/api/autosnap",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"downloadAspiActivityPdf",id:runId,activityId}),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(30000)])});
+      const response=await fetch("/api/autosnap",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:activityId?"downloadAspiActivityPdf":"downloadTestReportPdf",id:runId,activityId}),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(60000)])});
       if(!response.ok){const data=await response.json().catch(()=>({error:`HTTP ${response.status}`}));throw Error(String(data.error));}
       const blob=await response.blob();if(!active)return;
       objectUrl=URL.createObjectURL(new Blob([blob],{type:"application/pdf"}));setUrl(objectUrl);

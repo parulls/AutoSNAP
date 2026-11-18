@@ -1,3 +1,6 @@
+import type {Parameter,AuthWorkflow} from "./endpoint-config";
+import {resolveRequestPath} from "./request-builder";
+import {authenticationWorkflow,executeWorkflow,type AuthStage} from "./auth-workflow";
 import {pdfSettings} from "./pdf-settings";
 import { Injectable, Logger } from "@nestjs/common";
 import type { Locator, Page, Request as PlaywrightRequest, Response as PlaywrightResponse } from "playwright-core";
@@ -12,9 +15,11 @@ import { ACTIVITY_PAGE, fetchOfficialPdf, readActivities } from "./aspi-evidence
 import { collectActivityPdfs, type PdfEvidence } from "./aspi-pdf-batch";
 
 export {normalizedParameterName};
+export {resolveRequestPath};
 type RegistrationStep={portalUrl:string;path:string;body:Record<string,unknown>;externalId:string};
 type ProgressReporter=(stage:string,status:"running"|"completed"|"failed",detail?:string)=>Promise<void>;
-type PortalInput={portalUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow;externalId:string;extraHeaders:Record<string,string>;registration?:RegistrationStep|null;negativeAccessToken?:boolean;signal?:AbortSignal;onProgress?:ProgressReporter};
+type PortalInput={authFlow?:"unknown"|"b2b"|"b2b2c"|"none";workflow?:AuthWorkflow;omitBody?:boolean;serviceName?:string;parameters?:Record<string,unknown>;parameterDefinitions?:Parameter[];portalUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow;externalId:string;extraHeaders:Record<string,string>;registration?:RegistrationStep|null;negativeAccessToken?:boolean;signal?:AbortSignal;onProgress?:ProgressReporter};
+type ExecutePolicy={bodyText?:string;omitBody?:boolean;expectedRelative?:string};
 const value=(row:RecordRow,key:string)=>String(row.data[key]??"");
 export function aspiActivityDownloadUrl(activityId:string){
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(activityId))throw new Error("Activity ID ASPI tidak valid.");
@@ -100,58 +105,109 @@ export class PortalEngine{
   private readonly pendingPdfs=new Map<string,Promise<Buffer>>();
   constructor(private readonly sessions:AspiSessionManager,private readonly forms:AspiFormResolver){}
   async hit(input:PortalInput):Promise<HitResult>{
-    const timestamp=isoJakarta();let release:(()=>Promise<void>)|undefined,page:Page|undefined,currentStage="preparing",sessionHandedOff=false;
+    const timestamp=isoJakarta();
+    let release:(()=>Promise<void>)|undefined,page:Page|undefined,currentStage="preparing",sessionHandedOff=false;
     const completedRequests:Record<string,unknown>[]=[];
     let activityBaseline:string[]|undefined;
-    const execute:typeof this.execute=async(...args)=>{input.signal?.throwIfAborted();const [page,url,path,method,headers,body]=args;const result=await this.execute(page,url,path,method,headers,body);completedRequests.push(result.request);input.signal?.throwIfAborted();return result;};
     const report:ProgressReporter=async(stage,status,detail)=>{currentStage=stage;await input.onProgress?.(stage,status,detail).catch(()=>undefined);};
+    const execute:typeof this.execute=async(...args)=>{
+      input.signal?.throwIfAborted();
+      const result=await this.execute(...args);
+      completedRequests.push(result.request);
+      input.signal?.throwIfAborted();
+      if(args[2]!==input.path&&Array.isArray(result.request.automationChecks)&&result.request.automationChecks.some(check=>check&&typeof check==="object"&&(check as {passed?:boolean}).passed!==true))throw new AspiAutomationError("AUTOMATION_ERROR","Request aktual berbeda dari konfigurasi; tahap berikutnya dihentikan.");
+      return result;
+    };
     try{
-      // Validate before opening a browser or handling any credentials.
       input.signal?.throwIfAborted();
       checkHeaders(input.extraHeaders);
-      const acquired=await this.sessions.getAuthenticatedContext(input.user,new URL(input.portalUrl).hostname,async page=>{await page.goto(PORTAL_URLS.signatureAuth,{waitUntil:"domcontentloaded",timeout:60000});await this.activateTestingPanel(page);return await this.hasSwagger(page);},input.signal);
-      release=acquired.release;page=acquired.page;const clientId=value(input.client,"clientId"),channelId=value(input.client,"channelId"),partnerId=value(input.client,"partnerIdSource")==="client_id"?clientId:input.client.partner_id??"";
+      const targetUrl=portalUrl(input.portalUrl);
+      const {profile,nodes}=authenticationWorkflow({authFlow:input.authFlow??"b2b",workflow:input.workflow,parameters:input.parameterDefinitions??[]});
+      if(input.negativeAccessToken&&profile.token==="none")throw new AspiAutomationError("PRECONDITION_FAILED","Tes token tidak berlaku tanpa autentikasi.");
+      if(input.negativeAccessToken&&input.registration)throw new AspiAutomationError("PRECONDITION_FAILED","Tes negatif tidak menjalankan registrasi atau memperbaiki payload otomatis.");
+      const signingPath=resolveRequestPath(input.path,input.parameterDefinitions??[],input.parameters??{});
+      const omitBody=input.omitBody||["GET","HEAD"].includes(input.method);
+      const acquired=await this.sessions.getAuthenticatedContext(input.user,new URL(targetUrl).hostname,async page=>{
+        await page.goto(targetUrl,{waitUntil:"domcontentloaded",timeout:60000});
+        await this.activateTestingPanel(page);return this.hasSwagger(page);
+      },input.signal);
+      release=acquired.release;page=acquired.page;
+      const clientId=value(input.client,"clientId"),channelId=value(input.client,"channelId");
+      const partnerId=value(input.client,"partnerIdSource")==="client_id"?clientId:input.client.partner_id??"";
       try{activityBaseline=(await this.activitiesInContext(page,Date.now()+15000)).map(item=>item.activityId);}
-      catch{await report("evidence","failed","Daftar aktivitas awal ASPI tidak tersedia; pengujian tetap berjalan tanpa menebak Activity ID.");}
-      await report("signature_auth","running");
-      const signatureAuth=await execute(page,PORTAL_URLS.signatureAuth,"/api/v1.0/utilities/signature-auth","POST",{"X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId,"Private_Key":decrypt(value(input.client,"privateKey"))},{});
-      await report("signature_auth","completed");
-      const signatureAuthBody=this.object(signatureAuth.body);if(!this.ok(signatureAuth.status)||typeof signatureAuthBody.signature!=="string"||!signatureAuthBody.signature){await report("signature_auth","failed","Signature tidak diterima");return this.failedStep(input,timestamp,signatureAuth,"Form Signature Access Token ASPI tidak menghasilkan signature.");}
-      await report("access_token","running");
-      const tokenResult=await execute(page,PORTAL_URLS.accessTokenB2B,"/api/v1.0/access-token/b2b","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId,"X-SIGNATURE":String(signatureAuthBody.signature)},{grantType:"client_credentials",additionalInfo:{}});
-      await report("access_token","completed");
-      const tokenBody=this.object(tokenResult.body);if(!this.ok(tokenResult.status)||typeof tokenBody.accessToken!=="string"||!tokenBody.accessToken){await report("access_token","failed","Access token tidak diterima");return this.failedStep(input,timestamp,tokenResult,"Form Access Token B2B ASPI tidak menghasilkan accessToken.",[signatureAuth.request]);}
-      const validToken=String(tokenBody.accessToken),token=input.negativeAccessToken?`${validToken.slice(0,Math.max(1,validToken.length-4))}INVALID`:validToken,steps=[signatureAuth.request,tokenResult.request],serviceBody={...input.body};let registrationOutput:Record<string,unknown>|null=null;
-      if(input.registration){
-        const signature=await execute(page,PORTAL_URLS.signatureService,"/api/v1.0/utilities/signature-service","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-SECRET":decrypt(value(input.client,"clientSecret")),"HttpMethod":"POST","EndpoinUrl":input.registration.path,"AccessToken":validToken},input.registration.body),signatureBody=this.object(signature.body);
-        if(!this.ok(signature.status)||typeof signatureBody.signature!=="string"){await report("registration","failed","Signature registrasi gagal");return this.failedStep(input,timestamp,signature,"Signature otomatis untuk Card Registration gagal.",steps);}
-        const registrationHeaders:Record<string,string>={"Content-Type":"application/json","Authorization":`Bearer ${validToken}`,"X-TIMESTAMP":timestamp,"X-SIGNATURE":String(signatureBody.signature),"X-PARTNER-ID":partnerId,"X-EXTERNAL-ID":input.registration.externalId,"CHANNEL-ID":channelId,...input.extraHeaders};if(value(input.client,"deviceId"))registrationHeaders["X-DEVICE-ID"]=value(input.client,"deviceId");
-        const registration=await execute(page,portalUrl(input.registration.portalUrl),input.registration.path,"POST",registrationHeaders,input.registration.body);steps.push(signature.request,registration.request);registrationOutput=this.object(registration.body);
-        if(!this.ok(registration.status)||!String(registrationOutput.responseCode??"").startsWith("2"))return {status:registration.status,outcome:registration.outcome,body:{error:"Card Registration otomatis gagal. Balance Inquiry belum dijalankan.",registrationResponse:registration.body},request:{method:input.method,path:input.path,timestamp,body:input.body,steps}};
-        if(typeof registrationOutput.bankCardToken==="string"&&registrationOutput.bankCardToken)serviceBody.bankCardToken=registrationOutput.bankCardToken;else if(typeof registrationOutput.accountNo==="string"&&registrationOutput.accountNo)serviceBody.accountNo=registrationOutput.accountNo;else return {status:registration.status,outcome:"SNAP_BUSINESS_ERROR",body:{error:"Card Registration tidak menghasilkan bankCardToken atau accountNo."},request:{method:input.method,path:input.path,timestamp,body:input.body,steps}};
-      }
-      await report("signature_service","running");
-      const signatureService=await execute(page,PORTAL_URLS.signatureService,"/api/v1.0/utilities/signature-service","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-SECRET":decrypt(value(input.client,"clientSecret")),"HttpMethod":input.method,"EndpoinUrl":input.path,"AccessToken":token},serviceBody),serviceSignatureBody=this.object(signatureService.body);
-      await report("signature_service","completed");
-      if(!this.ok(signatureService.status)||typeof serviceSignatureBody.signature!=="string"){await report("signature_service","failed","Signature service tidak diterima");return this.failedStep(input,timestamp,signatureService,"Form Signature Service ASPI tidak menghasilkan signature.",steps);}
-      const headers:Record<string,string>={"Content-Type":"application/json","Authorization":`Bearer ${token}`,"X-TIMESTAMP":timestamp,"X-SIGNATURE":String(serviceSignatureBody.signature),"X-PARTNER-ID":partnerId,"X-EXTERNAL-ID":input.externalId,"CHANNEL-ID":channelId,...input.extraHeaders};if(value(input.client,"deviceId"))headers["X-DEVICE-ID"]=value(input.client,"deviceId");
-      await report("balance_inquiry","running");
-      const result=await execute(page,portalUrl(input.portalUrl),input.path,input.method,headers,serviceBody);
-      await report("balance_inquiry","completed");
-      // Keep the exact authenticated browser alive until the saved run's PDF
-      // evidence has been collected. Opening a second browser used to lose the
-      // ASPI session / spend the evidence budget on Chromium startup.
-      if(!page||!release)throw new AspiAutomationError("AUTOMATION_ERROR","Sesi portal tidak tersedia setelah pengujian.");
-      const evidenceSession:AspiEvidenceSession={page,release};
-      sessionHandedOff=true;
-      return {...result,activityBaseline,evidenceSession,request:{...result.request,method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:serviceBody,registrationOutput,steps:[...steps,signatureService.request]}};
+      catch{await report("evidence","failed","Daftar aktivitas awal ASPI tidak tersedia; Activity ID tidak ditebak.");}
+      let signatureAuth="",token="",customerToken="",serviceSignature="";
+      const serviceBody={...input.body};
+      let registrationOutput:Record<string,unknown>|null=null,target:HitResult|undefined;
+      const successful=(result:HitResult,field:string,message:string)=>{
+        const body=this.object(result.body);
+        if(!this.ok(result.status)||typeof body[field]!=="string"||!body[field]||body.responseCode&&!String(body.responseCode).startsWith("2"))throw new AspiAutomationError("PRECONDITION_FAILED",message,{prerequisiteHttpStatus:result.status});
+        return String(body[field]);
+      };
+      const headersFor=(signature:string,externalId:string):Record<string,string>=>{
+        const headers:Record<string,string>={"Content-Type":"application/json",...input.extraHeaders};
+        if(profile.token!=="none")Object.assign(headers,{"Authorization":`Bearer ${token}`,"X-TIMESTAMP":timestamp,"X-PARTNER-ID":partnerId,"X-EXTERNAL-ID":externalId,"CHANNEL-ID":channelId});
+        if(profile.signature==="hmac")headers["X-SIGNATURE"]=signature;
+        if(customerToken)headers["Authorization-Customer"]=`Bearer ${customerToken}`;
+        if(value(input.client,"deviceId"))headers["X-DEVICE-ID"]=value(input.client,"deviceId");
+        return headers;
+      };
+      const handlers:Record<AuthStage,()=>Promise<void>>={
+        signature_auth:async()=>{
+          const result=await execute(page!,PORTAL_URLS.signatureAuth,"/api/v1.0/utilities/signature-auth","POST",{"X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId,"Private_Key":decrypt(value(input.client,"privateKey"))},{});
+          signatureAuth=successful(result,"signature","Signature Authentication tidak menghasilkan signature.");
+        },
+        access_token:async()=>{
+          if(profile.token==="provided"){
+            const expires=Date.parse(value(input.client,"accessTokenExpiresAt"));
+            if(!Number.isFinite(expires)||expires<=Date.now())throw new AspiAutomationError("PRECONDITION_FAILED","Masa berlaku access token tersimpan harus diketahui dan belum kedaluwarsa.");
+            token=decrypt(value(input.client,"accessToken"));
+          }else{
+            const result=await execute(page!,PORTAL_URLS.accessTokenB2B,"/api/v1.0/access-token/b2b","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId,"X-SIGNATURE":signatureAuth},{grantType:"client_credentials",additionalInfo:{}});
+            token=successful(result,"accessToken","Access Token B2B tidak menghasilkan accessToken.");
+          }
+          // Deliberately corrupt only the selected client's token. Never refresh/repair it afterwards.
+          if(input.negativeAccessToken)token=`${token.slice(0,Math.max(1,token.length-4))}INVALID`;
+        },
+        customer_token:async()=>{
+          const expires=value(input.user,"customerTokenExpiresAt");
+          if(!value(input.user,"customerToken")||expires&&(!Number.isFinite(Date.parse(expires))||Date.parse(expires)<=Date.now()))throw new AspiAutomationError("PRECONDITION_FAILED","Customer token B2B2C belum tersedia atau kedaluwarsa; diperlukan consent pelanggan.");
+          customerToken=decrypt(value(input.user,"customerToken"));
+        },
+        signature_service:async()=>{
+          // Legacy registration is explicit, scoped to the selected SNAP user, and positive-only.
+          if(input.registration){
+            await report("registration","running",input.registration.path);
+            const signature=await execute(page!,PORTAL_URLS.signatureService,"/api/v1.0/utilities/signature-service","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-SECRET":decrypt(value(input.client,"clientSecret")),"HttpMethod":"POST","EndpoinUrl":input.registration.path,"AccessToken":token},input.registration.body);
+            const registration=await execute(page!,portalUrl(input.registration.portalUrl),input.registration.path,"POST",headersFor(successful(signature,"signature","Signature registrasi gagal."),input.registration.externalId),input.registration.body);
+            registrationOutput=this.object(registration.body);
+            if(!this.ok(registration.status)||!String(registrationOutput.responseCode??"").startsWith("2"))throw new AspiAutomationError("PRECONDITION_FAILED","Registrasi otomatis gagal; API target belum dijalankan.");
+            if(typeof registrationOutput.bankCardToken==="string"&&registrationOutput.bankCardToken)serviceBody.bankCardToken=registrationOutput.bankCardToken;
+            else if(typeof registrationOutput.accountNo==="string"&&registrationOutput.accountNo)serviceBody.accountNo=registrationOutput.accountNo;
+            else throw new AspiAutomationError("PRECONDITION_FAILED","Registrasi tidak menghasilkan bankCardToken atau accountNo.");
+            await report("registration","completed",input.registration.path);
+          }
+          const result=await execute(page!,PORTAL_URLS.signatureService,"/api/v1.0/utilities/signature-service","POST",{"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-SECRET":decrypt(value(input.client,"clientSecret")),"HttpMethod":input.method,"EndpoinUrl":signingPath,"AccessToken":token},serviceBody,undefined,{bodyText:omitBody?"":undefined});
+          serviceSignature=successful(result,"signature","Signature Service tidak menghasilkan signature.");
+        },
+        api_request:async()=>{
+          target=await execute(page!,targetUrl,input.path,input.method,headersFor(serviceSignature,input.externalId),serviceBody,input.parameters,{expectedRelative:signingPath,omitBody});
+        }
+      };
+      await executeWorkflow(nodes,Object.fromEntries(nodes.map(node=>[node.stage,async()=>{
+        const detail=node.stage==="api_request"?`${input.serviceName??input.path} — ${input.method} ${input.path}`:node.stage==="access_token"?(profile.token==="provided"?"Token tersimpan milik client terpilih":"Access Token B2B"):node.stage==="customer_token"?"Customer token dari consent User SNAP terpilih":undefined;
+        await report(node.stage,"running",detail);await handlers[node.stage]();await report(node.stage,"completed",detail);
+      }])) as Record<AuthStage,()=>Promise<void>>);
+      if(!target)throw new AspiAutomationError("AUTOMATION_ERROR","Workflow belum mengeksekusi API target.");
+      const evidenceSession:AspiEvidenceSession={page,release};sessionHandedOff=true;
+      return {...target,activityBaseline,evidenceSession,request:{...target.request,method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:omitBody?null:serviceBody,registrationOutput,steps:completedRequests.slice(0,-1)}};
     }catch(error){
       const timeout=error instanceof Error&&/timeout/i.test(`${error.name} ${error.message}`);
       const typed=input.signal?.aborted?new AspiAutomationError("CANCELLED","Pengujian dibatalkan pengguna. Request yang sudah terkirim tidak dapat ditarik kembali."):error instanceof AspiAutomationError?error:new AspiAutomationError(timeout?"TIMEOUT":"AUTOMATION_ERROR",timeout?"Automasi Portal ASPI melewati batas waktu.":"Automasi Portal ASPI gagal sebelum respons API target diterima.");
       await report(currentStage,"failed",typed.message);
       this.logger.error(`[${input.externalId}] ${typed.outcome} pada ${currentStage}: ${typed.message}`);
       return {status:null,outcome:typed.outcome,body:{error:typed.message,failedStage:currentStage,diagnostic:redact(typed.diagnostic)},request:{method:input.method,path:input.path,portalUrl:input.portalUrl,timestamp,externalId:input.externalId,body:input.body,steps:completedRequests}};
-     }finally{if(!sessionHandedOff)await release?.();}
+    }finally{if(!sessionHandedOff)await release?.();}
   }
   async downloadActivityPdf(user:RecordRow,activityId:string){
     aspiActivityDownloadUrl(activityId);
@@ -194,7 +250,7 @@ export class PortalEngine{
       }finally{await reportPage.close();}
     }finally{await release?.();}
   }
-  private async execute(page:Page,url:string,path:string,method:string,headers:Record<string,string>,body:Record<string,unknown>):Promise<HitResult>{
+  private async execute(page:Page,url:string,path:string,method:string,headers:Record<string,string>,body:Record<string,unknown>,parameters?:Record<string,unknown>,policy:ExecutePolicy={}):Promise<HitResult>{
     let operation!:Locator;
     // Swagger ASPI kadang selesai memuat body editor lebih dahulu, tetapi event
     // Try it out belum terpasang. Muat ulang satu kali sebelum ada Execute/API
@@ -215,11 +271,14 @@ export class PortalEngine{
         if(!(error instanceof AspiAutomationError)||error.outcome!=="FORM_NOT_READY"||activationAttempt===1)throw error;
       }
     }
+    for(const [name,entry] of Object.entries(parameters??{}))await this.forms.fillParameter(operation,name,typeof entry==="object"?JSON.stringify(entry):String(entry));
     for(const [name,entry] of Object.entries(headers))await this.forms.fillParameter(operation,name,entry);
     // Beberapa utility ASPI (contohnya Signature Auth) hanya menerima header
     // dan memang tidak mempunyai editor request body. Jangan mencari textarea
     // untuk payload kosong; endpoint dengan payload tetap wajib mengisi body.
-    if(Object.keys(body).length>0)await this.forms.fillBody(operation,body);
+    if(policy.bodyText!==undefined)await this.forms.fillBody(operation,policy.bodyText);
+    else if(policy.omitBody){if(await operation.locator('textarea.body-param__text:visible, .body-param textarea:visible').count())await this.forms.fillBody(operation,"");}
+    else if(Object.keys(body).length>0||!['GET','HEAD'].includes(method)&&await operation.locator('textarea.body-param__text:visible, .body-param textarea:visible').count())await this.forms.fillBody(operation,body);
     // Pada beberapa form ASPI, perubahan body memicu render ulang Swagger dan
     // mengosongkan input Content-Type walaupun header lain tetap tersimpan.
     // Isi ulang paling akhir agar validasi internal Execute menerima form.
@@ -252,7 +311,7 @@ export class PortalEngine{
     page.on("console", onConsole);
     let captured: PlaywrightResponse;
     try {
-      captured = await captureTargetResponse(page, method, path, () => executeButton.click());
+      captured = await captureTargetResponse(page, method, path.replace(/\{[^}]+\}/g,match=>encodeURIComponent(String(parameters?.[match.slice(1,-1)]??match))), () => executeButton.click());
     } catch (error) {
       if (error instanceof AspiAutomationError && error.outcome === "FORM_NOT_READY") {
         const diagnostic = await this.forms.diagnostic(operation);
@@ -274,15 +333,31 @@ export class PortalEngine{
       page.off("console", onConsole);
     }
     const requestHeaders=await captured.request().allHeaders(),verification=this.verifyHeaders(headers,requestHeaders),raw=await captured.text().catch(()=>"");let parsed:unknown=raw;try{parsed=JSON.parse(raw);}catch{}
+    const actualUrl=new URL(captured.url());
+    if(policy.expectedRelative)verification.push({label:"Canonical request path",passed:actualUrl.pathname+actualUrl.search===policy.expectedRelative,detail:"Method/path/query aktual harus sama dengan input Signature Service.",sensitive:false});
+    for(const [name,expected]of Object.entries(parameters??{})){
+      const actual=requestHeaders[name.toLowerCase()]??actualUrl.searchParams.get(name);
+      const isPath=path.includes(`{${name}}`);
+      const passed=isPath?actualUrl.pathname.includes(encodeURIComponent(String(expected))):actual===String(expected);
+      verification.push({label:`Parameter ${name}`,passed,detail:passed?"Parameter terkirim sesuai konfigurasi.":"Parameter aktual tidak sesuai konfigurasi.",sensitive:/token|secret|password|key|account|card/i.test(name)});
+    }
+    const sent=captured.request().postData()??"";
+    let bodyMatches=false;
+    try{bodyMatches=policy.bodyText!==undefined?sent===policy.bodyText:policy.omitBody||['GET','HEAD'].includes(method)?sent==="":sent?JSON.stringify(JSON.parse(sent))===JSON.stringify(body):Object.keys(body).length===0;}catch{}
+    verification.push({label:"Request body",passed:bodyMatches,detail:bodyMatches?"Body aktual sesuai payload yang disiapkan untuk signature.":"Body aktual berbeda dari payload yang disiapkan; jangan menganggap signature valid.",sensitive:true});
     const status=captured.status(),outcome=classifyHttpOutcome(status,parsed);
-    return {status,outcome,body:parsed,request:{name:path,portalUrl:url,httpStatus:status,actualUrl:captured.url(),automationChecks:verification,headers:redact(requestHeaders)}};
+    const storedUrl=new URL(captured.url());
+    for(const name of storedUrl.searchParams.keys())storedUrl.searchParams.set(name,"[REDACTED]");
+    for(const [name,entry]of Object.entries(parameters??{}))if(path.includes(`{${name}}`))storedUrl.pathname=storedUrl.pathname.replace(encodeURIComponent(String(entry)),"[REDACTED]");
+    const safeHeaders={...requestHeaders};for(const name of Object.keys(safeHeaders))if(name.startsWith(":"))delete safeHeaders[name];
+    return {status,outcome,body:parsed,request:{name:path,method,path,portalUrl:url,httpStatus:status,actualUrl:storedUrl.toString(),automationChecks:verification,headers:redact(safeHeaders)}};
   }
   private async activitiesInContext(page:Page,deadline?:number){
     const activityPage=await page.context().newPage();
     try{return await readActivities(activityPage,deadline);}finally{await activityPage.close();}
   }
   /** Called by the controller only after all API calls are validated and History is saved. */
-  async collectEvidence(input:{user:RecordRow;before:string[]|undefined;paths:string[];deadline:number;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:ProgressReporter}):Promise<PdfEvidence[]>{
+  async collectEvidence(input:{activityNames?:Record<string,string[]>;user:RecordRow;before:string[]|undefined;paths:string[];deadline:number;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:ProgressReporter}):Promise<PdfEvidence[]>{
     const deadline=Math.min(input.deadline,Date.now()+pdfSettings().budgetMs);
     const report=async(status:"running"|"completed"|"failed",detail:string)=>{
       await input.onProgress?.("pdf_download",status,detail).catch(()=>undefined);
@@ -345,7 +420,7 @@ export class PortalEngine{
       if(!input.session)release=session.release;
       this.logger.log(`[ASPI PDF] Menggunakan ${input.session?"sesi testing aktif":"sesi baru"} untuk membaca bukti.`);
       return await collectActivityPdfs({
-        before:input.before,paths:input.paths,deadline,signal:controller.signal,
+        before:input.before,paths:input.paths,activityNames:input.activityNames,deadline,signal:controller.signal,
         read:()=>this.activitiesInContext(session.page,deadline),
         download:activity=>fetchOfficialPdf(session.page,activity.downloadUrl,deadline,"navigation"),
         report
@@ -381,13 +456,4 @@ export class PortalEngine{
   private async panelDiagnostic(page:Page){const alert=page.locator("#sandBoxCollapse .alert,#sandBoxCollapse [role='alert']").first(),detail=(await alert.textContent().catch(()=>""))?.replace(/\s+/g," ").replace(/^×\s*/,"").trim();return {authenticated:!page.url().includes("/sign-in"),panelAlert:detail||null,iframeCount:page.frames().length-1};}
   private object(entry:unknown){return entry&&typeof entry==="object"&&!Array.isArray(entry)?entry as Record<string,unknown>:{};}
   private ok(status:number|null){return status!==null&&status>=200&&status<300;}
-  private failedStep(input: PortalInput, timestamp: string, result: HitResult, message: string, previous: Record<string, unknown>[] = []): HitResult {
-    // A prerequisite's HTTP response must never masquerade as Balance Inquiry's response.
-    return {
-      status: null,
-      outcome: "PRECONDITION_FAILED",
-      body: { error: message, prerequisiteHttpStatus: result.status, securityResponse: result.body },
-      request: { method: input.method, path: input.path, timestamp, body: input.body, steps: [...previous, result.request] }
-    };
-  }
 }

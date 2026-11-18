@@ -3,6 +3,7 @@ import { correlateActivity, type AspiActivity } from "./aspi-evidence";
 
 export type PdfEvidence={path:string;activity?:AspiActivity;pdf?:Buffer;error?:string};
 type BatchInput={
+  activityNames?:Record<string,string[]>;
   before:string[]|undefined;
   paths:string[];
   deadline:number;
@@ -47,7 +48,7 @@ export async function collectActivityPdfs(input:BatchInput):Promise<PdfEvidence[
         :/HTTP \d{3}/i.test(message)?"Halaman aktivitas ASPI menolak request HTTP."
         :"Daftar aktivitas ASPI belum dapat dibaca.";
     }
-    if(paths.every(path=>correlateActivity(before,[...rows.values()],path)))break;
+    if(paths.every(path=>correlateActivity(before,[...rows.values()],path,input.activityNames?.[path])))break;
     if(attempt<2&&active()){
       const pause=Math.min(1000*(attempt+1),Math.max(0,deadline-Date.now()));
       if(pause>0)await new Promise<void>(resolve=>setTimeout(resolve,pause));
@@ -59,7 +60,7 @@ export async function collectActivityPdfs(input:BatchInput):Promise<PdfEvidence[
     while(cursor<paths.length){
       const index=cursor++,path=paths[index];
       // Two identical service calls cannot be distinguished safely using just a service name.
-      const activity=paths.filter(item=>item===path).length===1?correlateActivity(before,[...rows.values()],path):null;
+      const activity=paths.filter(item=>item===path).length===1?correlateActivity(before,[...rows.values()],path,input.activityNames?.[path]):null;
       if(!active())results[index]=failure(path,stopped());
       else if(!activity)results[index]=failure(path,listingError||`Activity ID unik untuk ${path} belum ditemukan; PDF tidak dikaitkan dengan aktivitas lain.`);
       else{

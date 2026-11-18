@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {configureBalanceExpectation} from "./balance-expectation-fixture.mjs";
 import { createRequire } from "node:module";
 import { createHmac, generateKeyPairSync, randomBytes, verify } from "node:crypto";
 
@@ -74,6 +75,7 @@ test("database/controller flow: credentials, Balance Inquiry variables and mock 
   const savedFetch=globalThis.fetch;globalThis.fetch=async()=>({ok:true,json:async()=>({success:true,hostname:"localhost"})});
   const db = new DatabaseService();
   await db.onModuleInit();
+  await configureBalanceExpectation(db);
   const engine = new RunEngine();
   const controller = new AutoSnapController(db, engine);
   let session = "";

@@ -79,7 +79,7 @@ export async function saveConnection(db:DatabaseService,input:Record<string,unkn
     };
     try{
       await write(clientId,"client",text(incomingClient.appName)||oldClient?.name||name,null,partnerId!,client);
-      if(!baseProject)await write(projectId,"project",name,clientId,null,{description:"Pengujian Balance Inquiry"});
+      if(!baseProject)await write(projectId,"project",name,clientId,null,{description:"Pengujian API SNAP"});
       await write(id,"environment",name,projectId,null,environment);
     }catch(error){if((error as {code?:string}).code==="23505")fail("Client ID sudah digunakan. Pilih koneksi yang telah tersimpan.",409);throw error;}
     return {ok:true,id,clientId,projectId,userId:savedUserId??null};

@@ -55,8 +55,8 @@ export function balanceResponseChecks(status: number|null, response: unknown, ex
   return checks;
 }
 
-export function mockBalance(body: Record<string, unknown>, code: string) {
-  if (code !== "2001100") return { responseCode: code, responseMessage: "Simulated error", additionalInfo: { mock: true } };
+export function mockBalance(body: Record<string, unknown>, code: string|null) {
+  if (code !== "2001100") return { ...(code?{responseCode:code}:{}), responseMessage: code?"Simulated error":"Mock response", additionalInfo: { mock: true } };
   const types = Array.isArray(body.balanceTypes) && body.balanceTypes.length ? body.balanceTypes : ["Cash", "Coins"];
   return {
     responseCode: code, responseMessage: "Successful", referenceNo: `MOCK-${Date.now()}`,

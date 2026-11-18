@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {configureBalanceExpectation} from "./balance-expectation-fixture.mjs";
 import {createRequire} from "node:module";
 import {randomBytes} from "node:crypto";
 const require=createRequire(import.meta.url);
@@ -13,6 +14,7 @@ const paths=["/api/v1.0/utilities/signature-auth","/api/v1.0/access-token/b2b","
 test("History is saved before PDF collection; only Passed scenarios download, including expected negative rejection",async()=>{
   process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
   const db=new DatabaseService();await db.onModuleInit();
+  await configureBalanceExpectation(db);
   try{
     const owner=await createAccount(db,{username:"pdf-owner",email:"pdf-owner@example.test",password:"test-password-123"},"admin",true),operator={id:owner,role:"admin"};
     const now=new Date().toISOString();

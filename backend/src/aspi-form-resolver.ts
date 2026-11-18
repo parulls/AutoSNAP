@@ -30,20 +30,12 @@ export class AspiFormResolver {
   async operation(page: Page, path: string, method: string) {
     const scope = await this.scope(page);
     const operations = scope.locator(".opblock:visible");
-    const available: string[] = [];
-    for (let i = 0; i < await operations.count(); i++) {
-      const item = operations.nth(i);
-      const shown = ((await item.locator(".opblock-summary-path").textContent().catch(() => "")) ?? "")
-        .replaceAll("\u200B", "").trim();
-      const shownMethod = ((await item.locator(".opblock-summary-method").textContent().catch(() => "")) ?? "")
-        .trim().toUpperCase();
-      available.push(`${shownMethod} ${shown}`.trim());
-      if (this.samePath(shown, path) && (!shownMethod || shownMethod === method.toUpperCase())) {
-        return { scope, operation: item };
-      }
-    }
+    const metadata=await operations.evaluateAll(elements=>elements.map(element=>({path:element.querySelector(".opblock-summary-path")?.textContent??"",method:element.querySelector(".opblock-summary-method")?.textContent??""})));
+    const available=metadata.map(item=>`${item.method.trim()} ${item.path.trim()}`);
+    const matches=metadata.map((item,index)=>({item,index})).filter(({item})=>this.samePath(item.path,path)&&item.method.trim().toUpperCase()===method.toUpperCase());
+    if(matches.length===1)return {scope,operation:operations.nth(matches[0].index)};
     throw new AspiAutomationError("FORM_NOT_READY", `Operasi ${method} ${path} tidak ditemukan.`, {
-      availableOperations: available, iframeCount: page.frames().length - 1
+      availableOperations: available, matchingOperations:matches.length, iframeCount: page.frames().length - 1
     });
   }
 
@@ -131,11 +123,11 @@ export class AspiFormResolver {
     return { state: "filled" as const };
   }
 
-  async fillBody(operation: Locator, body: Record<string, unknown>): Promise<void> {
+  async fillBody(operation: Locator, body: Record<string, unknown>|string): Promise<void> {
     const editor = operation.locator("textarea.body-param__text:visible, .body-param textarea:visible, textarea:visible").last();
     if (!await editor.count()) throw new AspiAutomationError("FORM_FIELD_NOT_FOUND", "Editor request body tidak ditemukan.", await this.diagnostic(operation));
     if (!await editor.isEditable().catch(() => false)) throw new AspiAutomationError("FORM_FIELD_DISABLED", "Editor request body tidak editable.", await this.diagnostic(operation));
-    const payload = JSON.stringify(body, null, 2);
+    const payload = typeof body==="string"?body:JSON.stringify(body, null, 2);
     await editor.fill(payload);
     if (await editor.inputValue() !== payload) throw new AspiAutomationError("FORM_NOT_READY", "Request body gagal diisi pada editor ASPI.", await this.diagnostic(operation));
   }
@@ -167,22 +159,16 @@ export class AspiFormResolver {
   }
 
   private async controls(operation: Locator): Promise<{control: Locator; names: string[]}[]> {
-    const output: {control: Locator; names: string[]}[] = [];
     const controls = operation.locator("input:not([type='hidden']),textarea,select");
-    for (let i = 0; i < await controls.count(); i++) {
-      const control = controls.nth(i);
-      if (!await control.isVisible().catch(() => false)) continue;
-      const direct = [
-        await control.getAttribute("name"), await control.getAttribute("placeholder"),
-        await control.getAttribute("aria-label"), await control.getAttribute("data-param-name")
-      ].filter((name): name is string => !!name);
-      const row = control.locator("xpath=ancestor::*[self::tr or contains(@class,'parameter__item')][1]");
-      const label = await row.count()
-        ? await row.locator(".parameters-col_name,.parameter__name,label,dt,th,td:first-child").first()
-          .textContent().catch(() => "") : "";
-      output.push({ control, names: [...new Set([label, ...direct].filter((item): item is string => !!item)
-        .map(normalizedParameterName).filter(Boolean))] });
-    }
-    return output;
+    // One read-only DOM snapshot instead of 6–10 browser round trips per field.
+    // Re-read on each fill so a Swagger re-render never leaves a cached stale control.
+    const metadata=await controls.evaluateAll(elements=>elements.map((control,index)=>{
+      const style=getComputedStyle(control),rect=control.getBoundingClientRect();
+      const visible=rect.width>0&&rect.height>0&&style.visibility!=="hidden"&&style.visibility!=="collapse";
+      const row=control.closest("tr,.parameter__item");
+      const label=row?.querySelector(".parameters-col_name,.parameter__name,label,dt,th,td:first-child")?.textContent;
+      return {index,visible,names:[label,...["name","placeholder","aria-label","data-param-name"].map(name=>control.getAttribute(name))].filter((entry):entry is string=>!!entry)};
+    }));
+    return metadata.filter(item=>item.visible).map(item=>({control:controls.nth(item.index),names:[...new Set(item.names.map(normalizedParameterName).filter(Boolean))]}));
   }
 }

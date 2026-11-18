@@ -12,8 +12,8 @@ const aliases:Record<string,string[]>={
 };
 
 /** A new row must uniquely match the executed service. Never choose the latest arbitrary ID. */
-export function correlateActivity(before:Set<string>,after:AspiActivity[],path:string){
-  const names=aliases[path]??[normalize(path.split("/").at(-1)??path)];
+export function correlateActivity(before:Set<string>,after:AspiActivity[],path:string,configuredNames:string[]=[]){
+  const names=[...(aliases[path]??[normalize(path.split("/").at(-1)??path)]),...configuredNames.map(normalize).map(name=>name.replace(/^api/,""))];
   const matches=after.filter(row=>!before.has(row.activityId)&&names.some(name=>normalize(row.service).replace(/^api/,"")===name||normalize(row.service)===normalize(path)));
   return matches.length===1?matches[0]:null;
 }

@@ -5,7 +5,7 @@ import UiIcon from "./ui-icon";
 
 export type ProgressStep={stage:string;status:string;detail?:string;at?:string};
 export type TestProgress={status:string;stage:string;steps:ProgressStep[]};
-const labels:Record<string,string>={preparing:"Persiapan",signature_auth:"Signature Authentication",access_token:"Access Token B2B",signature_service:"Signature Service",balance_inquiry:"Balance Inquiry",http_response:"HTTP Response",evaluation:"Validasi",pdf_download:"Download PDF ASPI",pdf_store:"Simpan PDF",evidence:"Bukti PDF",cancelling:"Pembatalan",finished:"Selesai"};
+const labels:Record<string,string>={preparing:"Persiapan",signature_auth:"Signature Authentication",access_token:"Access Token",customer_token:"Customer Token B2B2C",signature_service:"Signature Service",api_request:"Request API",balance_inquiry:"Request API",registration:"Registrasi",http_response:"HTTP Response",evaluation:"Validasi Hasil",pdf_download:"Download PDF ASPI",pdf_store:"Simpan PDF",evidence:"Bukti PDF",cancelling:"Pembatalan",finished:"Selesai"};
 
 export default function TestingProgress({progress,running,onCancel,onClose}:{progress:TestProgress;running:boolean;onCancel:()=>Promise<void>;onClose:()=>void}){
   const end=useRef<HTMLDivElement>(null),[cancelling,setCancelling]=useState(false),[cancelError,setCancelError]=useState("");

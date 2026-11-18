@@ -79,7 +79,7 @@ export class RunEngine {
         if(b2bTokenService)return {...result,request:{method:"POST",path:tokenPath,timestamp,body:tokenBody,headers:redact(tokenHeaders)}};
         steps.push({name:"Access Token B2B",method:"POST",path:tokenPath,timestamp,requestHeaders:redact(tokenHeaders),httpStatus:result.status,response:redact(result.body),responseHeaders:redact(result.responseHeaders)});
         const parsed=result.body&&typeof result.body==="object"?result.body as Record<string,unknown>:{};
-        if(result.status<200||result.status>=300||typeof parsed.accessToken!=="string"||!parsed.accessToken||parsed.responseCode&&!String(parsed.responseCode).startsWith("200"))return {status:null,outcome:"PRECONDITION_FAILED",body:{error:"API Keamanan tidak memberikan access token yang valid. Balance Inquiry tidak dikirim.",prerequisiteHttpStatus:result.status,securityResponse:redact(result.body)},request:{method,path,timestamp,body,steps}};
+        if(result.status<200||result.status>=300||typeof parsed.accessToken!=="string"||!parsed.accessToken||parsed.responseCode&&!String(parsed.responseCode).startsWith("200"))return {status:null,outcome:"PRECONDITION_FAILED",body:{error:"API Keamanan tidak memberikan access token yang valid. API target tidak dikirim.",prerequisiteHttpStatus:result.status,securityResponse:redact(result.body)},request:{method,path,timestamp,body,steps}};
         token=String(parsed.accessToken);
       }else if(authFlow==="provided_token"){
         if(!value(client,"accessToken"))throw new Error("Access Token B2B tersimpan diperlukan untuk provided_token.");
@@ -89,8 +89,8 @@ export class RunEngine {
       if(useCase==="B2B2C"&&(!user||!value(user,"customerToken")))throw new Error("User SNAP live memerlukan customer access token B2B2C dari proses consent/OAuth.");
       const customerToken=useCase==="B2B2C"&&user?decrypt(value(user,"customerToken")):"";
       if(customerToken&&authFlow==="direct_rsa")throw new Error("B2B2C memerlukan token_b2b atau provided_token.");
-      if(input.negativeAccessToken||scenarioId?.endsWith(".1"))token="invalid-access-token";
-      const url=allowedUrl(baseUrl,path),serialized=method==="GET"?"":JSON.stringify(body);
+      if(input.negativeAccessToken)token="invalid-access-token";
+      const noBody=["GET","HEAD"].includes(method),url=allowedUrl(baseUrl,path),serialized=noBody?"":JSON.stringify(body);
       if(method==="GET"&&body.queryParameter&&typeof body.queryParameter==="object"&&!Array.isArray(body.queryParameter))for(const [key,param] of Object.entries(body.queryParameter))if(param!==null&&param!==undefined)url.searchParams.set(key,String(param));
       const relative=url.pathname+url.search;
       let signature=authFlow==="direct_rsa"?rsaSignature(privateKey,`${method}:${relative}:${sha256(serialized)}:${timestamp}`,rsaEncoding):hmacSignature(decrypt(value(client,"clientSecret")),`${method}:${relative}:${token}:${sha256(serialized)}:${timestamp}`,hmacEncoding);
@@ -100,8 +100,8 @@ export class RunEngine {
       if(customerToken)headers["Authorization-Customer"]=`Bearer ${customerToken}`;
       if(value(client,"deviceId"))headers["X-DEVICE-ID"]=value(client,"deviceId");
       input.signal?.throwIfAborted();
-      const result=await responseOf(context,url,method,headers,method==="GET"?undefined:serialized);
-      return {...result,request:{method,path:url.pathname+url.search,timestamp,externalId,body:method==="GET"?null:body,headers:redact(headers),responseHeaders:redact(result.responseHeaders),steps,signatureEncoding:{rsa:rsaEncoding,hmac:hmacEncoding}}};
+      const result=await responseOf(context,url,method,headers,noBody?undefined:serialized);
+      return {...result,request:{method,path:url.pathname+url.search,timestamp,externalId,body:noBody?null:body,headers:redact(headers),responseHeaders:redact(result.responseHeaders),steps,signatureEncoding:{rsa:rsaEncoding,hmac:hmacEncoding}}};
     }finally{input.signal?.removeEventListener("abort",abort);await context.dispose();}
   }
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {configureBalanceExpectation} from "./balance-expectation-fixture.mjs";
 import {createRequire} from "node:module";
 import {generateKeyPairSync,randomBytes} from "node:crypto";
 const require=createRequire(import.meta.url);
@@ -29,10 +30,11 @@ test("Dev Site drafts and endpoint-first services run with the right owner and p
     const connection=await saveConnection(db,{name:"Dev Site belum lengkap",userId:user.id,environment:{mode:"live"}});
     const client=await db.one("SELECT * FROM autosnap_records WHERE id=$1",[connection.clientId]);
     assert.equal(client.data.channelId,"95221");assert.equal(client.partner_id,null);
-    const savedEndpoint=await invoke("save",{kind:"endpoint",name:"Saldo Bank Sumut",data:{method:"POST",path:"/bank/v1/balance"}});
+    const savedEndpoint=await invoke("save",{kind:"endpoint",name:"Saldo Bank Sumut",data:{method:"POST",path:"/api/v1.0/balance-inquiry"}});
     const endpointId=savedEndpoint.body.id;
     assert.equal((await invoke("save",{kind:"service",name:"Saldo tanpa endpoint",data:{module:"Informasi Saldo",code:"11"}})).status,400);
     const savedService=await invoke("save",{kind:"service",name:"Informasi Saldo",parentId:endpointId,data:{module:"Informasi Saldo",code:"11",requestBody:JSON.stringify({accountNo:"1234567890"})}});
+    await configureBalanceExpectation(db,savedService.body.id);
     const input={clientId:connection.clientId,projectId:connection.projectId,environmentId:connection.id,userId:user.id,serviceId:savedService.body.id,endpointId,body:JSON.stringify({accountNo:"1234567890"})};
     let hitCount=0;engine.hit=async()=>{hitCount++;throw Error("Must not reach the network for an incomplete draft");};
     const blocked=await invoke("run",input);
@@ -73,7 +75,7 @@ test("custom token path is used and failed Security does not send Balance Inquir
     assert.equal(calls.length,1);assert.equal(calls[0].url,"https://bank.example/bank/security/token");
     assert.equal(result.status,null,"Balance Inquiry tidak menghasilkan HTTP status karena tidak pernah dikirim");
     assert.equal(result.body.prerequisiteHttpStatus,401,"status 401 berasal dari prerequisite Security");
-    assert.match(result.body.error,/Balance Inquiry tidak dikirim/);
+    assert.match(result.body.error,/API target tidak dikirim/);
     assert.equal(result.request.steps[0].name,"Access Token B2B");
     assert.equal(calls[0].headers["Content-Type"],"application/json");
   }finally{request.newContext=saved;}

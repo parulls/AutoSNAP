@@ -16,7 +16,7 @@ type MetricCard = {
   label: string;
   value: number;
   target?: Target;
-  status?: "passed" | "failed" | "warning";
+  status?: "passed" | "failed" | "warning"|"passed_http";
 };
 
 export default function Dashboard({
@@ -42,7 +42,7 @@ export default function Dashboard({
   );
 
   const recent = history.runs;
-  const { dev, simulator, passed, failed, errors } = history.summary;
+  const { dev, simulator, passed, failed, errors,notEvaluated=0,passedHttp=0 } = history.summary;
 
   const contextOf = (run: (typeof recent)[number]) =>
     run.request &&
@@ -81,6 +81,8 @@ export default function Dashboard({
       value: errors,
       status: "warning",
     },
+    ...(notEvaluated?[{label:"Belum dievaluasi",value:notEvaluated,status:"warning" as const}]:[]),
+    ...(passedHttp?[{label:"HTTP 200 - SNAP belum divalidasi",value:passedHttp,status:"passed_http" as const}]:[]),
   ];
 
   return (
