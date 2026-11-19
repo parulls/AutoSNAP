@@ -242,11 +242,15 @@ test("ASPI account lock blocks the same session, allows another account, and kee
     const processing=await action("retryAspiEvidence",{id:busyRun});
     assert.equal(processing.status,200,JSON.stringify(processing.body));
     assert.equal(processing.body.processing,true);assert.equal(calls,0);
+    assert.equal(processing.body.aspiReady,false);assert.equal(processing.body.formReady,false);
+    assert.ok(processing.body.busyUserIds.includes("user-a"));
     await db.query("DELETE FROM autosnap_automation_leases WHERE key=$1",[pdfAccountLease(userA)]);
     const late=randomUUID();
     await insert(late,"user-a","a@example.test","aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeeb");
     const saved=await action("retryAspiEvidence",{id:late});
     assert.equal(saved.status,200,JSON.stringify(saved.body));
+    assert.equal(saved.body.aspiReady,true);assert.equal(saved.body.formReady,true);
+    assert.deepEqual(saved.body.busyUserIds,[]);
     assert.equal(saved.body.status,"PASSED");
     assert.equal((await db.one("SELECT COUNT(*)::int AS n FROM autosnap_evidence_pdfs WHERE run_id=$1",[late])).n,1);
     assert.equal((await db.one("SELECT status FROM autosnap_runs WHERE id=$1",[late])).status,"PASSED");
@@ -266,5 +270,54 @@ test("ASPI account lock blocks the same session, allows another account, and kee
     assert.equal(auth.body.status,"COMPLETED");
     assert.match(auth.body.missing[0].error,/Sesi ASPI tidak valid/);
     assert.equal(auth.body.status!=="AUTOMATION_ERROR",true);
+  }finally{await db.onModuleDestroy();}
+});
+
+test("two AutoSNAP operators sharing one ASPI account serialize; Activity IDs stay run-scoped",async()=>{
+  process.env.NODE_ENV="test";process.env.AUTOSNAP_TEST_PGLITE="memory://";process.env.AUTOSNAP_ENCRYPTION_KEY=randomBytes(32).toString("base64");
+  const db=new DatabaseService();await db.onModuleInit();
+  try{
+    const {sha256,encrypt}=require("../backend/dist/security.js");
+    const {pdfAccountLease}=require("../backend/dist/aspi-session-manager.js");
+    const ownerA=await createAccount(db,{username:"op-a",email:"op-a@example.test",password:"operator-password-1"},"admin",true);
+    const ownerB=await createAccount(db,{username:"op-b",email:"op-b@example.test",password:"operator-password-2"},"admin",true);
+    const now=new Date().toISOString();
+    await db.query("INSERT INTO autosnap_records(id,kind,name,data,created_at,updated_at) VALUES('shared-user','snap_user','Shared',$1::jsonb,$2,$2)",[JSON.stringify({email:"shared@example.test",password:encrypt("fixture")}),now]);
+    const activityA="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",activityB="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee2";
+    const evaluation={mode:"HTTP_ONLY",snapValidationPerformed:false,outcome:"COMPLETED",stage:"evaluation",stageLabel:"Validasi HTTP",detail:"HTTP 200",suggestion:"",httpValidation:{expectedStatus:200,actualStatus:200,performed:true,matches:true,source:"target_api"},snapValidation:{expectedCode:null,actualCode:null,performed:false,matches:null}};
+    const plan=(activity)=>({version:1,phase:"INCOMPLETE",retryCount:0,accountHash:sha256("shared@example.test"),beforeIds:[],operations:[{key:"op-0",path:"/api/v1.0/balance-inquiry",service:"balance",attempts:0,pdfReady:false,activity:{activityId:activity,service:"balance",timestamp:now,downloadUrl:"https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity"}}]});
+    const runA=randomUUID(),runB=randomUUID();
+    await db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,mode,status,http_status,response_code,expected_code,duration_ms,notes,request_json,response_json,created_at) VALUES($1,$2,'c','p','e','shared-user','s','ep','portal','COMPLETED',200,'2001100',null,10,'a',$3::jsonb,'{}'::jsonb,$4),($5,$6,'c','p','e','shared-user','s','ep','portal','COMPLETED',200,'2001100',null,10,'b',$7::jsonb,'{}'::jsonb,$4)",[runA,ownerA,JSON.stringify({evaluation,evidence:plan(activityA),outcome:"COMPLETED"}),now,runB,ownerB,JSON.stringify({evaluation,evidence:plan(activityB),outcome:"COMPLETED"})]);
+    let active=0,maxActive=0,seen=[];
+    const portal={collectEvidence:async input=>{
+      active++;maxActive=Math.max(maxActive,active);
+      await new Promise(resolve=>setTimeout(resolve,40));
+      const op=input.operations[0];
+      seen.push(op.activity.activityId);
+      const pdf=Buffer.from(`%PDF-1.7\n${op.activity.activityId}`);
+      active--;
+      return [{key:op.key,path:op.path,activity:op.activity,pdf,attempts:1}];
+    }};
+    const service=new RunEvidenceService(db,portal);
+    const ctrlA=new AutoSnapController(db,null,portal,null,service);ctrlA.user=async()=>({id:ownerA,role:"admin"});ctrlA.enforceRateLimit=async()=>{};
+    const ctrlB=new AutoSnapController(db,null,portal,null,service);ctrlB.user=async()=>({id:ownerB,role:"admin"});ctrlB.enforceRateLimit=async()=>{};
+    const act=async(ctrl,id)=>{const res={code:200,status(c){this.code=c;return this;},json(body){return {status:this.code,body};}};return ctrl.action({body:{action:"retryAspiEvidence",id},headers:{}},res);};
+    const first=act(ctrlA,runA);
+    await new Promise(resolve=>setTimeout(resolve,10));
+    const second=await act(ctrlB,runB);
+    const primary=await first;
+    assert.equal(primary.status,200,JSON.stringify(primary.body));
+    assert.equal(primary.body.status,"PASSED");
+    assert.equal(second.body.processing===true||second.body.status==="PASSED",true,JSON.stringify(second.body));
+    if(second.body.processing){
+      assert.equal(maxActive,1,"shared ASPI account must not collect PDFs in parallel");
+      const after=await act(ctrlB,runB);
+      assert.equal(after.body.status,"PASSED");
+    }
+    const pdfA=await db.one("SELECT activity_id FROM autosnap_evidence_pdfs WHERE run_id=$1",[runA]);
+    const pdfB=await db.one("SELECT activity_id FROM autosnap_evidence_pdfs WHERE run_id=$1",[runB]);
+    assert.equal(pdfA.activity_id,activityA);
+    assert.equal(pdfB.activity_id,activityB);
+    assert.equal(await db.one("SELECT key FROM autosnap_automation_leases WHERE key=$1",[pdfAccountLease({data:{email:"shared@example.test"}})]),null);
   }finally{await db.onModuleDestroy();}
 });

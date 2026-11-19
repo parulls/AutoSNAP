@@ -15,13 +15,23 @@ const {RunEvidenceService}=require("../backend/dist/run-evidence.js");
 const url="https://apidevportal.aspi-indonesia.or.id/api-services/riwayat-transaksi#/BankStatement/post_api_v1_0_bank_statement";
 const config={version:1,sourceUrl:url,operationId:"post_api_v1_0_bank_statement",identity:{method:"POST",path:"/api/v1.0/bank-statement"},authFlow:"b2b",expectedHttpStatus:200,expectedCode:null,negativeToken:{expectedHttpStatus:401,expectedCode:null},parameters:[],requestSchema:null,responses:{"200":{example:{responseCode:"2001400",responseMessage:"Actual fixture",accountNo:"2000200202"}}},reviewed:true,warnings:[]};
 
-test("HTTP-only evaluation ignores SNAP codes for pass/fail",()=>{
+test("positive SNAP+HTTP and negative HTTP-only evaluation rules",()=>{
   assert.equal(evaluateTest({httpStatus:200,expectedHttpStatus:200,cancelled:false}).status,"COMPLETED");
-  assert.equal(evaluateTest({httpStatus:401,expectedHttpStatus:401,cancelled:false}).status,"COMPLETED");
+  assert.equal(evaluateTest({httpStatus:200,expectedHttpStatus:200,cancelled:false}).evaluation.mode,"HTTP_ONLY");
+  assert.equal(evaluateTest({httpStatus:401,expectedHttpStatus:401,negative:true,cancelled:false}).status,"COMPLETED");
+  assert.equal(evaluateTest({httpStatus:401,expectedHttpStatus:401,negative:true,expectedCode:"4011401",cancelled:false}).evaluation.mode,"HTTP_ONLY");
   assert.equal(evaluateTest({httpStatus:500,expectedHttpStatus:200,cancelled:false}).status,"FAILED");
   assert.equal(evaluateTest({httpStatus:null,expectedHttpStatus:200,cancelled:false}).status,"AUTOMATION_ERROR");
   assert.equal(evaluateTest({httpStatus:200,expectedHttpStatus:200,cancelled:true}).status,"CANCELLED");
-  assert.equal(evaluateTest({httpStatus:200,expectedHttpStatus:200,actualCode:"4001400",expectedCode:"2001400",cancelled:false}).status,"COMPLETED","SNAP mismatch must not fail HTTP validation");
+  const mismatch=evaluateTest({httpStatus:200,expectedHttpStatus:200,actualCode:"4001400",expectedCode:"2001400",cancelled:false});
+  assert.equal(mismatch.status,"FAILED","SNAP mismatch must fail when expected SNAP is configured");
+  assert.equal(mismatch.evaluation.mode,"SNAP_AND_HTTP");
+  const missing=evaluateTest({httpStatus:200,expectedHttpStatus:200,actualCode:null,expectedCode:"2001400",cancelled:false});
+  assert.equal(missing.status,"FAILED","missing Actual SNAP must not fall back to HTTP PASSED");
+  const both=evaluateTest({httpStatus:200,expectedHttpStatus:200,actualCode:"2001400",expectedCode:"2001400",cancelled:false});
+  assert.equal(both.status,"COMPLETED");assert.equal(both.evaluation.mode,"SNAP_AND_HTTP");
+  const snapOkHttpBad=evaluateTest({httpStatus:500,expectedHttpStatus:200,actualCode:"2001400",expectedCode:"2001400",cancelled:false});
+  assert.equal(snapOkHttpBad.status,"FAILED");
 });
 
 test("controller persists COMPLETED/PASSED without requiring SNAP expected codes",async()=>{

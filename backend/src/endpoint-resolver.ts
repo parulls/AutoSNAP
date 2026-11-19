@@ -31,5 +31,6 @@ export function scenarioExpectation(config:EndpointConfig|null,legacyBalance:boo
   if(negative&&config?.authFlow==="none")throw new MetadataError("Tes token tidak berlaku untuk endpoint tanpa autentikasi.");
   const source=config??(legacyBalance?legacyData:{});
   const selected=negative?(object(source.negativeToken)?source.negativeToken:{}):source;
-  return {expectedHttpStatus:typeof selected.expectedHttpStatus==="number"?selected.expectedHttpStatus:negative?401:200,expectedCode:optionalExpectedCode(selected.expectedCode)};
+  // Negative testing uses Expected HTTP only; SNAP codes are ignored for pass/fail.
+  return {expectedHttpStatus:typeof selected.expectedHttpStatus==="number"?selected.expectedHttpStatus:negative?401:200,expectedCode:negative?null:optionalExpectedCode(selected.expectedCode)};
 }

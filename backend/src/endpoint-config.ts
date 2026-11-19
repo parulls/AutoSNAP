@@ -27,10 +27,9 @@ export function validateConfig(raw:unknown):EndpointConfig{
   if(raw.negativeToken!==undefined){
     const n=raw.negativeToken;
     if(!object(n)||!Number.isInteger(n.expectedHttpStatus)||Number(n.expectedHttpStatus)<400||Number(n.expectedHttpStatus)>499)throw new MetadataError("Ekspektasi HTTP tes token negatif harus HTTP 4xx.");
-    optionalExpectedCode(n.expectedCode);
   }
   if(JSON.stringify(raw).length>150000)throw new MetadataError("Konfigurasi terlalu besar.");
-  return {...raw,expectedCode,...(object(raw.negativeToken)?{negativeToken:{...raw.negativeToken,expectedCode:optionalExpectedCode(raw.negativeToken.expectedCode)}}:{})} as unknown as EndpointConfig;
+  return {...raw,expectedCode,...(object(raw.negativeToken)?{negativeToken:{expectedHttpStatus:Number(raw.negativeToken.expectedHttpStatus),expectedCode:null}}:{})} as unknown as EndpointConfig;
 }
 export function schemaErrors(value:unknown,schema:unknown,path="body",depth=0):string[]{
   if(!object(schema)||depth>20)return [];
@@ -55,14 +54,17 @@ export function schemaErrors(value:unknown,schema:unknown,path="body",depth=0):s
   else if(type==="boolean"&&typeof value!=="boolean")errors.push(`${path} harus boolean.`);
   return errors;
 }
-export function configuredChecks(status:number|null,body:unknown,config:EndpointConfig,expectation:Expectation=config){
-  const expected=expectation.expectedCode;
-  // HTTP is decisive for pass/fail. SNAP fields remain informational (passed:null).
+export function configuredChecks(status:number|null,body:unknown,config:EndpointConfig,expectation:Expectation=config,options:{negative?:boolean}={}){
+  const expected=options.negative?null:expectation.expectedCode;
+  const actual=object(body)?String(body.responseCode??""):"";
   const checks:Array<{label:string;passed:boolean|null;detail:string}>=[{label:"HTTP status",passed:status===expectation.expectedHttpStatus,detail:`Expected ${expectation.expectedHttpStatus??"belum dikonfigurasi"}, actual ${status??"tidak ada response"}.`}];
-  if(expected)checks.push({label:"SNAP responseCode",passed:null,detail:`Dokumentasi: ${expected}; actual ${object(body)?String(body.responseCode??"missing"):"non-JSON"} (informasional).`});
-  if(expected)checks.push({label:"SNAP responseMessage",passed:null,detail:object(body)&&typeof body.responseMessage==="string"?`responseMessage: ${String(body.responseMessage).slice(0,150)}`:"responseMessage tidak tersedia (informasional)."});
+  if(expected){
+    const snapOk=!!actual&&actual===expected;
+    checks.push({label:"SNAP responseCode",passed:snapOk,detail:snapOk?`Actual ${actual} sesuai expected ${expected}.`:`Expected ${expected}; actual ${actual||"missing"}.`});
+    checks.push({label:"SNAP responseMessage",passed:null,detail:object(body)&&typeof body.responseMessage==="string"?`responseMessage: ${String(body.responseMessage).slice(0,150)}`:"responseMessage tidak tersedia (informasional)."});
+  }
   if(config.responseFormat!=="none")checks.push({label:"Response JSON",passed:object(body),detail:"Response harus object JSON."});
   const response=object(config.responses[String(status)])?config.responses[String(status)] as Record<string,unknown>:null;
-  if(response?.schema)for(const error of schemaErrors(body,response.schema,"response"))checks.push({label:"Response schema",passed:null,detail:`${error} (informasional; tidak menggugurkan validasi HTTP).`});
+  if(response?.schema)for(const error of schemaErrors(body,response.schema,"response"))checks.push({label:"Response schema",passed:null,detail:`${error} (informasional).`});
   return checks;
 }

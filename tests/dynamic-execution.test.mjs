@@ -50,7 +50,7 @@ test("endpoint resolver binds IDs, method, path, URL, expectation and workflow w
   assert.throws(()=>resolveEndpoint(e,{...s,parent_id:"balance"}),/melekat/);
   assert.throws(()=>resolveEndpoint(e,{...s,data:{code:"11"}}),/tidak ada fallback/);
   assert.equal(resolveEndpoint(e,{...s,data:{...s.data,config:{...draft.config,expectedCode:"2001100"}}}).path,"/api/v1.0/bank-statement","a well-formed incorrect expectation must be evaluated, not used to route or block the request");
-  assert.deepEqual(scenarioExpectation(draft.config,false,true),{expectedHttpStatus:401,expectedCode:"4011401"});
+  assert.deepEqual(scenarioExpectation(draft.config,false,true),{expectedHttpStatus:401,expectedCode:null},"negative testing ignores SNAP expected codes");
   const noNegative={...draft.config};delete noNegative.negativeToken;
   assert.deepEqual(scenarioExpectation(noNegative,false,true),{expectedHttpStatus:401,expectedCode:null},"missing expected code must not block a negative request");
   assert.throws(()=>resolveRequestPath("/api/{id}",[{name:"id",in:"path"}],{}),/wajib/);
@@ -132,7 +132,8 @@ test("six services execute the real headless form pipeline, signatures, positive
       }
       if(f.name==="Bank Statement"){
         missingResponseField=true;const informational=await action("run",{...input,progressId:randomUUID()});missingResponseField=false;
-        assert.equal(informational.body.status,"PASSED","HTTP-only: response schema is informational");assert.ok(informational.body.checks.some(c=>c.label==="Response schema"&&c.passed===null));
+        assert.equal(informational.body.status,"PASSED","response schema remains informational");assert.ok(informational.body.checks.some(c=>c.label==="Response schema"&&c.passed===null));
+        assert.equal(informational.body.evaluation.mode,"SNAP_AND_HTTP");
         const old=observed.length;const invalid=await action("run",{...input,progressId:randomUUID(),body:JSON.stringify({accountNo:"2000100101",balanceTypes:["Cash"]})});assert.equal(invalid.status,400);assert.equal(observed.length,old,"Balance payload is refused before any browser/API request");
         const retry={...input,progressId:randomUUID()};assert.equal((await action("run",retry)).body.status,"PASSED");const sent=observed.length;assert.equal((await action("run",retry)).status,409);assert.equal(observed.length,sent,"no automatic transaction retry");
         const optionalDraft=structuredClone(draft);optionalDraft.config.expectedCode=null;optionalDraft.config.negativeToken.expectedCode=null;
@@ -140,8 +141,9 @@ test("six services execute the real headless form pipeline, signatures, positive
         for(const testType of ["positive","invalid_access_token"]){
           const before=observed.length,notEvaluated=await action("run",{...input,progressId:randomUUID(),testType});
           assert.equal(notEvaluated.body.status,"PASSED");assert.equal(notEvaluated.body.outcome,"PASSED");assert.equal(notEvaluated.body.expectedCode,null);assert.equal(notEvaluated.body.httpStatus,testType==="positive"?200:401);assert.equal(notEvaluated.body.responseCode,testType==="positive"?f.expected:f.negative);
+          assert.equal(notEvaluated.body.evaluation.mode,"HTTP_ONLY");
           assert.deepEqual(observed.slice(before).map(req=>req.path),[...security,f.path],"missing expected does not bypass the actual security or API procedure");
-          const row=await db.one("SELECT * FROM autosnap_runs WHERE id=$1",[notEvaluated.body.id]);assert.equal(row.expected_code,null);assert.equal(row.request_json.evaluation.outcome,"PASSED");assert.ok(row.request_json.progressLog.some(step=>step.stage==="finished"&&step.status==="completed"));
+          const row=await db.one("SELECT * FROM autosnap_runs WHERE id=$1",[notEvaluated.body.id]);assert.equal(row.expected_code,null);assert.equal(row.request_json.evaluation.outcome,"PASSED");assert.equal(row.request_json.evaluation.mode,"HTTP_ONLY");assert.ok(row.request_json.progressLog.some(step=>step.stage==="finished"&&step.status==="completed"));
         }
       }
     }

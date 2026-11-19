@@ -96,13 +96,16 @@ export class AutoSnapController {
       }
       if(action==="login")return await this.login(req,res,input);
       if(action==="forgotPassword"){
+        const forgotEmail=String(input.email??"").trim().toLowerCase();
         await this.enforceRateLimit(`forgot:${clientAddress(req)}`,5,15*60_000);
         await verifyRecaptcha(input,req.ip);
-        await this.enforceRateLimit(`forgot-email:${String(input.email??"").trim().toLowerCase()}`,3,15*60_000);
+        await this.enforceRateLimit(`forgot-email:${forgotEmail}`,3,15*60_000);
+        await this.enforceRateLimit(`forgot-cooldown:${forgotEmail}`,1,60_000);
         return res.json(await requestPasswordReset(this.db,input.email));
       }
       if(action==="resetPassword"){
         await this.enforceRateLimit(`reset:${clientAddress(req)}`,10,15*60_000);
+        await this.enforceRateLimit(`reset-id:${String(input.resetId??"").slice(0,80)}`,8,15*60_000);
         await resetPasswordWithOtp(this.db,input);
         return res.json({ok:true,message:"Password berhasil diperbarui. Silakan masuk."});
       }
@@ -258,7 +261,9 @@ export class AutoSnapController {
     const userId=run.user_id,snapUser=userId?await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='snap_user'",[userId]):null;
     if(!snapUser)return this.fail(res,clientError("User SNAP pada history tidak ditemukan.",404));
     const result=await this.evidenceService.process({runId,ownerId:operator.id,user:snapUser,initial:false});
-    return res.json({ok:true,...result});
+    const aspiReady=!(await this.evidenceService.accountBusy(snapUser));
+    const busyUserIds=await this.evidenceService.busyUserIds(await this.allRecords());
+    return res.json({ok:true,...result,aspiReady,busyUserIds,formReady:aspiReady});
   }
   private async resumeTesting(res:Response,input:Input,operator:Operator){
     const runId=String(input.id??"");
@@ -525,7 +530,9 @@ export class AutoSnapController {
       const timestamp=isoJakarta(),httpStatus=expectation.expectedHttpStatus??200;
       const documented=config?.responses[String(httpStatus)],sample=object(documented)?documented.example:undefined;
       // Mock-only examples are actual simulated responses, NEVER fallback expected values.
-      const response=object(sample)?structuredClone(sample):negativeAccessToken?{...(expected?{responseCode:expected}:{}),responseMessage:"Access Token Invalid",additionalInfo:{mock:true}}:isBalance?mockBalance(body,expected):{...(expected?{responseCode:expected}:{}),responseMessage:"Mock response",additionalInfo:{mock:true}};
+      // Mock bodies may include a realistic SNAP code for display; negative validation still uses HTTP only.
+      const mockSnap=expected??(negativeAccessToken?`${String(expectation.expectedHttpStatus??401)}${serviceCode||"00"}01`.slice(0,7):null);
+      const response=object(sample)?structuredClone(sample):negativeAccessToken?{...(mockSnap?{responseCode:mockSnap}:{}),responseMessage:"Access Token Invalid",additionalInfo:{mock:true}}:isBalance?mockBalance(body,expected??mockSnap??"2001100"):{...(expected?{responseCode:expected}:{}),responseMessage:"Mock response",additionalInfo:{mock:true}};
       result={status:httpStatus,body:response,request:{method,path,timestamp,externalId,body:method==="GET"?null:body,headers:{"Content-Type":"application/json","Authorization":"[MOCK TOKEN]","X-TIMESTAMP":timestamp,"X-SIGNATURE":"[MOCK SIGNATURE]","X-PARTNER-ID":client.data.partnerIdSource==="client_id"?value(client,"clientId"):client.partner_id,"X-EXTERNAL-ID":externalId,"CHANNEL-ID":value(client,"channelId"),...(useCase==="B2B2C"?{"Authorization-Customer":"[MOCK CUSTOMER TOKEN]"}:{}),...(value(client,"deviceId")?{"X-DEVICE-ID":value(client,"deviceId")}:{}),...requestHeaders}}};
       await progress("api_request","completed",`${service.name} — simulasi selesai`);
     }else if(mode==="portal"){
@@ -556,22 +563,22 @@ export class AutoSnapController {
     const expectedHttp=expectation.expectedHttpStatus??(negativeAccessToken?401:200);
     const checks:ResultCheck[] = result.status === null
       ? [{ label: "HTTP Request", passed: false, detail: `API target belum memberikan HTTP response. Outcome: ${result.outcome??"UNKNOWN"}.` }]
-      : config ? configuredChecks(result.status,result.body,config,{expectedCode:expected,expectedHttpStatus:expectedHttp}) : [{label:"HTTP status",passed:result.status===expectedHttp,detail:`Expected HTTP ${expectedHttp}; actual ${result.status}.`}];
+      : config ? configuredChecks(result.status,result.body,config,{expectedCode:expected,expectedHttpStatus:expectedHttp},{negative:negativeAccessToken}) : [{label:"HTTP status",passed:result.status===expectedHttp,detail:`Expected HTTP ${expectedHttp}; actual ${result.status}.`}];
     if(config&&isBalance&&result.status!==null&&expected)checks.push(...balanceResponseChecks(result.status,result.body,expected,executedBody).filter(check=>!checks.some(existing=>existing.label===check.label)&&check.label==="HTTP status"));
     const automationChecks=object(result.request)&&Array.isArray(result.request.automationChecks)?result.request.automationChecks.filter(object).map(item=>({label:String(item.label??"Automation"),passed:item.passed===true,detail:String(item.detail??"")})):[];
     checks.push(...automationChecks);
-    const evaluated=evaluateTest({httpStatus:result.status,expectedHttpStatus:expectedHttp,actualCode:responseCode,expectedCode:expected,checks,cancelled:result.outcome==="CANCELLED"});
+    const evaluated=evaluateTest({httpStatus:result.status,expectedHttpStatus:expectedHttp,actualCode:responseCode,expectedCode:expected,negative:negativeAccessToken,checks,cancelled:result.outcome==="CANCELLED"});
     let status:RunStatus=evaluated.status;
     const evaluation=evaluated.evaluation,executionOutcome=result.outcome??null;
     result.outcome=evaluation.outcome as HitResult["outcome"];
     await this.updateProgress(progressId,operator.id,"evaluation",status==="FAILED"||status==="AUTOMATION_ERROR"?"failed":"completed",`${evaluation.outcome} — ${evaluation.detail}${evaluation.suggestion?` Saran: ${evaluation.suggestion}`:""}`);
-    const expectedNegativeRejection=negativeAccessToken&&evaluation.httpValidation.matches;
+    const expectedNegativeRejection=negativeAccessToken&&evaluation.httpValidation.matches&&status!=="FAILED";
     let notes = status==="CANCELLED" ? "Pengujian dibatalkan pengguna; tahap berikutnya dihentikan. Request yang sudah terkirim tidak dapat ditarik kembali."
       : expectedNegativeRejection ? "API menolak access token tidak valid sesuai ekspektasi skenario HTTP."
       : mode === "mock" ? "Pengujian menggunakan mock lokal; tidak ada request eksternal."
       : status === "AUTOMATION_ERROR" ? "Pengujian belum mendapatkan HTTP response dari API target; periksa prasyarat autentikasi dan log automasi."
-      : status === "FAILED" ? "HTTP response diterima, tetapi tidak sesuai expected HTTP status."
-      : "HTTP response sesuai expected; bukti PDF ASPI sedang/akan diproses.";
+      : status === "FAILED" ? (evaluation.mode==="SNAP_AND_HTTP"?"Validasi SNAP/HTTP gagal sesuai konfigurasi expected.":"HTTP response diterima, tetapi tidak sesuai expected HTTP status.")
+      : evaluation.mode==="SNAP_AND_HTTP"?"SNAP dan HTTP sesuai expected; bukti PDF ASPI sedang/akan diproses.":"HTTP response sesuai expected; bukti PDF ASPI sedang/akan diproses.";
     if(result.outcome&&!expectedNegativeRejection) notes += ` Outcome: ${result.outcome}.`;
     notes += negativeAccessToken
       ? expectedNegativeRejection?` HTTP ${result.status} sesuai expected ${expectedHttp}.`:" Skenario tes negatif meminta token tidak valid."
@@ -616,6 +623,8 @@ export class AutoSnapController {
       await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({evidence:evidencePlan,checkpoint}),id,operator.id]);
       try{
         const evidenceResult=await this.evidenceService.process({runId:id,ownerId:operator.id,user:snapUser,initial:true,session:activePortalSession,signal:control.signal,onProgress:progress});
+        // Evidence finishes locks before returning; clear the handoff so finally does not double-hold.
+        activePortalSession=undefined;
         status=evidenceResult.status as RunStatus;
         notes=evidenceResult.notes;
         checkpoint=markStage(checkpoint,"evidence",evidenceResult.complete?"COMPLETED":"FAILED",`${evidenceResult.stored}/${evidenceResult.required} PDF`);
@@ -635,8 +644,15 @@ export class AutoSnapController {
       Object.assign(evaluation,{outcome:status,detail:`HTTP ${result.status} sesuai expected ${expectedHttp}.`,suggestion:""});
       await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=request_json || $3::jsonb WHERE id=$4 AND operator_id=$5",[status,`${evaluation.detail} Outcome: ${status}.`,JSON.stringify({outcome:status,evaluation}),id,operator.id]);
     }
+    await progress("finalizing","running","Melepaskan sesi ASPI dan menyelesaikan status…");
+    if(activePortalSession){
+      try{await activePortalSession.release();}catch{/* already released */}
+      activePortalSession=undefined;
+    }
+    const aspiReady=!(snapUser&&await this.evidenceService.accountBusy(snapUser));
+    const busyUserIds=snapUser?await this.evidenceService.busyUserIds(await this.allRecords()):[];
     checkpoint=markStage(checkpoint,"finished",status==="CANCELLED"?"FAILED":"COMPLETED",notes);
-    const finalStatus=await this.updateProgress(progressId,operator.id,"finished",status==="CANCELLED"?"cancelled":status==="FAILED"||status==="AUTOMATION_ERROR"||status==="VALIDATION_ERROR"?"failed":"completed",notes);
+    const finalStatus=await this.updateProgress(progressId,operator.id,"finished",status==="CANCELLED"?"cancelled":status==="FAILED"||status==="AUTOMATION_ERROR"||status==="VALIDATION_ERROR"?"failed":"completed",aspiReady?notes:`${notes} Form masih terkunci: akun ASPI dipakai proses lain.`);
     if(finalStatus==="cancelled"&&status!=="CANCELLED"){
       status="CANCELLED";result.outcome="CANCELLED";notes="Pengujian dibatalkan pengguna. Request yang sudah terkirim tetap tercatat.";
       Object.assign(evaluation,{outcome:"CANCELLED",detail:notes,suggestion:"Periksa request yang sudah terkirim pada History Testing sebelum mencoba ulang."});
@@ -655,7 +671,7 @@ export class AutoSnapController {
       requireMutatingConfirm:requiresMutatingConfirm(method,hasRecordedHttp({http_status:result.status,request_json:cleanRequest}),failedStage(checkpoint)?.id==="api_request"),
     };
     await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({progressLog:finalProgress?.steps??[],checkpoint,reprocess,pdfCounts:{ready:pdfReady,required:pdfRequired}}),id,operator.id]);
-    return res.json({ok:true,id,progressId,status,outcome:status,executionOutcome,evaluation,checkpoint,reprocess,pdfCounts:{ready:pdfReady,required:pdfRequired},failedStage:responseBody.failedStage??failedStage(checkpoint)?.id??null,httpStatus:result.status,responseCode,expectedCode:expected,expectedHttpStatus:expectedHttp,durationMs:duration,response:redact(result.body),checks,notes});
+    return res.json({ok:true,id,progressId,status,outcome:status,executionOutcome,evaluation,checkpoint,reprocess,pdfCounts:{ready:pdfReady,required:pdfRequired},failedStage:responseBody.failedStage??failedStage(checkpoint)?.id??null,httpStatus:result.status,responseCode,expectedCode:expected,expectedHttpStatus:expectedHttp,durationMs:duration,response:redact(result.body),checks,notes,aspiReady,busyUserIds,formReady:aspiReady});
     }finally{
       // Important: release the borrowed ASPI browser even if DB writes,
       // cancellation, or evidence collection fails before normal completion.

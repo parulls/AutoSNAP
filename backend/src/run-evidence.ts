@@ -60,6 +60,17 @@ export class RunEvidenceService{
       return {status:"PROCESSING",processing:true,notes:note,complete:false,stored,required:plan.operations.length,missing:this.missingOf(plan),reprocessAudit:[entry]};
     }
     let pdfKey="",pdfOwner="";
+    const dropLeases=async()=>{
+      if(pdfKey&&pdfOwner){
+        await this.db.query("DELETE FROM autosnap_automation_leases WHERE key=$1 AND owner=$2",[pdfKey,pdfOwner]);
+        pdfKey="";pdfOwner="";
+      }
+      await this.db.query("DELETE FROM autosnap_automation_leases WHERE key=$1 AND owner=$2",[lease,owner]);
+    };
+    const finishLocks=async()=>{
+      await dropLeases();
+      if(input.session?.release)await input.session.release().catch(()=>undefined);
+    };
     const beat=async()=>{
       const now=new Date().toISOString(),expires=new Date(Date.now()+LEASE_TTL_MS).toISOString();
       await this.db.query("UPDATE autosnap_automation_leases SET heartbeat_at=$1,expires_at=$2 WHERE key=$3 AND owner=$4",[now,expires,lease,owner]);
@@ -86,15 +97,18 @@ export class RunEvidenceService{
       this.applyStored(plan,ready);
       const priorErrors=this.missingOf(plan);
       const completeAlready=plan.operations.length>0&&plan.operations.every(op=>op.pdfReady);
-      if(completeAlready){plan.phase="COMPLETE";await persist();if(!evaluation)throw {status:409,error:"Hasil evaluasi asli tidak tersedia; status tidak diubah hanya karena PDF tersedia."};return await this.commitOutcome({run,request,plan,evaluation,input,complete:true,processing:false,priorErrors});}
-      pdfKey=pdfAccountLease(input.user);pdfOwner=randomUUID();
-      const pdfHeld=await this.acquire(pdfKey,pdfOwner,new Date());
-      if(!pdfHeld){
-        const stored=plan.operations.filter(op=>op.pdfReady).length;
-        const note="Sesi ASPI ini sedang dipakai untuk pengujian atau pengambilan bukti. Tidak ada API yang dijalankan ulang.";
-        const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:"PROCESSING",statusAfter:run.status,stored,missing:this.missingOf(plan),note,priorErrors});
-        await this.appendAudit(run.id,input.ownerId,entry,{stage:"pdf_reprocessing",status:"running",detail:note,at:entry.at});
-        return {status:"PROCESSING",processing:true,notes:note,complete:false,stored,required:plan.operations.length,missing:this.missingOf(plan),reprocessAudit:[entry]};
+      if(completeAlready){plan.phase="COMPLETE";await persist();if(!evaluation)throw {status:409,error:"Hasil evaluasi asli tidak tersedia; status tidak diubah hanya karena PDF tersedia."};await finishLocks();return await this.commitOutcome({run,request,plan,evaluation,input,complete:true,processing:false,priorErrors});}
+      if(!input.session){
+        pdfKey=pdfAccountLease(input.user);pdfOwner=randomUUID();
+        const pdfHeld=await this.acquire(pdfKey,pdfOwner,new Date());
+        if(!pdfHeld){
+          const stored=plan.operations.filter(op=>op.pdfReady).length;
+          const note="Sesi ASPI ini sedang dipakai untuk pengujian atau pengambilan bukti. Tidak ada API yang dijalankan ulang.";
+          const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:"PROCESSING",statusAfter:run.status,stored,missing:this.missingOf(plan),note,priorErrors});
+          await this.appendAudit(run.id,input.ownerId,entry,{stage:"pdf_reprocessing",status:"running",detail:note,at:entry.at});
+          await this.db.query("DELETE FROM autosnap_automation_leases WHERE key=$1 AND owner=$2",[lease,owner]);
+          return {status:"PROCESSING",processing:true,notes:note,complete:false,stored,required:plan.operations.length,missing:this.missingOf(plan),reprocessAudit:[entry]};
+        }
       }
       plan.phase="COLLECTING";if(!input.initial)plan.retryCount++;
       await persist();
@@ -136,10 +150,10 @@ export class RunEvidenceService{
       const complete=plan.operations.length>0&&plan.operations.every(op=>op.pdfReady);
       plan.phase=complete?"COMPLETE":"INCOMPLETE";await persist();
       if(!evaluation)throw {status:409,error:"Hasil evaluasi asli tidak tersedia; status tidak diubah hanya karena PDF tersedia."};
+      await finishLocks();
       return await this.commitOutcome({run,request,plan,evaluation,input,complete,processing:false,priorErrors});
     }finally{
-      await this.db.query("DELETE FROM autosnap_automation_leases WHERE key=$1 AND owner=$2",[lease,owner]);
-      if(pdfKey&&pdfOwner)await this.db.query("DELETE FROM autosnap_automation_leases WHERE key=$1 AND owner=$2",[pdfKey,pdfOwner]);
+      await dropLeases().catch(()=>undefined);
     }
   }
   async accountBusy(user:Pick<RecordRow,"data">){

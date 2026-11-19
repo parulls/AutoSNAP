@@ -86,8 +86,38 @@ test("testing starts with explicit choices, no hidden target or manual token inp
 
 test("terminal progress shows backend events and leaves Cancel active while testing runs",()=>{
   const Progress=component("app/testing-progress.tsx");
-  const html=renderToStaticMarkup(createElement(Progress,{progress:{status:"running",stage:"access_token",steps:[{stage:"signature_auth",status:"completed",at:"2026-11-17T02:00:00Z",detail:"Signature diterima"},{stage:"access_token",status:"running",at:"2026-11-17T02:00:01Z",detail:"Mengambil token"}]},running:true,onCancel:async()=>{},onClose:()=>{}}));
+  const html=renderToStaticMarkup(createElement(Progress,{progress:{status:"running",stage:"access_token",steps:[{stage:"signature_auth",status:"completed",at:"2026-11-17T02:00:00Z",detail:"Signature diterima"},{stage:"access_token",status:"running",at:"2026-11-17T02:00:01Z",detail:"Mengambil token"}]},running:true,formReady:false,onCancel:async()=>{},onClose:()=>{}}));
   assert.match(html,/role="log"/);assert.match(html,/Signature diterima/);assert.match(html,/Mengambil token/);assert.match(html,/Cancel Testing/);assert.doesNotMatch(html,/disabled=""/);
+  assert.doesNotMatch(html,/>Tutup</);assert.match(html,/Proses berjalan/);
+});
+
+test("execution log claims form ready and shows Tutup only when formReady after run ends",()=>{
+  const Progress=component("app/testing-progress.tsx");
+  const locked=renderToStaticMarkup(createElement(Progress,{progress:{status:"completed",stage:"finished",steps:[{stage:"finished",status:"completed",at:"2026-11-17T02:00:05Z",detail:"PASSED"}]},running:false,formReady:false,accountBusy:true,onCancel:async()=>{},onClose:()=>{}}));
+  assert.match(locked,/akun ASPI dipakai proses lain/);
+  assert.match(locked,/>Tutup Log</);
+  assert.doesNotMatch(locked,/form siap digunakan/);
+  const ready=renderToStaticMarkup(createElement(Progress,{progress:{status:"completed",stage:"finished",steps:[{stage:"finished",status:"completed",at:"2026-11-17T02:00:05Z",detail:"PASSED"}]},running:false,formReady:true,accountBusy:false,onCancel:async()=>{},onClose:()=>{}}));
+  assert.match(ready,/form siap digunakan/);
+  assert.match(ready,/>Tutup</);
+  assert.doesNotMatch(ready,/>Tutup Log</);
+});
+
+test("finished progress lines must not keep form locked when own process already ended",()=>{
+  const Progress=component("app/testing-progress.tsx");
+  // Mirrors the bug: log already has finished/PASSED while running=false and formReady=true.
+  const html=renderToStaticMarkup(createElement(Progress,{progress:{status:"completed",stage:"finished",steps:[{stage:"finished",status:"completed",at:"2026-11-17T02:00:05Z",detail:"PASSED"}]},running:false,formReady:true,accountBusy:false,onCancel:async()=>{},onClose:()=>{}}));
+  assert.match(html,/Proses selesai — form siap digunakan/);
+  assert.match(html,/>Tutup</);
+  assert.doesNotMatch(html,/Proses berjalan|Menunggu form|Menghentikan/);
+});
+
+test("execution log hides Tutup while finalizing even if finished step already appears",()=>{
+  const Progress=component("app/testing-progress.tsx");
+  const html=renderToStaticMarkup(createElement(Progress,{progress:{status:"running",stage:"finalizing",steps:[{stage:"finalizing",status:"running",at:"2026-11-17T02:00:04Z",detail:"Melepaskan sesi"}]},running:true,formReady:false,onCancel:async()=>{},onClose:()=>{}}));
+  assert.match(html,/melepaskan sesi ASPI/i);
+  assert.doesNotMatch(html,/>Tutup</);
+  assert.doesNotMatch(html,/form siap digunakan/);
 });
 
 test("a Dev Site draft requires an owner, defaults to ASPI Sandbox and has editable channel",()=>{

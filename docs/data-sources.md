@@ -13,18 +13,18 @@
 
 | File | Role |
 |------|------|
-| `app/scenario-catalog.json` | Scenario IDs (informational SNAP templates). Pass/fail is **HTTP-only**. |
+| `app/scenario-catalog.json` | Scenario IDs (informational SNAP templates). |
 | `app/snap-spec-catalog.json` | Spec enrichment for documentation import / seed. |
 
 ## Status vocabulary (`autosnap_runs.status`)
 
-HTTP Validation Only — SNAP `responseCode` is informational:
+Positive testing: if Expected SNAP `responseCode` is set, validate SNAP then HTTP (`SNAP_AND_HTTP`). If Expected SNAP is empty, use HTTP only (`HTTP_ONLY`). Negative testing always uses Expected HTTP only. `PASSED` still requires all required official ASPI PDFs.
 
 | Status | Meaning |
 |--------|---------|
-| `PASSED` | HTTP matches expected **and** all required ASPI PDFs stored |
-| `COMPLETED` | HTTP matches; ASPI PDFs incomplete |
-| `FAILED` | HTTP does not match expected |
+| `PASSED` | Validation matched **and** all required ASPI PDFs stored |
+| `COMPLETED` | Validation matched; ASPI PDFs incomplete |
+| `FAILED` | SNAP and/or HTTP did not match expected (no HTTP fallback when SNAP was configured) |
 | `AUTOMATION_ERROR` | No HTTP response from target API |
 | `VALIDATION_ERROR` | Required config invalid before send |
 | `CANCELLED` | User cancelled |

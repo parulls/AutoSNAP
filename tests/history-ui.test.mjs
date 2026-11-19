@@ -27,7 +27,7 @@ test("Refresh clears filled testing form and response, retains history, and both
       else if(action==="run"){
         runCalls++;
         if(timeoutRun){await route.fulfill({status:504,contentType:"application/json",body:JSON.stringify({error:"Batas waktu menunggu backend tercapai. Periksa History Testing.",code:"UPSTREAM_TIMEOUT"})});return;}
-        ran=true;data={id:run.id,status:"PASSED",httpStatus:200};
+        ran=true;data={id:run.id,status:"PASSED",httpStatus:200,aspiReady:true,formReady:true,busyUserIds:[]};
       }
       else if(action==="getProgress")data=timeoutRun?{status:"running",stage:"pdf_download",steps:[]}:{status:"completed",stage:"finished",steps:[]};
       else if(action==="aspiBusy")data={busyUserIds:accountBusy?["user"]:[]};
@@ -38,7 +38,7 @@ test("Refresh clears filled testing form and response, retains history, and both
     const choose=async()=>{for(const [label,id] of [["User SNAP","user"],["Dev Site Client","site"],["Endpoint URL","endpoint"],["API Service","service"]])await page.getByRole("combobox",{name:label,exact:true}).selectOption(id);};
     await choose();await page.getByLabel("Request Body",{exact:true}).fill('{"accountNo":"edited-draft"}');
     accountBusy=true;await page.getByRole("status").filter({hasText:"Akun ASPI ini sedang dipakai"}).waitFor({timeout:5000});
-    assert.equal(await page.getByRole("button",{name:"Pengambilan bukti sedang berlangsung"}).isDisabled(),true);assert.equal(runCalls,0);
+    assert.equal(await page.getByRole("button",{name:"Akun ASPI sedang dipakai proses lain"}).isDisabled(),true);assert.equal(runCalls,0);
     accountBusy=false;await page.getByRole("button",{name:"Jalankan Testing",exact:true}).waitFor({timeout:5000});
     await page.getByRole("button",{name:"Jalankan Testing",exact:true}).click();
     await page.getByRole("dialog").getByRole("button",{name:"Tutup",exact:true}).click();

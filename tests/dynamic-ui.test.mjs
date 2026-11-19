@@ -70,7 +70,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     await advanced.fill(JSON.stringify({...draft,config:{...draft.config,authFlow:"b2b"}}));
     await dialog.getByRole("button",{name:"Terapkan JSON",exact:true}).click();
     await checkbox.check();
-    await dialog.getByRole("button",{name:"Simpan Master Data"}).click();await dialog.waitFor({state:"hidden"});
+    await dialog.getByRole("button",{name:"Simpan",exact:true}).click();await dialog.waitFor({state:"hidden"});
     await page.getByRole("navigation").getByRole("button",{name:"Dev Site Client",exact:true}).click();
     for(const [label,id]of [["User SNAP","snap"],["Dev Site Client","site"],["Endpoint URL","endpoint"],["API Service","service"]])await page.getByRole("combobox",{name:label,exact:true}).selectOption(id);
     assert.equal(JSON.parse(await page.getByLabel("Request Body",{exact:true}).inputValue()).virtualAccountNo,"123");
@@ -82,6 +82,6 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     await result.screenshot({path:".next/completed-http-result.png"});
     await page.locator(".history-card tbody").getByText("COMPLETED",{exact:true}).waitFor();
     await page.getByRole("button",{name:"Detail validasi",exact:true}).click();await page.locator(".run-modal").getByText("Outcome: COMPLETED",{exact:true}).waitFor();await page.locator(".run-modal").getByRole("button",{name:"Tutup",exact:true}).click();
-    await page.getByRole("navigation").getByRole("button",{name:"Dashboard",exact:true}).click();await page.getByText("Completed (PDF belum lengkap)",{exact:true}).waitFor();assert.deepEqual(errors,[]);
+    await page.getByRole("navigation").getByRole("button",{name:"Dashboard",exact:true}).click();await page.getByText("COMPLETED",{exact:true}).first().waitFor();assert.deepEqual(errors,[]);
   }finally{await browser?.close();server.kill();}
 });

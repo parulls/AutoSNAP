@@ -115,7 +115,8 @@ test("database/controller flow: credentials, Balance Inquiry variables and mock 
     assert.equal(negative.body.status,"PASSED");
     assert.equal(negative.body.httpStatus, 401);
     assert.equal(negative.body.responseCode, "4011101");
-    assert.equal(negative.body.expectedCode, "4011101");
+    assert.equal(negative.body.expectedCode, null,"negative testing uses Expected HTTP only");
+    assert.equal(negative.body.evaluation.mode,"HTTP_ONLY");
     assert.match(negative.body.notes,/sesuai ekspektasi/i);
     const run = await db.one("SELECT * FROM autosnap_runs WHERE id=$1", [result.body.id]);
     assert.equal(run.request_json.headers["X-PARTNER-ID"], "test-client");
