@@ -9,17 +9,17 @@ const privilegeOptions=[
 ];
 
 export default function UserManagement({state,api,reload,setError,setNotice}:{state:State;api:Api;reload:()=>Promise<void>;setError:(s:string)=>void;setNotice:(s:string)=>void}){
-  const [target,setTarget]=useState<Operator|"new"|null>(null),[busy,setBusy]=useState(false);
+  const [target,setTarget]=useState<Operator|"new"|null>(null),[busy,setBusy]=useState(false),[modalError,setModalError]=useState("");
   const [form,setForm]=useState({username:"",email:"",password:"",currentPassword:"",role:"petugas",privileges:["dashboard","dev_site","client_simulator"] as string[]});
   const admin=state.user?.role==="admin";
-  function open(user:Operator|"new"){setTarget(user);setForm({username:user==="new"?"":user.username,email:user==="new"?"":user.email??"",password:"",currentPassword:"",role:user==="new"||user.role!=="admin"?"petugas":"admin",privileges:user==="new"?["dashboard","dev_site","client_simulator"]:user.privileges??["dashboard","dev_site","client_simulator"]});}
+  function open(user:Operator|"new"){setTarget(user);setModalError("");setError("");setForm({username:user==="new"?"":user.username,email:user==="new"?"":user.email??"",password:"",currentPassword:"",role:user==="new"||user.role!=="admin"?"petugas":"admin",privileges:user==="new"?["dashboard","dev_site","client_simulator"]:user.privileges??["dashboard","dev_site","client_simulator"]});}
   function togglePrivilege(key:string){setForm(current=>({...current,privileges:current.privileges.includes(key)?current.privileges.filter(item=>item!==key):[...current.privileges,key]}));}
   async function save(event:FormEvent){
-    event.preventDefault();setBusy(true);setError("");
+    event.preventDefault();setBusy(true);setModalError("");setError("");
     try{
       await api(target==="new"?"userCreate":"userUpdate",{...form,id:target&&target!=="new"?target.id:undefined});
       setTarget(null);setNotice(target==="new"?(form.role==="admin"?"Akun admin dibuat.":"Akun petugas dibuat."):"Akun berhasil diperbarui.");await reload();
-    }catch(e){setError((e as Error).message);}finally{setBusy(false);}
+    }catch(e){setModalError((e as Error).message);}finally{setBusy(false);}
   }
   async function change(user:Operator,action:"active"|"delete"){
     if(action==="delete"&&!window.confirm(`Hapus akun ${user.username}?`))return;
@@ -35,7 +35,8 @@ export default function UserManagement({state,api,reload,setError,setNotice}:{st
       <td><div className="inline-actions"><button disabled={busy} onClick={()=>open(user)}>Kelola</button>{admin&&user.id!==state.user?.id&&<><button disabled={busy} onClick={()=>change(user,"active")}>{user.active?"Nonaktifkan":"Aktifkan"}</button><button disabled={busy} className="danger-action" onClick={()=>change(user,"delete")}>Hapus</button></>}</div></td>
     </tr>)}</tbody></table></div>
     {target&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save}>
-      <div className="section-header"><div><h2>{target==="new"?"Tambah Akun":`Kelola Akun — ${target.username}`}</h2></div></div>
+      <div className="section-header"><div><h2>{target==="new"?"Tambah Akun":`Kelola Akun — ${target.username}`}</h2><p>Perbaiki isian yang ditandai sebelum menyimpan.</p></div></div>
+      {modalError&&<div className="form-error" role="alert">{modalError}</div>}
       <div className="form-grid">
         {target==="new"&&<><label className="form-field"><span>Username AutoSNAP *</span><input required minLength={3} maxLength={40} autoComplete="off" value={form.username} onChange={e=>setForm({...form,username:e.target.value})}/></label><label className="form-field"><span>Peran</span><select value={form.role} onChange={e=>setForm({...form,role:e.target.value})}><option value="petugas">Petugas</option><option value="admin">Admin</option></select></label></>}
         <label className="form-field wide"><span>Email AutoSNAP *</span><input type="email" required maxLength={254} autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label>
@@ -43,7 +44,7 @@ export default function UserManagement({state,api,reload,setError,setNotice}:{st
         {target!=="new"&&target.id===state.user?.id&&<label className="form-field wide"><span>Password saat ini *</span><PasswordInput required autoComplete="current-password" value={form.currentPassword} onChange={e=>setForm({...form,currentPassword:e.target.value})}/></label>}
         <label className="form-field wide"><span>{target==="new"?"Password":"Password baru"} *</span><PasswordInput required minLength={12} maxLength={256} autoComplete="new-password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small className="helper">Minimal 12 karakter.</small></label>
       </div>
-      <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>setTarget(null)}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
+      <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>{setTarget(null);setModalError("");}}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
     </form></div>}
   </section>;
 }

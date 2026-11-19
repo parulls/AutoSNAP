@@ -16,20 +16,35 @@ type MetricCard = {
   label: string;
   value: number;
   target?: Target;
-  status?: "passed" | "failed" | "warning"|"passed_http";
+  status?: string;
+  badge?: string;
 };
+
+function statusClass(status: string) {
+  const key = status.toLowerCase();
+  if (key === "passed") return "passed";
+  if (key === "failed") return "failed";
+  if (key === "completed") return "completed";
+  if (key === "automation_error" || key === "validation_error") return "automation_error";
+  if (key === "cancelled") return "cancelled";
+  if (key === "running") return "running";
+  return key;
+}
 
 export default function Dashboard({
   state,
   api,
   navigate,
+  reload,
 }: {
   state: State;
   api: Api;
   navigate: (target: Target) => void;
+  reload?: () => Promise<void>;
 }) {
   const [range, setRange] = useState(() => rangeForPeriod("today"));
   const [offset, setOffset] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
   const history = useHistory(
     api,
@@ -42,7 +57,18 @@ export default function Dashboard({
   );
 
   const recent = history.runs;
-  const { dev, simulator, passed, failed, errors, completed=0 } = history.summary as typeof history.summary & {completed?:number};
+  const { dev, simulator, passed, failed, errors, completed = 0, cancelled = 0 } = history.summary as typeof history.summary & { completed?: number; cancelled?: number };
+
+  async function refreshDashboard() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await reload?.();
+      history.refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   const contextOf = (run: (typeof recent)[number]) =>
     run.request &&
@@ -56,43 +82,35 @@ export default function Dashboard({
       : {};
 
   const cards: MetricCard[] = [
-    {
-      label: "Dev Site diuji",
-      value: dev,
-      target: "Dev Site Client",
-    },
-    {
-      label: "Simulator diuji",
-      value: simulator,
-      target: "Client Simulator",
-    },
-    {
-      label: "Passed",
-      value: passed,
-      status: "passed",
-    },
-    {
-      label: "Failed",
-      value: failed,
-      status: "failed",
-    },
-    {
-      label: "Error",
-      value: errors,
-      status: "warning",
-    },
-    ...(completed?[{label:"Completed (PDF belum lengkap)",value:completed,status:"warning" as const}]:[]),
+    { label: "Dev Site diuji", value: dev, target: "Dev Site Client" },
+    { label: "Simulator diuji", value: simulator, target: "Client Simulator" },
+    { label: "PASSED", value: passed, status: "passed", badge: "PASSED" },
+    { label: "FAILED", value: failed, status: "failed", badge: "FAILED" },
+    { label: "AUTOMATION / VALIDATION ERROR", value: errors, status: "automation_error", badge: "ERROR" },
+    ...(completed ? [{ label: "COMPLETED", value: completed, status: "completed", badge: "COMPLETED" }] : []),
+    ...(cancelled ? [{ label: "CANCELLED", value: cancelled, status: "cancelled", badge: "CANCELLED" }] : []),
   ];
 
   return (
     <div className="dashboard-page">
-      <HistoryFilter
-        value={range}
-        onChange={(value) => {
-          setRange(value);
-          setOffset(0);
-        }}
-      />
+      <div className="dashboard-toolbar">
+        <HistoryFilter
+          value={range}
+          onChange={(value) => {
+            setRange(value);
+            setOffset(0);
+          }}
+        />
+
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={refreshing || history.loading}
+          onClick={() => void refreshDashboard()}
+        >
+          {refreshing ? "Memperbarui…" : "Refresh"}
+        </button>
+      </div>
 
       {history.error && (
         <p role="alert" className="field-error">
@@ -106,10 +124,9 @@ export default function Dashboard({
             <>
               <span>{card.label}</span>
               <strong>{card.value}</strong>
-
-              {card.status && (
+              {card.badge && (
                 <span className={`status-badge ${card.status}`}>
-                  {card.status}
+                  {card.badge}
                 </span>
               )}
             </>
@@ -125,10 +142,7 @@ export default function Dashboard({
               {content}
             </button>
           ) : (
-            <div
-              key={card.label}
-              className="card metric-card"
-            >
+            <div key={card.label} className="card metric-card">
               {content}
             </div>
           );
@@ -161,34 +175,16 @@ export default function Dashboard({
             <tbody>
               {recent.map((run) => {
                 const context = contextOf(run);
-
                 return (
                   <tr key={run.id}>
                     <td>
-                      {new Date(run.created_at).toLocaleString(
-                        "id-ID",
-                        { timeZone: "Asia/Jakarta" }
-                      )}
+                      {new Date(run.created_at).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })}
                     </td>
-
+                    <td>{String(context.service ?? "—")}</td>
+                    <td>{String(context.environment ?? "—")}</td>
+                    <td>{context.testType === "invalid_access_token" ? "Negatif" : "Positif"}</td>
                     <td>
-                      {String(context.service ?? "—")}
-                    </td>
-
-                    <td>
-                      {String(context.environment ?? "—")}
-                    </td>
-
-                    <td>
-                      {context.testType === "invalid_access_token"
-                        ? "Negatif"
-                        : "Positif"}
-                    </td>
-
-                    <td>
-                      <span
-                        className={`status-badge ${run.status.toLowerCase()}`}
-                      >
+                      <span className={`status-badge ${statusClass(run.status)}`}>
                         {run.status}
                       </span>
                     </td>
@@ -200,40 +196,17 @@ export default function Dashboard({
 
           {!recent.length && (
             <p className="empty-note">
-              {history.loading
-                ? "Memuat history…"
-                : "Belum ada pengujian pada periode ini."}
+              {history.loading ? "Memuat history…" : "Belum ada pengujian pada periode ini."}
             </p>
           )}
         </div>
 
         <div className="history-pagination">
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={!offset || history.loading}
-            onClick={() =>
-              setOffset(Math.max(0, offset - 15))
-            }
-          >
+          <button type="button" className="secondary-button" disabled={!offset || history.loading} onClick={() => setOffset(Math.max(0, offset - 15))}>
             Sebelumnya
           </button>
-
-          <span>
-            {history.total
-              ? `${offset + 1}`
-              : "0 hasil"}
-          </span>
-
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={
-              offset + 15 >= history.total ||
-              history.loading
-            }
-            onClick={() => setOffset(offset + 15)}
-          >
+          <span>{history.total ? `${offset + 1}` : "0 hasil"}</span>
+          <button type="button" className="secondary-button" disabled={offset + 15 >= history.total || history.loading} onClick={() => setOffset(offset + 15)}>
             Berikutnya
           </button>
         </div>

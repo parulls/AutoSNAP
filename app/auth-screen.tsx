@@ -58,16 +58,18 @@ export default function AuthScreen({state,api,reload}:{state:State;api:Api;reloa
   type Mode="login"|"register"|"forgot"|"reset";
   const [mode,setMode]=useState<Mode>("login"),[recaptchaToken,setRecaptchaToken]=useState(""),[resetId,setResetId]=useState("");
   const [resetKey,setResetKey]=useState(0),[form,setForm]=useState({username:"",email:"",password:"",confirmPassword:"",otp:"",setupToken:""});
-  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
-  const signup=!!state.setupRequired||mode==="register",needsCaptcha=signup||mode==="forgot",configured=!!state.recaptchaConfigured&&!!state.recaptchaSiteKey;
+  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState(""),[resendAt,setResendAt]=useState(0),[now,setNow]=useState(()=>Date.now());
+  const signup=!!state.setupRequired||mode==="register",needsCaptcha=signup||mode==="forgot"||mode==="reset",configured=!!state.recaptchaConfigured&&!!state.recaptchaSiteKey;
   const captchaChange=useCallback((token:string)=>setRecaptchaToken(token),[]);
+  const resendWait=Math.max(0,Math.ceil((resendAt-now)/1000));
+  useEffect(()=>{if(mode!=="reset"||resendWait<=0)return;const timer=window.setInterval(()=>setNow(Date.now()),1000);return()=>window.clearInterval(timer);},[mode,resendWait]);
   function changeMode(next:Mode){setMode(next);setError("");setNotice("");setRecaptchaToken("");setResetKey(value=>value+1);setForm(old=>({...old,password:"",confirmPassword:"",otp:""}));}
   async function submit(event:FormEvent){
     event.preventDefault();setError("");setNotice("");setBusy(true);
     try{
       if(mode==="forgot"){
         const result=await api("forgotPassword",{email:form.email,recaptchaToken});
-        setResetId(String(result.resetId??""));setNotice(String(result.message??"Kode OTP telah dikirim."));setMode("reset");
+        setResetId(String(result.resetId??""));setNotice(String(result.message??"Jika email terdaftar dan aktif, kode OTP telah dikirim."));setResendAt(Date.now()+60_000);setMode("reset");
       }else if(mode==="reset"){
         if(form.password!==form.confirmPassword)throw Error("Konfirmasi password tidak sama.");
         const result=await api("resetPassword",{resetId,otp:form.otp,password:form.password});
@@ -78,6 +80,15 @@ export default function AuthScreen({state,api,reload}:{state:State;api:Api;reloa
       }
       setForm(old=>({...old,password:"",confirmPassword:"",otp:""}));setRecaptchaToken("");
     }catch(e){setError((e as Error).message);if(needsCaptcha){setRecaptchaToken("");setResetKey(value=>value+1);}}
+    finally{setBusy(false);}
+  }
+  async function resendOtp(){
+    if(busy||resendWait>0||!form.email)return;
+    setError("");setNotice("");setBusy(true);
+    try{
+      const result=await api("forgotPassword",{email:form.email,recaptchaToken});
+      setResetId(String(result.resetId??""));setNotice(String(result.message??"Jika email terdaftar dan aktif, kode OTP telah dikirim."));setResendAt(Date.now()+60_000);setRecaptchaToken("");setResetKey(value=>value+1);setForm(old=>({...old,otp:""}));
+    }catch(e){setError((e as Error).message);setRecaptchaToken("");setResetKey(value=>value+1);}
     finally{setBusy(false);}
   }
   const title=state.setupRequired?"Siapkan akun admin":mode==="register"?"Buat akun":mode==="forgot"?"Lupa password":mode==="reset"?"Masukkan kode OTP":"Selamat datang";
@@ -99,7 +110,8 @@ export default function AuthScreen({state,api,reload}:{state:State;api:Api;reloa
         {configured?<RecaptchaV2 key={mode} siteKey={state.recaptchaSiteKey!} onChange={captchaChange} resetKey={resetKey}/>:<div className="captcha-config-error" role="alert">Google reCAPTCHA belum dikonfigurasi oleh administrator server.</div>}
       </div></>}
     {state.setupRequired&&state.setupTokenRequired&&<label>Setup token<PasswordInput required autoComplete="off" value={form.setupToken} onChange={e=>setForm({...form,setupToken:e.target.value})}/></label>}
-    <button className="primary-button" disabled={busy||needsCaptcha&&(!configured||!recaptchaToken)}>{busy?"Memproses...":signup?"Daftar":mode==="forgot"?"Kirim OTP":mode==="reset"?"Simpan password":"Masuk"}</button>
+    <button className="primary-button" disabled={busy||(mode!=="reset"&&needsCaptcha&&(!configured||!recaptchaToken))||(mode==="reset"&&!form.otp)}>{busy?"Memproses...":signup?"Daftar":mode==="forgot"?"Kirim OTP":mode==="reset"?"Simpan password":"Masuk"}</button>
+    {mode==="reset"&&<button type="button" className="secondary-button" disabled={busy||resendWait>0||!configured||!recaptchaToken} onClick={()=>void resendOtp()}>{resendWait>0?`Kirim ulang OTP (${resendWait}s)`:"Kirim ulang OTP"}</button>}
     {!state.setupRequired&&<div className="auth-links">{mode==="login"&&<><button type="button" className="text-button" disabled={busy} onClick={()=>changeMode("forgot")}>Lupa password?</button><button type="button" className="text-button" disabled={busy} onClick={()=>changeMode("register")}>Belum punya akun? Daftar</button></>}{mode!=="login"&&<button type="button" className="text-button" disabled={busy} onClick={()=>changeMode("login")}>Kembali ke halaman masuk</button>}</div>}
   </form></div></div>;
 }

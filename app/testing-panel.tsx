@@ -43,19 +43,25 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
   const [running,setRunning]=useState(false),[progress,setProgress]=useState<TestProgress|null>(null),[testingError,setTestingError]=useState<TestingError|null>(null),[selectedRun,setSelectedRun]=useState<Run|null>(null),[evidenceRun,setEvidenceRun]=useState<Run|null>(null),[downloadingId,setDownloadingId]=useState(""),[historyQuery,setHistoryQuery]=useState(""),[offset,setOffset]=useState(0);
   const [reprocessingId,setReprocessingId]=useState("");
   const [busyUserIds,setBusyUserIds]=useState<string[]>([]);
+  const refreshAspiBusy=useRef<(()=>Promise<void>)|null>(null);
   useEffect(()=>{
     if(variant!=="dev_site")return;
     let stop=false;
+    const idle=!running&&!reprocessingId;
     const load=async()=>{
       try{
         const result=await api("aspiBusy");
         if(!stop)setBusyUserIds(Array.isArray(result.busyUserIds)?result.busyUserIds.map(String):[]);
-      }catch{/* Pertahankan daftar sibuk terakhir bila polling gagal. */}
+      }catch{
+        // On poll failure while idle, drop only this selection so a stale busy list cannot lock the form forever.
+        if(!stop&&idle&&userId)setBusyUserIds(current=>current.filter(id=>id!==userId));
+      }
     };
+    refreshAspiBusy.current=load;
     void load();
     const timer=window.setInterval(()=>void load(),2000);
     return ()=>{stop=true;window.clearInterval(timer);};
-  },[variant,api,running,reprocessingId]);
+  },[variant,api,running,reprocessingId,userId]);
   const [preview,setPreview]=useState<{runId:string;evidence:EvidenceChoice}|null>(null);
   const activeProgressId=useRef(""),reprocessLock=useRef(false);
   const lastStage=useRef("preparing"),canDownloadEvidence=state.user?.role==="admin"||(state.user?.privileges??[]).includes("dev_site");
@@ -100,7 +106,11 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
       await reload().catch(()=>undefined);historyData.refresh();
       setTestingError({stage:busy?"pdf_reprocessing":lastStage.current,summary:busy?"Sesi ASPI sedang dipakai.":timeout?"Waktu tunggu habis; status proses belum dapat dipastikan.":"Proses testing tidak dapat diselesaikan.",technical:(error as Error).message,outcome,httpStatus:"Tidak ada",suggestion:busy?"Tunggu hingga pengambilan bukti pada akun ASPI ini selesai. Pengujian baru tidak dijalankan.":timeout?"Periksa History Testing. Jika PDF sudah tersimpan, status di history tetap berlaku dan tidak perlu diunduh ulang.":outcome==="VALIDATION_ERROR"?"Periksa input yang disebutkan.":"Periksa tahap yang gagal pada detail History sebelum mencoba kembali."});
     }
-    finally{polling=false;clearInterval(timer);setRunning(false);activeProgressId.current="";}
+    finally{
+      polling=false;clearInterval(timer);setRunning(false);activeProgressId.current="";
+      // Poll immediately after unlock so form does not stay locked on a stale busy list.
+      await refreshAspiBusy.current?.().catch(()=>undefined);
+    }
   }
   async function refreshPage(){
     if(formLocked||refreshing)return;
@@ -139,7 +149,10 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
       if(/sedang diproses/i.test(message)){setNotice("Proses bukti sedang berjalan. Tidak ada proses duplikat dan API tidak dijalankan ulang.");await reload();historyData.refresh();return;}
       const outcome=error instanceof ApiError?error.code:"REQUEST_ERROR";
       setTestingError({stage:"pdf_reprocessing",summary:"Proses ulang bukti gagal.",technical:message,outcome,httpStatus:"Tidak ada",suggestion:"PDF yang sudah tersimpan tetap aman. Coba lagi setelah proses yang sedang berjalan selesai."});
-    }finally{reprocessLock.current=false;setReprocessingId("");}
+    }finally{
+      reprocessLock.current=false;setReprocessingId("");
+      await refreshAspiBusy.current?.().catch(()=>undefined);
+    }
   }
   async function resumeRun(run:Run){
     const reprocess=reprocessOf(run);
@@ -182,8 +195,9 @@ function ReprocessHistory({run}:{run:Run}){
 function ErrorDialog({error,onClose}:{error:TestingError;onClose:()=>void}){return <div className="modal-backdrop error-layer"><section className="card error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="testing-error-title"><CloseButton onClick={onClose}/><h2 id="testing-error-title">{error.summary}</h2><dl><div><dt>Tahap</dt><dd>{progressStages.find(item=>item.key===error.stage)?.label??error.stage}</dd></div><div><dt>Outcome</dt><dd>{error.outcome}</dd></div><div><dt>HTTP Status</dt><dd>{error.httpStatus}</dd></div><div><dt>Detail</dt><dd>{error.technical}</dd></div><div><dt>Saran</dt><dd>{error.suggestion}</dd></div></dl></section></div>;}
 function EvaluationNotice({run}:{run:Run|null|undefined}){
   const evaluation=object(run?.request)&&object(run.request.evaluation)?run.request.evaluation:null;
-  if(evaluation?.outcome!=="COMPLETED"&&evaluation?.outcome!=="AUTOMATION_ERROR")return null;
-  return <aside className="evaluation-notice" role="status" aria-label="Hasil pengujian"><strong>Outcome: {String(evaluation.outcome)}</strong><p>Validasi: HTTP Only</p><p>Tahap: {String(evaluation.stageLabel??"Validasi HTTP")}</p><p>{String(evaluation.detail)}</p>{evaluation.suggestion?<p>Saran: {String(evaluation.suggestion)}</p>:null}</aside>;
+  if(!evaluation||!["COMPLETED","PASSED","FAILED","AUTOMATION_ERROR"].includes(String(evaluation.outcome)))return null;
+  const mode=String(evaluation.mode??"HTTP_ONLY")==="SNAP_AND_HTTP"?"SNAP + HTTP":"HTTP Only";
+  return <aside className="evaluation-notice" role="status" aria-label="Hasil pengujian"><strong>Outcome: {String(evaluation.outcome)}</strong><p>Validasi: {mode}</p><p>Tahap: {String(evaluation.stageLabel??"Validasi")}</p><p>{String(evaluation.detail)}</p>{evaluation.suggestion?<p>Saran: {String(evaluation.suggestion)}</p>:null}</aside>;
 }
 function EvidenceDownloadDialog({pdfs,downloadingId,onClose,onDownload,onView,onZip}:{pdfs:EvidenceChoice[];downloadingId:string;runId:string;onClose:()=>void;onDownload:(evidence:EvidenceChoice)=>void;onView:(evidence:EvidenceChoice)=>void;onZip:()=>void}){
   const dialog=useRef<HTMLDialogElement>(null),busy=!!downloadingId;

@@ -59,6 +59,7 @@ export default function DocumentationImport({users,endpoint,service,api,reload,o
         <h2 id="import-title">{endpoint?"Edit Endpoint URL":"Tambah Endpoint URL"}</h2>
         <p>Tempel URL operasi ASPI untuk mengambil konfigurasi dan sample request.</p>
       </header>
+      {error&&<p role="alert" className="form-error">{error}</p>}
       <div className="documentation-content" aria-busy={working==="reading"}>
         {users.length>1?<label className="form-field">
           <span>User SNAP untuk sesi portal</span>
@@ -77,7 +78,6 @@ export default function DocumentationImport({users,endpoint,service,api,reload,o
           </button>
         </div>
         {working==="reading"&&<p className="documentation-reading" role="status">Membaca dokumentasi ASPI…</p>}
-        {error&&<p role="alert" className="form-error">{error}</p>}
         {parsed&&config&&<div className="documentation-result">
           <div className="documentation-identity">
             <strong>{parsed.name}</strong>
@@ -114,7 +114,7 @@ export default function DocumentationImport({users,endpoint,service,api,reload,o
                 {(overrides||!config.expectedCode)&&<label className="form-field"><span>Expected SNAP Response Code (opsional)</span>
                   <input aria-label="Expected SNAP Response Code import" disabled={busy} inputMode="numeric" maxLength={7} value={config.expectedCode??""}
                     onChange={event=>setConfig("expectedCode",event.target.value||null)} aria-describedby="expected-snap-code-help"/>
-                  <small id="expected-snap-code-help" className="helper">Boleh kosong. API tetap dijalankan, tetapi hasil menjadi NOT_EVALUATED sampai expected code ditentukan.</small>
+                  <small id="expected-snap-code-help" className="helper">Jika diisi, Positive Testing memvalidasi SNAP responseCode lalu HTTP. Jika kosong, hanya Expected HTTP Status yang dipakai.</small>
                 </label>}
               </div>}
               {overrides&&config.authFlow!=="unknown"&&config.authFlow!=="none"&&<div className="documentation-config-fields">
@@ -128,10 +128,9 @@ export default function DocumentationImport({users,endpoint,service,api,reload,o
               </div>}
               {config.authFlow!=="none"&&<details className="documentation-details"><summary>Ekspektasi tes token negatif</summary>
                 <p className="helper">Opsional. Isi dari dokumentasi skenario, bukan disamakan dengan hasil sukses.</p>
-                <label className="documentation-confirmation"><input type="checkbox" disabled={busy} checked={!!config.negativeToken} onChange={event=>setConfig("negativeToken",event.target.checked?{expectedHttpStatus:null,expectedCode:null}:undefined)}/><span>Aktifkan tes token tidak valid</span></label>
+                <label className="documentation-confirmation"><input type="checkbox" disabled={busy} checked={!!config.negativeToken} onChange={event=>setConfig("negativeToken",event.target.checked?{expectedHttpStatus:401,expectedCode:null}:undefined)}/><span>Aktifkan tes token tidak valid</span></label>
                 {config.negativeToken&&<div className="documentation-config-fields">
-                  <label className="form-field"><span>Expected HTTP negatif</span><input aria-label="Expected HTTP negatif" disabled={busy} type="number" min="400" max="499" value={config.negativeToken.expectedHttpStatus??""} onChange={event=>setConfig("negativeToken",{...config.negativeToken,expectedHttpStatus:event.target.value?Number(event.target.value):null})}/></label>
-                  <label className="form-field"><span>Expected SNAP negatif (opsional)</span><input aria-label="Expected SNAP negatif" disabled={busy} inputMode="numeric" maxLength={7} value={config.negativeToken.expectedCode??""} onChange={event=>setConfig("negativeToken",{...config.negativeToken,expectedCode:event.target.value||null})}/><small className="helper">Boleh kosong; hasil menjadi NOT_EVALUATED sampai expected code ditentukan.</small></label>
+                  <label className="form-field"><span>Expected HTTP negatif</span><input aria-label="Expected HTTP negatif" disabled={busy} type="number" min="400" max="499" value={config.negativeToken.expectedHttpStatus??""} onChange={event=>setConfig("negativeToken",{expectedHttpStatus:event.target.value?Number(event.target.value):null,expectedCode:null})}/><small className="helper">Negative Testing hanya memakai Expected HTTP Status (contoh 401).</small></label>
                 </div>}
               </details>}
             </section>

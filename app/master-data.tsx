@@ -12,7 +12,7 @@ const value=(item:Item|undefined,key:string)=>String(item?.data[key]??"");
 
 export default function MasterData({state,api,reload,setError,setNotice}:{state:State;api:Api;reload:()=>Promise<void>;setError:(s:string)=>void;setNotice:(s:string)=>void}){
   const [kind,setKind]=useState<Kind>("snap_user"),[editing,setEditing]=useState<Item|"new"|null>(null),[connection,setConnection]=useState<Item|"new"|null>(null);
-  const [draft,setDraft]=useState({name:"",parentId:"",data:{} as Record<string,unknown>}),[busy,setBusy]=useState(false);
+  const [draft,setDraft]=useState({name:"",parentId:"",data:{} as Record<string,unknown>}),[busy,setBusy]=useState(false),[modalError,setModalError]=useState("");
   const [importing,setImporting]=useState<{endpoint?:Item;service?:Item}|null>(null);
   const admin=state.user?.role==="admin";
   const users=state.records.filter(x=>x.kind==="snap_user");
@@ -22,14 +22,14 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
   const endpoints=state.records.filter(x=>x.kind==="endpoint");
   const rows=kind==="snap_user"?users:kind==="dev_site"?[...sites,...incompleteClients]:endpoints;
   function open(item:Item|null){
-    setEditing(item??"new");
+    setEditing(item??"new");setModalError("");setError("");
     setDraft(item?{name:item.name,parentId:item.parentId??"",data:{...item.data,email:value(item,"email")||value(item,"username"),password:""}}:{name:"",parentId:"",data:{email:"",password:""}});
   }
   const patch=(key:string,entry:string)=>setDraft(old=>({...old,data:{...old.data,[key]:entry}}));
   async function save(event:FormEvent){
-    event.preventDefault();setBusy(true);setError("");
+    event.preventDefault();setBusy(true);setModalError("");setError("");
     try{const data={...draft.data};if(typeof data.config==="string")data.config=JSON.parse(data.config);await api("save",{kind,id:editing&&editing!=="new"?editing.id:undefined,...draft,data});await reload();setEditing(null);setNotice("Master Data disimpan.");}
-    catch(e){setError((e as Error).message);}finally{setBusy(false);}
+    catch(e){setModalError((e as Error).message);}finally{setBusy(false);}
   }
   async function remove(item:Item){
     if(!window.confirm(item.kind==="endpoint"?`Hapus endpoint ${item.name} beserta konfigurasi layanan dan templatenya? History Testing tetap disimpan.`:`Hapus ${item.name}?`))return;
@@ -56,12 +56,13 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
     {kind==="dev_site"&&<p className="helper">CHANNEL-ID wajib. X-DEVICE-ID, ORIGIN, X-IP-ADDRESS, X-LATITUDE, dan X-LONGITUDE opsional.</p>}
     {kind==="snap_user"&&<p className="helper">Password SNAP disimpan terenkripsi.</p>}
     {editing&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save}>
-      <div className="section-header"><div><h2>{editing==="new"?"Tambah":"Edit"} {labels[kind]}</h2></div></div>
+      <div className="section-header"><div><h2>{editing==="new"?"Tambah":"Edit"} {labels[kind]}</h2><p>Perbaiki isian yang ditandai sebelum menyimpan.</p></div></div>
+      {modalError&&<div className="form-error" role="alert">{modalError}</div>}
       <div className="form-grid">
         <label className="form-field"><span>Nama *</span><input required maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
         {kind==="snap_user"&&<>{field("email","Email SNAP")}{field("password","Password SNAP",false,true)}<p className="helper wide">Saat edit, kosongkan password untuk mempertahankan nilai tersimpan. Akun ini terpisah dari username AutoSNAP.</p></>}
       </div>
-      <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>setEditing(null)}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
+      <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>{setEditing(null);setModalError("");}}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
     </form></div>}
     {connection&&<ConnectionForm client={selectedClient} environment={selectedSite} user={owner} users={users} api={api} reload={reload} onClose={()=>setConnection(null)} onSaved={()=>{setConnection(null);setNotice("Dev Site Client disimpan.");}}/>}
   </section>;
