@@ -80,6 +80,11 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
   const ready=!!endpoint&&!!service&&!!user&&!!site&&!jsonError&&!missing.length;
   const accountBusy=variant==="dev_site"&&!!userId&&busyUserIds.includes(userId);
   const formLocked=running||!!reprocessingId||accountBusy;
+  const formReady=!formLocked;
+  const applyBusyFromResult=(result:Record<string,unknown>)=>{
+    if(Array.isArray(result.busyUserIds))setBusyUserIds(result.busyUserIds.map(String));
+    else if(result.aspiReady===true||result.formReady===true)setBusyUserIds(current=>userId?current.filter(id=>id!==userId):current);
+  };
   const pdfsOf=(run:Run):EvidenceChoice[]=>object(run.request)&&Array.isArray(run.request.aspiActivities)?run.request.aspiActivities.filter(object).map(item=>({activityId:String(item.activityId??""),service:String(item.service??"ASPI"),fileName:`ASPI-${String(item.service??"Activity").replace(/[^A-Za-z0-9_-]/g,"-")}-${String(item.activityId)}.pdf`,pdfReady:item.pdfReady===true})).filter(item=>item.activityId):[];
 
   async function run(event:FormEvent){
@@ -90,6 +95,7 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
     try{
       const result=await api("run",{progressId,clientId:client?.id,projectId:project?.id,environmentId:site?.id,userId:user?.id,serviceId:service?.id,endpointId:endpoint?.id,useCase:"B2B",testType,body,parameters});
       polling=false;
+      applyBusyFromResult(result);
       try{const current=await api("getProgress",{id:progressId}) as unknown as TestProgress;lastStage.current=current.stage;setProgress(current);}catch{}
       await reload();setResultId(String(result.id??""));
       if(["FAILED","AUTOMATION_ERROR","VALIDATION_ERROR"].includes(String(result.status))){const response=object(result.response)?result.response:{};setTestingError({stage:String(result.failedStage??lastStage.current),summary:"Pengujian tidak berhasil.",technical:String(response.error??result.notes??"HTTP tidak sesuai expected."),outcome:String(result.outcome??result.status??"FAILED"),httpStatus:result.httpStatus===null||result.httpStatus===undefined?"Tidak ada":String(result.httpStatus),suggestion:result.httpStatus===null||result.httpStatus===undefined?"Periksa tahap gagal, sesi ASPI, dan konfigurasi Master Data lalu coba Lanjutkan Testing.":"Periksa expected HTTP status pada detail History."});}
@@ -107,9 +113,10 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
       setTestingError({stage:busy?"pdf_reprocessing":lastStage.current,summary:busy?"Sesi ASPI sedang dipakai.":timeout?"Waktu tunggu habis; status proses belum dapat dipastikan.":"Proses testing tidak dapat diselesaikan.",technical:(error as Error).message,outcome,httpStatus:"Tidak ada",suggestion:busy?"Tunggu hingga pengambilan bukti pada akun ASPI ini selesai. Pengujian baru tidak dijalankan.":timeout?"Periksa History Testing. Jika PDF sudah tersimpan, status di history tetap berlaku dan tidak perlu diunduh ulang.":outcome==="VALIDATION_ERROR"?"Periksa input yang disebutkan.":"Periksa tahap yang gagal pada detail History sebelum mencoba kembali."});
     }
     finally{
-      polling=false;clearInterval(timer);setRunning(false);activeProgressId.current="";
-      // Poll immediately after unlock so form does not stay locked on a stale busy list.
+      polling=false;clearInterval(timer);
+      // Sync ASPI busy BEFORE clearing running so Execution Log never claims "selesai/form siap" while the form is still locked.
       await refreshAspiBusy.current?.().catch(()=>undefined);
+      setRunning(false);activeProgressId.current="";
     }
   }
   async function refreshPage(){
@@ -128,6 +135,7 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
     reprocessLock.current=true;setReprocessingId(run.id);setTestingError(null);
     try{
       const result=await api("retryAspiEvidence",{id:run.id});
+      applyBusyFromResult(result);
       const stored=Number(result.stored??0),required=Number(result.required??0);
       if(result.processing===true)setNotice("Proses bukti sedang berjalan. PDF yang sudah tersimpan tetap aman. Request API tidak dijalankan ulang.");
       else if(result.status==="PASSED")setNotice(`Bukti lengkap. Status PASSED. ${stored}/${required} PDF.`);
@@ -150,8 +158,9 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
       const outcome=error instanceof ApiError?error.code:"REQUEST_ERROR";
       setTestingError({stage:"pdf_reprocessing",summary:"Proses ulang bukti gagal.",technical:message,outcome,httpStatus:"Tidak ada",suggestion:"PDF yang sudah tersimpan tetap aman. Coba lagi setelah proses yang sedang berjalan selesai."});
     }finally{
-      reprocessLock.current=false;setReprocessingId("");
+      reprocessLock.current=false;
       await refreshAspiBusy.current?.().catch(()=>undefined);
+      setReprocessingId("");
     }
   }
   async function resumeRun(run:Run){
@@ -160,7 +169,10 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
     setReprocessingId(run.id);setTestingError(null);
     try{const result=await api("resumeTesting",{id:run.id,confirmMutatingRetry:reprocess.requireMutatingConfirm===true});setNotice(`Resume: ${String(result.status)} · HTTP ${String(result.httpStatus??"—")}`);await reload();historyData.refresh();}
     catch(error){setTestingError({stage:"api_request",summary:"Lanjutkan Testing gagal.",technical:(error as Error).message,outcome:"AUTOMATION_ERROR",httpStatus:"Tidak ada",suggestion:"Periksa checkpoint dan jangan mengulang transaksi yang sudah berhasil."});}
-    finally{setReprocessingId("");}
+    finally{
+      await refreshAspiBusy.current?.().catch(()=>undefined);
+      setReprocessingId("");
+    }
   }
   const headers=[["Content-Type","application/json"],["Authorization",value(site,"mode")==="mock"?"Simulasi lokal":"Otomatis dari API Keamanan"],["X-TIMESTAMP","Waktu eksekusi; sama dengan waktu pada signature"],["X-SIGNATURE","Dihitung otomatis untuk request ini"],["X-PARTNER-ID",client?.partnerId||"Dari Master Data Dev Site Client"],["X-EXTERNAL-ID","Angka unik otomatis setiap request"]];
 
@@ -173,7 +185,7 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
     <section className="card response-card" aria-live="polite"><div className="section-header"><div><h2>Hasil Testing</h2><p>{latest?new Date(latest.created_at).toLocaleString("id-ID"):"Hasil muncul setelah testing dijalankan."}</p></div>{latest&&<span className={`status-badge ${latest.status.toLowerCase()}`}>{latest.status}</span>}</div><div className="response-summary"><div><span>HTTP</span><strong>{latest?.http_status??"—"}</strong></div><div><span>PDF ASPI</span><strong>{latest?`${pdfCountsOf(latest).ready}/${pdfCountsOf(latest).required||"—"}`:"—"}</strong></div><div><span>WAKTU</span><strong>{latest?`${latest.duration_ms} ms`:"—"}</strong></div></div><EvaluationNotice run={latest}/><pre className="response-code">{JSON.stringify(latest?.response??{message:"Belum ada hasil untuk pilihan ini."},null,2)}</pre>{latest&&<div className="inline-actions"><button type="button" className="text-button" onClick={()=>setSelectedRun(latest)}>Detail validasi</button>{canDownloadEvidence&&pdfsOf(latest).length>0&&<button type="button" className="text-button" onClick={()=>setEvidenceRun(latest)}>Bukti ASPI</button>}{reprocessOf(latest).retryEvidence&&<button type="button" className="text-button" disabled={formLocked} onClick={()=>void retryEvidence(latest)}>Proses Ulang Bukti</button>}{reprocessOf(latest).resumeTesting&&<button type="button" className="text-button" disabled={formLocked} onClick={()=>void resumeRun(latest)}>Lanjutkan Testing</button>}</div>}</section>
     <section className="card history-card"><div className="section-header"><div><h2>History Testing</h2><p>{historyData.total} hasil pada periode terpilih.</p></div><label className="search-box"><input aria-label="Cari history" value={historyQuery} onChange={event=>{setHistoryQuery(event.target.value);setOffset(0);}} placeholder="Cari Dev Site, service, atau status..."/></label></div><HistoryFilter value={historyRange} onChange={range=>{setHistoryRange(range);setOffset(0);}}/>{historyData.error&&<p className="field-error" role="alert">{historyData.error}</p>}<div className="table-wrap" aria-busy={historyData.loading}><table><thead><tr><th>WAKTU</th><th>SERVICE / DEV SITE</th><th>STATUS</th><th>HTTP / PDF</th><th>DURASI</th><th>AKSI</th></tr></thead><tbody>{history.map(run=>{const pdf=pdfCountsOf(run),reprocess=reprocessOf(run);return <tr key={run.id}><td>{new Date(run.created_at).toLocaleString("id-ID",{timeZone:"Asia/Jakarta"})}</td><td>{nameOf(run,"service")}<span className="cell-caption">{nameOf(run,"environment")} · {run.mode==="portal"?"ASPI Sandbox":run.mode==="live"?"Live Bank Sumut":"Mock Lokal"}</span></td><td><span className={`status-badge ${run.status.toLowerCase()}`}>{run.status}</span></td><td>{run.http_status??"—"} / {pdf.required?`${pdf.ready}/${pdf.required}`:"—"}</td><td>{run.duration_ms??0} ms</td><td><div className="inline-actions"><button type="button" className="text-button" onClick={()=>setSelectedRun(run)}>Detail</button>{canDownloadEvidence&&<button type="button" className="text-button" disabled={!pdfsOf(run).length||!!downloadingId} onClick={()=>setEvidenceRun(run)}>Bukti ASPI</button>}{reprocess.retryEvidence&&<button type="button" className="text-button" disabled={formLocked} onClick={()=>void retryEvidence(run)}>Proses Ulang Bukti</button>}{reprocess.resumeTesting&&<button type="button" className="text-button" disabled={formLocked} onClick={()=>void resumeRun(run)}>Lanjutkan</button>}</div></td></tr>;})}</tbody></table>{!history.length&&<p className="empty-note">{historyData.loading?"Memuat history…":"Belum ada history yang cocok."}</p>}</div><div className="history-pagination"><button className="secondary-button" disabled={!offset||historyData.loading} onClick={()=>setOffset(Math.max(0,offset-20))}>Sebelumnya</button><span>{historyData.total?`${offset+1}`:"0 hasil"}</span><button className="secondary-button" disabled={offset+20>=historyData.total||historyData.loading} onClick={()=>setOffset(offset+20)}>Berikutnya</button></div></section>
     {preview&&<PdfPreview runId={preview.runId} activityId={preview.evidence.activityId} fileName={preview.evidence.fileName} onClose={()=>setPreview(null)}/>}
-    {progress&&<TestingProgress progress={progress} running={running} onCancel={async()=>{await api("cancelRun",{id:activeProgressId.current});}} onClose={()=>setProgress(null)} onRetryEvidence={!formLocked&&latest&&reprocessOf(latest).retryEvidence?()=>retryEvidence(latest):undefined}/>} {testingError&&<ErrorDialog error={testingError} onClose={()=>setTestingError(null)}/>} {selectedRun&&<div className="modal-backdrop"><div className="card edit-modal run-modal"><div className="section-header"><div><h2>Detail Testing</h2><p>{selectedRun.notes}</p></div><CloseButton onClick={()=>setSelectedRun(null)}/></div><EvaluationNotice run={selectedRun}/><p className="helper">PDF ASPI: {pdfCountsOf(selectedRun).ready}/{pdfCountsOf(selectedRun).required||0}</p><ReprocessHistory run={selectedRun}/><div className="inline-actions">{reprocessOf(selectedRun).retryEvidence&&<button type="button" className="secondary-button" disabled={formLocked} onClick={()=>void retryEvidence(selectedRun)}>Proses Ulang Bukti</button>}{reprocessOf(selectedRun).resumeTesting&&<button type="button" className="secondary-button" disabled={formLocked} onClick={()=>void resumeRun(selectedRun)}>Lanjutkan Testing</button>}</div><h3>Request dan validasi</h3><pre className="snippet-code">{JSON.stringify(selectedRun.request,null,2)}</pre><h3>Response</h3><pre className="snippet-code">{JSON.stringify(selectedRun.response,null,2)}</pre></div></div>} {evidenceRun&&<EvidenceDownloadDialog pdfs={pdfsOf(evidenceRun)} downloadingId={downloadingId} runId={evidenceRun.id} onClose={()=>setEvidenceRun(null)} onView={evidence=>{setPreview({runId:evidenceRun.id,evidence});setEvidenceRun(null);}} onDownload={evidence=>downloadPdf(evidenceRun,evidence)} onZip={()=>downloadEvidenceZip(evidenceRun)}/>}
+    {progress&&<TestingProgress progress={progress} running={running||!!reprocessingId} formReady={formReady} accountBusy={accountBusy} onCancel={async()=>{await api("cancelRun",{id:activeProgressId.current});}} onClose={()=>setProgress(null)} onRetryEvidence={formReady&&latest&&reprocessOf(latest).retryEvidence?()=>retryEvidence(latest):undefined}/>} {testingError&&<ErrorDialog error={testingError} onClose={()=>setTestingError(null)}/>} {selectedRun&&<div className="modal-backdrop"><div className="card edit-modal run-modal"><div className="section-header"><div><h2>Detail Testing</h2><p>{selectedRun.notes}</p></div><CloseButton onClick={()=>setSelectedRun(null)}/></div><EvaluationNotice run={selectedRun}/><p className="helper">PDF ASPI: {pdfCountsOf(selectedRun).ready}/{pdfCountsOf(selectedRun).required||0}</p><ReprocessHistory run={selectedRun}/><div className="inline-actions">{reprocessOf(selectedRun).retryEvidence&&<button type="button" className="secondary-button" disabled={formLocked} onClick={()=>void retryEvidence(selectedRun)}>Proses Ulang Bukti</button>}{reprocessOf(selectedRun).resumeTesting&&<button type="button" className="secondary-button" disabled={formLocked} onClick={()=>void resumeRun(selectedRun)}>Lanjutkan Testing</button>}</div><h3>Request dan validasi</h3><pre className="snippet-code">{JSON.stringify(selectedRun.request,null,2)}</pre><h3>Response</h3><pre className="snippet-code">{JSON.stringify(selectedRun.response,null,2)}</pre></div></div>} {evidenceRun&&<EvidenceDownloadDialog pdfs={pdfsOf(evidenceRun)} downloadingId={downloadingId} runId={evidenceRun.id} onClose={()=>setEvidenceRun(null)} onView={evidence=>{setPreview({runId:evidenceRun.id,evidence});setEvidenceRun(null);}} onDownload={evidence=>downloadPdf(evidenceRun,evidence)} onZip={()=>downloadEvidenceZip(evidenceRun)}/>}
   </div>;
 }
 
