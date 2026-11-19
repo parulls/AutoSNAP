@@ -158,7 +158,7 @@ export default function DocumentationImport({users,endpoint,service,api,reload,o
       <footer className="form-actions documentation-footer">
         <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>Tutup</button>
         <button type="button" className="primary-button" disabled={busy||!parsed||!confirmed} onClick={()=>void save()}>
-          {working==="saving"?<><span className="button-spinner" aria-hidden="true"/>Menyimpan…</>:"Simpan Master Data"}
+          {working==="saving"?<><span className="button-spinner" aria-hidden="true"/>Menyimpan…</>:"Simpan"}
         </button>
       </footer>
     </section>
