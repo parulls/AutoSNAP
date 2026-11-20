@@ -1,4 +1,7 @@
--- Evidence authenticity: VERIFIED = ASPI Download (html2pdf/jsPDF) bytes; UNVERIFIED = legacy/unknown.
+-- Evidence authenticity layers:
+-- CAPTURED = ASPI Download (html2pdf/jsPDF) bytes (integrity + origin).
+-- VERIFIED = visual/layout match vs user Firefox reference (never auto on capture).
+-- UNVERIFIED = Chromium print / legacy / unknown.
 ALTER TABLE autosnap.autosnap_evidence_pdfs
   ADD COLUMN IF NOT EXISTS content_fingerprint TEXT,
   ADD COLUMN IF NOT EXISTS verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED',
@@ -14,7 +17,7 @@ BEGIN
   ) THEN
     ALTER TABLE autosnap.autosnap_evidence_pdfs
       ADD CONSTRAINT autosnap_evidence_pdfs_verification_status_check
-      CHECK (verification_status IN ('VERIFIED', 'UNVERIFIED'));
+      CHECK (verification_status IN ('VERIFIED', 'CAPTURED', 'UNVERIFIED'));
   END IF;
 END $$;
 

@@ -154,9 +154,13 @@ export function inspectPdfProvenance(pdf:Buffer){
 }
 
 /**
- * Accept only the blob produced by ASPI's Download button (html2pdf → jsPDF).
- * Reject browser printToPDF / page.pdf() substitutes. Missing Producer is rejected:
- * AutoSNAP never fabricates a PDF that merely looks valid.
+ * Origin gate only: accept the blob from ASPI Download (html2pdf → jsPDF).
+ * Reject browser printToPDF / page.pdf() substitutes.
+ *
+ * Layers (do not conflate):
+ * - Integrity: validateOfficialPdf + content SHA-256 of stored bytes
+ * - Origin: jsPDF/html2pdf Producer (this function) + capture from downloadreportactivity
+ * - Visual: layout vs user Firefox PDF → verification_status VERIFIED (never auto here)
  */
 export function validateAspiDownloadPdf(pdf:Buffer){
   validateOfficialPdf(pdf);

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useState } from "react";
 import type { Api, HistoryFilters, Item, Run, State } from "./model";
 import HistoryFilter from "./history-filter";
 import { rangeForPeriod } from "./history-period";
@@ -65,18 +65,18 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     }catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
 
-  const accessTokenUri=useMemo(()=>{
+  const accessTokenUri=(()=>{
     if(!provider)return "—";
     const base=value(provider,"baseUrl").replace(/\/$/,"");
     const path=value(provider,"accessTokenUrl")||"/api/v1.0/access-token/b2b";
     return path.startsWith("http")?path:`${base}${path.startsWith("/")?path:`/${path}`}`;
-  },[provider]);
-  const serviceUri=useMemo(()=>{
+  })();
+  const serviceUri=(()=>{
     if(!provider||!service)return "—";
     const base=value(provider,"baseUrl").replace(/\/$/,"");
     const path=value(service,"path")||value(service,"serviceUrl");
     return `${base}${path}`;
-  },[provider,service]);
+  })();
 
   function downloadJson(run:Run){
     const blob=new Blob([JSON.stringify({request:run.request,response:run.response},null,2)],{type:"application/json"});

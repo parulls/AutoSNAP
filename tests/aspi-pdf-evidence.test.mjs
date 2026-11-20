@@ -164,13 +164,19 @@ test("native navigation saves an attachment and rejects a redirected login page"
   const browser=await chromium.launch({executablePath:chrome,headless:true});
   try{
     const context=await browser.newContext({acceptDownloads:true}),pdf=aspiPdf("Official ASPI attachment");let mode="attachment",calls=0;
-    const blobHtml=`<!DOCTYPE html><html><body><div id="printPdf">report</div><script>
-      window.html2pdf=function(){};
-      const bytes=Uint8Array.from(atob("${pdf.toString("base64")}"),c=>c.charCodeAt(0));
-      const a=document.createElement("a");
-      a.href=URL.createObjectURL(new Blob([bytes],{type:"application/pdf"}));
-      a.download="Signature Authentication.pdf";
-      a.click();
+    // Mirror real ASPI: html2pdf(...) inside download(); page auto-calls download() — AutoSNAP defers then invokes it.
+    const blobHtml=`<!DOCTYPE html><html><body><div id="printPdf"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1" height="1" alt=""></div><script>
+      window.html2pdf=function(el,opts){
+        const bytes=Uint8Array.from(atob("${pdf.toString("base64")}"),c=>c.charCodeAt(0));
+        const a=document.createElement("a");
+        a.href=URL.createObjectURL(new Blob([bytes],{type:"application/pdf"}));
+        a.download="Signature Authentication.pdf";
+        a.click();
+      };
+      function download(){
+        html2pdf(document.getElementById("printPdf"),{jsPDF:{unit:"mm",format:"a4",orientation:"portrait"}});
+      }
+      download();
     </script></body></html>`;
     await context.route("https://apidevportal.aspi-indonesia.or.id/**",route=>{
       if(!route.request().url().includes("downloadreportactivity"))return route.fulfill({contentType:"text/html",body:"<h1>Activity</h1>"});
@@ -182,9 +188,20 @@ test("native navigation saves an attachment and rejects a redirected login page"
     });
     const page=await context.newPage();await page.goto("https://apidevportal.aspi-indonesia.or.id/aktivitas-aplikasi-pengujian");
     assert.deepEqual(await fetchOfficialPdf(page,activity.downloadUrl,Date.now()+5000,"navigation"),pdf);assert.equal(calls,1);
-    mode="html-blob";assert.deepEqual(await fetchOfficialPdf(page,activity.downloadUrl,Date.now()+8000,"navigation"),pdf);
-    mode="html";await assert.rejects(fetchOfficialPdf(page,activity.downloadUrl,Date.now()+4000,"navigation"),/HTML|html2pdf|Timeout|blob PDF/);
+    mode="html-blob";assert.deepEqual(await fetchOfficialPdf(page,activity.downloadUrl,Date.now()+15000,"navigation"),pdf);
+    mode="html";await assert.rejects(fetchOfficialPdf(page,activity.downloadUrl,Date.now()+4000,"navigation"),/HTML|html2pdf|download\(\)|Timeout|blob PDF|pengganti/);
     mode="login";await assert.rejects(fetchOfficialPdf(page,activity.downloadUrl,Date.now()+5000,"navigation"),/halaman login|PDF resmi/);
     assert.equal(context.pages().length,1,"report tabs are closed after success and failure");
   }finally{await browser.close();}
+});
+
+test("report navigation has no silent click→URL fallback helpers",async()=>{
+  const {readFileSync}=await import("node:fs");
+  const {join}=await import("node:path");
+  const src=readFileSync(join(process.cwd(),"backend","src","aspi-report-navigation.ts"),"utf8")
+    .replace(/\/\*[\s\S]*?\*\//g,"").replace(/\/\/.*$/gm,"");
+  assert.equal(/downloadViaOfficialUrl|downloadViaActivityLinkClick/.test(src),false);
+  assert.equal(/route\.fetch\s*\(/.test(src),false,"route.fetch bypasses cookies/context routes");
+  assert.match(src,/captureAspHtml2PdfBlob/);
+  assert.match(src,/installHtml2PdfGate|__aspiQueuedHtml2Pdf/);
 });

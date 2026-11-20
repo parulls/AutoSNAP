@@ -9,6 +9,13 @@ import { decrypt, sha256 } from "./security";
 import { AspiAutomationError } from "./aspi-types";
 
 const value=(row:RecordRow,key:string)=>String(row.data[key]??"");
+/** Desktop viewport for ASPI html2pdf capture. Override with AUTOSNAP_PDF_VIEWPORT_WIDTH/HEIGHT/SCALE. */
+export function aspiPdfViewport(){
+  const width=Math.max(800,Number(process.env.AUTOSNAP_PDF_VIEWPORT_WIDTH??1920)||1920);
+  const height=Math.max(600,Number(process.env.AUTOSNAP_PDF_VIEWPORT_HEIGHT??1080)||1080);
+  const deviceScaleFactor=Math.min(2,Math.max(1,Number(process.env.AUTOSNAP_PDF_DEVICE_SCALE??1)||1));
+  return {width,height,deviceScaleFactor};
+}
 export function aspiAccountLease(user:{data?:Record<string,unknown>},environment:string){
   const data=user.data??{};
   const identity=String(data.email??data.username??"").toLowerCase();
@@ -78,12 +85,15 @@ export class AspiSessionManager{
     if(process.env.VERCEL){
       const {default:serverlessChromium}=await import("@sparticuz/chromium");
       const profile=join(tmpdir(),"autosnap-browser",lease);mkdirSync(profile,{recursive:true,mode:0o700});
-      return chromium.launchPersistentContext(profile,{executablePath:await serverlessChromium.executablePath(),headless:true,acceptDownloads:true,viewport:{width:1440,height:900},args:serverlessChromium.args});
+      // Viewport/scale affect ASPI html2pdf layout (html2canvas). Prefer desktop defaults closer to a maximized Firefox window.
+      const {width,height,deviceScaleFactor}=aspiPdfViewport();
+      return chromium.launchPersistentContext(profile,{executablePath:await serverlessChromium.executablePath(),headless:true,acceptDownloads:true,viewport:{width,height},deviceScaleFactor,args:serverlessChromium.args});
     }
     const configured=process.env.AUTOSNAP_CHROME_PATH?.trim(),candidates=[configured,"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe","C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"].filter(Boolean) as string[],executablePath=candidates.find(existsSync);
     if(!executablePath)throw new AspiAutomationError("AUTOMATION_ERROR","Google Chrome tidak ditemukan. Isi AUTOSNAP_CHROME_PATH.");
     const root=process.env.AUTOSNAP_PORTAL_PROFILE_DIR?.trim()||join(process.cwd(),".autosnap-browser-profile"),profile=join(root,lease);mkdirSync(profile,{recursive:true,mode:0o700});
-    return chromium.launchPersistentContext(profile,{executablePath,headless:true,acceptDownloads:true,viewport:{width:1440,height:900},args:["--disable-blink-features=AutomationControlled"]});
+    const {width,height,deviceScaleFactor}=aspiPdfViewport();
+    return chromium.launchPersistentContext(profile,{executablePath,headless:true,acceptDownloads:true,viewport:{width,height},deviceScaleFactor,args:["--disable-blink-features=AutomationControlled"]});
   }
   async loginIfRequired(page:Page,user:RecordRow){
     const signIn=page.getByRole("link",{name:/sign in|login|masuk/i}).or(page.getByRole("button",{name:/sign in|login|masuk/i})).first();

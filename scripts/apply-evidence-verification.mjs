@@ -36,14 +36,15 @@ for (const row of rows) {
     const pdf = validateOfficialPdf(Buffer.from(row.pdf_data));
     const prov = inspectPdfProvenance(pdf);
     const fingerprint = pdfEvidenceFingerprint(pdf);
-    const status = prov.fromAspHtml2Pdf && !prov.fromChromiumPrint ? "VERIFIED" : "UNVERIFIED";
+    // Capture proves origin only — never auto-VERIFIED without Firefox visual compare.
+    const status = prov.fromAspHtml2Pdf && !prov.fromChromiumPrint ? "CAPTURED" : "UNVERIFIED";
     await pool.query(
       `UPDATE autosnap_evidence_pdfs
        SET verification_status=$1, content_fingerprint=$2, pdf_producer=$3
        WHERE run_id=$4 AND activity_id=$5`,
       [status, fingerprint, prov.producer || null, row.run_id, row.activity_id],
     );
-    if (status === "VERIFIED") verified++;
+    if (status === "CAPTURED") verified++;
     else unverified++;
   } catch {
     await pool.query(

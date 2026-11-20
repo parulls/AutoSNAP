@@ -277,8 +277,9 @@ export class AutoSnapController {
     if(row.content_sha256&&row.content_sha256!==hash)throw clientError("Integritas PDF tersimpan rusak (SHA-256 tidak cocok). Proses ulang bukti tanpa menjalankan API.",409);
     if(row.byte_size!=null&&row.byte_size!==pdf.length)throw clientError("Ukuran PDF tersimpan tidak konsisten.",409);
     const provenance=inspectPdfProvenance(pdf);
+    // Downloadable when origin is ASPI html2pdf (CAPTURED/VERIFIED). UNVERIFIED = Chromium/legacy.
     if(provenance.fromChromiumPrint||row.verification_status==="UNVERIFIED"||!provenance.fromAspHtml2Pdf){
-      throw clientError("PDF tersimpan belum terverifikasi sebagai Download resmi ASPI (UNVERIFIED). Proses ulang bukti tanpa menjalankan API.",409);
+      throw clientError("PDF tersimpan belum terbukti Download resmi ASPI (UNVERIFIED). Proses ulang bukti tanpa menjalankan API.",409);
     }
     return {pdf,hash,fingerprint:pdfEvidenceFingerprint(pdf),provenance};
   }

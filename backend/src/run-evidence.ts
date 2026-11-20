@@ -158,17 +158,17 @@ export class RunEvidenceService{
                   `INSERT INTO autosnap_evidence_pdfs(
                      run_id,activity_id,service,pdf_data,byte_size,content_sha256,content_fingerprint,
                      verification_status,pdf_producer,source_url,downloaded_at,created_at
-                   ) VALUES($1,$2,$3,$4,$5,$6,$7,'VERIFIED',$8,$9,$10,$10)
+                   ) VALUES($1,$2,$3,$4,$5,$6,$7,'CAPTURED',$8,$9,$10,$10)
                    ON CONFLICT(run_id,activity_id) DO UPDATE SET
                      service=EXCLUDED.service,pdf_data=EXCLUDED.pdf_data,byte_size=EXCLUDED.byte_size,
                      content_sha256=EXCLUDED.content_sha256,content_fingerprint=EXCLUDED.content_fingerprint,
-                     verification_status='VERIFIED',pdf_producer=EXCLUDED.pdf_producer,
+                     verification_status='CAPTURED',pdf_producer=EXCLUDED.pdf_producer,
                      source_url=EXCLUDED.source_url,downloaded_at=EXCLUDED.downloaded_at,created_at=EXCLUDED.created_at`,
                   [run.id,op.activity!.activityId,op.activity!.service.slice(0,120),pdf,pdf.length,contentSha256,contentFingerprint,provenance.producer||null,sourceUrl,downloadedAt],
                 );
                 await query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({evidence:plan,aspiActivities:activities,evidenceErrors:this.missingOf(plan)}),run.id,input.ownerId]);
               });
-              await emit("pdf_store","completed",`${op.path}: PDF resmi ASPI (Download/html2pdf) VERIFIED; Activity ID ${op.activity.activityId}; SHA-256 ${contentSha256}; fingerprint ${contentFingerprint}.`);
+              await emit("pdf_store","completed",`${op.path}: PDF resmi ASPI (Download/html2pdf) CAPTURED; Activity ID ${op.activity.activityId}; SHA-256 ${contentSha256}; fingerprint ${contentFingerprint}. Kesesuaian tampilan vs Firefox belum VERIFIED.`);
             }catch(cause){
               op.pdfReady=previousReady;delete op.contentSha256;delete op.contentFingerprint;delete op.byteSize;delete op.pdfProducer;delete op.downloadedAt;delete op.authenticity;
               const mapped=describePdfFailure(cause);
@@ -219,8 +219,9 @@ export class RunEvidenceService{
     const stored=await this.db.query<{activity_id:string;pdf_data:Buffer;content_sha256:string|null;verification_status:string|null}>("SELECT activity_id,pdf_data,content_sha256,verification_status FROM autosnap_evidence_pdfs WHERE run_id=$1",[runId]);
     return new Set(stored.filter(row=>{
       try{
-        // Only VERIFIED ASPI Download (html2pdf/jsPDF) counts. UNVERIFIED/Chromium must re-download.
-        if(row.verification_status&&row.verification_status!=="VERIFIED")return false;
+        // CAPTURED/VERIFIED = official ASPI Download (html2pdf/jsPDF). UNVERIFIED/Chromium must re-download.
+        // VERIFIED requires a separate visual match vs user Firefox PDF — never auto on capture alone.
+        if(row.verification_status&&row.verification_status!=="CAPTURED"&&row.verification_status!=="VERIFIED")return false;
         const pdf=validateAspiDownloadPdf(Buffer.from(row.pdf_data));
         const provenance=inspectPdfProvenance(pdf);
         if(!provenance.fromAspHtml2Pdf||provenance.fromChromiumPrint)return false;
@@ -259,7 +260,7 @@ export class RunEvidenceService{
     const notes=httpFailed
       ? `${evaluation.detail} Bukti PDF resmi ASPI ${count}/${plan.operations.length} tersimpan. Outcome tetap FAILED karena validasi HTTP sebelumnya tidak sesuai.`
       : complete
-        ? `HTTP sesuai expected. Bukti PDF resmi ASPI ${count}/${plan.operations.length} tersimpan. Outcome: PASSED.`
+        ? `HTTP sesuai expected. Bukti PDF resmi ASPI ${count}/${plan.operations.length} CAPTURED (asal Download/html2pdf). Kesesuaian tampilan vs Firefox belum VERIFIED. Outcome: PASSED.`
         : `HTTP sesuai expected. Bukti PDF resmi ASPI ${count}/${plan.operations.length} tersimpan. Outcome: COMPLETED. Belum tersedia: ${missing.map(item=>item.path).join(", ")||"—"}.`;
     let checkpoint=object(request.checkpoint)&&Array.isArray(request.checkpoint.stages)?structuredClone(request.checkpoint) as RunCheckpoint:{version:1 as const,stages:[]};
     if(complete){
