@@ -2,7 +2,7 @@ import {Injectable} from "@nestjs/common";
 import {randomUUID} from "node:crypto";
 import {DatabaseService,type RecordRow,type RunRow} from "./database.service";
 import {PortalEngine,aspiActivityDownloadUrl} from "./portal-engine";
-import {validateOfficialPdf,type AspiActivity} from "./aspi-evidence";
+import {inspectPdfProvenance,pdfContentSha256,pdfEvidenceFingerprint,validateAspiDownloadPdf,type AspiActivity} from "./aspi-evidence";
 import type {PdfEvidence} from "./aspi-pdf-batch";
 import {object} from "./endpoint-config";
 import type {EvidencePlan} from "./evidence-plan";
@@ -13,19 +13,24 @@ import {sha256} from "./security";
 import {aspiAccountLease,pdfAccountLease} from "./aspi-session-manager";
 import {AspiAutomationError} from "./aspi-types";
 import {canRetryEvidence,markStage,type RunCheckpoint} from "./run-checkpoint";
+import {activityAliasesFor} from "./service-capabilities";
 
-type ProcessInput={runId:string;ownerId:string;user:RecordRow;initial?:boolean;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:(stage:string,status:"running"|"completed"|"failed",detail?:string)=>Promise<void>};
+type ProcessActor={id:string;username:string;name:string;role:string};
+type ProcessInput={runId:string;ownerId:string;user:RecordRow;initial?:boolean;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:(stage:string,status:"running"|"completed"|"failed",detail?:string)=>Promise<void>;actor?:ProcessActor};
 type MissingPdf={path:string;key:string;activityId?:string;error:string};
-type AuditEntry={at:string;attempt:number;stage:"pdf_reprocessing";priorStatus:string;priorOutcome:string|null;priorDetail:string;priorErrors:MissingPdf[];result:"COMPLETED"|"INCOMPLETE"|"PROCESSING"|"FAILED";statusBefore:string;statusAfter:string;stored:number;required:number;missing:MissingPdf[];note:string};
+type AuditEntry={at:string;attempt:number;stage:"pdf_reprocessing";priorStatus:string;priorOutcome:string|null;priorDetail:string;priorErrors:MissingPdf[];result:"COMPLETED"|"INCOMPLETE"|"PROCESSING"|"FAILED";statusBefore:string;statusAfter:string;stored:number;required:number;missing:MissingPdf[];note:string;actorId?:string;actorUsername?:string;actorName?:string;actorRole?:string;ownerOperatorId?:string;crossUser?:boolean};
 export type EvidenceProcessResult={status:string;notes:string;complete:boolean;stored:number;required:number;processing?:boolean;missing:MissingPdf[];evidence?:EvidencePlan;reprocessAudit?:AuditEntry[];pdfCounts?:{ready:number;required:number};reprocess?:{retryEvidence:boolean;resumeTesting:boolean;requireMutatingConfirm:boolean}};
 
 function describePdfFailure(cause:unknown){
   if(cause instanceof AspiAutomationError)return cause.message;
-  const message=cause instanceof Error?cause.message:"";
-  if(/batas waktu|timeout/i.test(message))return "Timeout saat mengambil PDF ASPI.";
-  if(/Activity ID tidak|aktivitas ASPI|halaman aktivitas/i.test(message))return message.slice(0,240);
-  if(/database|23505|ECONNREFUSED|connection/i.test(message))return "Gagal menyimpan PDF resmi ke database.";
-  return "Pengambilan PDF ASPI gagal. Retry tidak menjalankan API.";
+  const pg=(cause as {code?:string;message?:string})?.code;
+  if(pg==="42703")return "DATABASE_SCHEMA_ERROR: Kolom database belum tersedia. Terapkan migrasi evidence PDF.";
+  if(typeof pg==="string"&&/^[0-9A-Z]{5}$/.test(pg))return `DATABASE_ERROR: Penyimpanan bukti gagal (${pg}).`;
+  const message=cause instanceof Error?cause.message:String((cause as {message?:string})?.message??"");
+  if(/batas waktu|timeout/i.test(message))return "DOWNLOAD_TIMEOUT: Timeout saat mengambil PDF ASPI.";
+  if(/Activity ID|ACTIVITY_|aktivitas ASPI|halaman aktivitas/i.test(message))return message.slice(0,280);
+  if(/database|23505|ECONNREFUSED|connection|PDF_STORAGE/i.test(message))return "PDF_STORAGE_ERROR: Gagal menyimpan PDF resmi ke database.";
+  return message?message.slice(0,280):"Pengambilan PDF ASPI gagal. Retry tidak menjalankan API.";
 }
 const LEASE_TTL_MS=330_000;
 const STALE_HEARTBEAT_MS=180_000;
@@ -55,7 +60,7 @@ export class RunEvidenceService{
         return this.commitOutcome({run,request,plan,evaluation,input,complete:true,processing:false,priorErrors:[]});
       }
       const note="PDF untuk history ini sedang diproses. Tidak ada API yang dijalankan ulang.";
-      const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:"PROCESSING",statusAfter:run.status,stored,missing:[],note,priorErrors:this.missingOf(plan)});
+      const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:"PROCESSING",statusAfter:run.status,stored,missing:[],note,priorErrors:this.missingOf(plan),actor:input.actor});
       await this.appendAudit(run.id,input.ownerId,entry,{stage:"pdf_reprocessing",status:"running",detail:note,at:entry.at});
       return {status:"PROCESSING",processing:true,notes:note,complete:false,stored,required:plan.operations.length,missing:this.missingOf(plan),reprocessAudit:[entry]};
     }
@@ -104,7 +109,7 @@ export class RunEvidenceService{
         if(!pdfHeld){
           const stored=plan.operations.filter(op=>op.pdfReady).length;
           const note="Sesi ASPI ini sedang dipakai untuk pengujian atau pengambilan bukti. Tidak ada API yang dijalankan ulang.";
-          const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:"PROCESSING",statusAfter:run.status,stored,missing:this.missingOf(plan),note,priorErrors});
+          const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:"PROCESSING",statusAfter:run.status,stored,missing:this.missingOf(plan),note,priorErrors,actor:input.actor});
           await this.appendAudit(run.id,input.ownerId,entry,{stage:"pdf_reprocessing",status:"running",detail:note,at:entry.at});
           await this.db.query("DELETE FROM autosnap_automation_leases WHERE key=$1 AND owner=$2",[lease,owner]);
           return {status:"PROCESSING",processing:true,notes:note,complete:false,stored,required:plan.operations.length,missing:this.missingOf(plan),reprocessAudit:[entry]};
@@ -128,21 +133,60 @@ export class RunEvidenceService{
           if(item.pdf&&op.activity){
             const previousReady=op.pdfReady;
             try{
-              const pdf=validateOfficialPdf(item.pdf);
-              op.pdfReady=true;delete op.error;
-              const activities=plan.operations.flatMap(entry=>entry.activity?[{...entry.activity,pdfReady:entry.pdfReady,path:entry.path,key:entry.key}]:[]);
+              const pdf=validateAspiDownloadPdf(item.pdf);
+              const contentSha256=pdfContentSha256(pdf);
+              const contentFingerprint=pdfEvidenceFingerprint(pdf);
+              const provenance=inspectPdfProvenance(pdf);
+              op.pdfReady=true;op.contentSha256=contentSha256;op.contentFingerprint=contentFingerprint;op.byteSize=pdf.length;
+              op.pdfProducer=provenance.producer||undefined;op.downloadedAt=new Date().toISOString();op.authenticity="aspi-html2pdf-download";delete op.error;
+              const activities=plan.operations.flatMap(entry=>entry.activity?[{...entry.activity,pdfReady:entry.pdfReady,path:entry.path,key:entry.key,contentSha256:entry.contentSha256,contentFingerprint:entry.contentFingerprint,byteSize:entry.byteSize,authenticity:entry.authenticity}]:[]);
+              const sourceUrl=aspiActivityDownloadUrl(op.activity.activityId);
+              const downloadedAt=op.downloadedAt!;
               await this.db.transaction(async query=>{
-                await query("INSERT INTO autosnap_evidence_pdfs(run_id,activity_id,service,pdf_data,byte_size,created_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(run_id,activity_id) DO UPDATE SET service=EXCLUDED.service,pdf_data=EXCLUDED.pdf_data,byte_size=EXCLUDED.byte_size,created_at=EXCLUDED.created_at",[run.id,op.activity!.activityId,op.activity!.service.slice(0,120),pdf,pdf.length,new Date().toISOString()]);
+                // Backup existing row before overwrite — never silently replace audit evidence.
+                await query(
+                  `INSERT INTO autosnap_evidence_pdfs_backup(
+                     reason,run_id,activity_id,service,pdf_data,byte_size,content_sha256,content_fingerprint,
+                     verification_status,pdf_producer,source_url,downloaded_at,original_created_at
+                   )
+                   SELECT 'reprocess-overwrite',$1,$2,service,pdf_data,byte_size,content_sha256,content_fingerprint,
+                          verification_status,pdf_producer,source_url,downloaded_at,created_at
+                   FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id=$2`,
+                  [run.id,op.activity!.activityId],
+                ).catch(()=>undefined);
+                await query(
+                  `INSERT INTO autosnap_evidence_pdfs(
+                     run_id,activity_id,service,pdf_data,byte_size,content_sha256,content_fingerprint,
+                     verification_status,pdf_producer,source_url,downloaded_at,created_at
+                   ) VALUES($1,$2,$3,$4,$5,$6,$7,'VERIFIED',$8,$9,$10,$10)
+                   ON CONFLICT(run_id,activity_id) DO UPDATE SET
+                     service=EXCLUDED.service,pdf_data=EXCLUDED.pdf_data,byte_size=EXCLUDED.byte_size,
+                     content_sha256=EXCLUDED.content_sha256,content_fingerprint=EXCLUDED.content_fingerprint,
+                     verification_status='VERIFIED',pdf_producer=EXCLUDED.pdf_producer,
+                     source_url=EXCLUDED.source_url,downloaded_at=EXCLUDED.downloaded_at,created_at=EXCLUDED.created_at`,
+                  [run.id,op.activity!.activityId,op.activity!.service.slice(0,120),pdf,pdf.length,contentSha256,contentFingerprint,provenance.producer||null,sourceUrl,downloadedAt],
+                );
                 await query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({evidence:plan,aspiActivities:activities,evidenceErrors:this.missingOf(plan)}),run.id,input.ownerId]);
               });
-              await emit("pdf_store","completed",`${op.path}: PDF resmi tersimpan; Activity ID ${op.activity.activityId}.`);
-            }catch{op.pdfReady=previousReady;op.error="Gagal menyimpan PDF resmi ke database.";await persist();await emit("pdf_store","failed",`${op.path}: ${op.error}`);}
+              await emit("pdf_store","completed",`${op.path}: PDF resmi ASPI (Download/html2pdf) VERIFIED; Activity ID ${op.activity.activityId}; SHA-256 ${contentSha256}; fingerprint ${contentFingerprint}.`);
+            }catch(cause){
+              op.pdfReady=previousReady;delete op.contentSha256;delete op.contentFingerprint;delete op.byteSize;delete op.pdfProducer;delete op.downloadedAt;delete op.authenticity;
+              const mapped=describePdfFailure(cause);
+              op.error=/^(DATABASE|PDF_STORAGE)/.test(mapped)?mapped:"PDF_STORAGE_ERROR: Gagal menyimpan PDF resmi ke database.";
+              await persist();await emit("pdf_store","failed",`${op.path}: ${op.error}`);
+            }
           }
           await persist();
         };
         const pinned:Record<string,AspiActivity>={};for(const op of missing)if(op.activity)pinned[op.key]={...op.activity,downloadUrl:aspiActivityDownloadUrl(op.activity.activityId)};
         let results:PdfEvidence[];
-        try{results=await this.portal.collectEvidence({user:input.user,before:plan.beforeIds,paths:missing.map(op=>op.path),operations:missing,knownActivities:pinned,activityNames:Object.fromEntries(missing.map(op=>[op.path,[op.service]])),deadline:Date.now()+Math.max(1,deadline-Date.now()),session:input.session,signal:input.signal,onProgress:emit,onEvidence:accept});}
+        try{
+          results=await this.portal.collectEvidence({
+            user:input.user,before:plan.beforeIds,paths:missing.map(op=>op.path),operations:missing,knownActivities:pinned,
+            activityNames:Object.fromEntries(missing.map(op=>[op.path,[op.service,...activityAliasesFor(op.path)]])),
+            deadline:Date.now()+Math.max(1,deadline-Date.now()),session:input.session,signal:input.signal,onProgress:emit,onEvidence:accept,
+          });
+        }
         catch(cause){results=missing.map(op=>({key:op.key,path:op.path,error:describePdfFailure(cause)}));}
         for(const result of results)await accept(result);
       }
@@ -172,8 +216,19 @@ export class RunEvidenceService{
     return this.db.one("INSERT INTO autosnap_automation_leases (key,owner,expires_at,heartbeat_at) VALUES ($1,$2,$3,$4) ON CONFLICT (key) DO UPDATE SET owner=EXCLUDED.owner,expires_at=EXCLUDED.expires_at,heartbeat_at=EXCLUDED.heartbeat_at WHERE autosnap_automation_leases.expires_at<$5 OR COALESCE(autosnap_automation_leases.heartbeat_at,autosnap_automation_leases.expires_at)<$6 RETURNING owner",[lease,owner,expires,now,now,stale]);
   }
   private async readyIds(runId:string){
-    const stored=await this.db.query<{activity_id:string;pdf_data:Buffer}>("SELECT activity_id,pdf_data FROM autosnap_evidence_pdfs WHERE run_id=$1",[runId]);
-    return new Set(stored.filter(row=>{try{validateOfficialPdf(Buffer.from(row.pdf_data));return true;}catch{return false;}}).map(row=>row.activity_id));
+    const stored=await this.db.query<{activity_id:string;pdf_data:Buffer;content_sha256:string|null;verification_status:string|null}>("SELECT activity_id,pdf_data,content_sha256,verification_status FROM autosnap_evidence_pdfs WHERE run_id=$1",[runId]);
+    return new Set(stored.filter(row=>{
+      try{
+        // Only VERIFIED ASPI Download (html2pdf/jsPDF) counts. UNVERIFIED/Chromium must re-download.
+        if(row.verification_status&&row.verification_status!=="VERIFIED")return false;
+        const pdf=validateAspiDownloadPdf(Buffer.from(row.pdf_data));
+        const provenance=inspectPdfProvenance(pdf);
+        if(!provenance.fromAspHtml2Pdf||provenance.fromChromiumPrint)return false;
+        const hash=pdfContentSha256(pdf);
+        if(row.content_sha256&&row.content_sha256!==hash)return false;
+        return true;
+      }catch{return false;}
+    }).map(row=>row.activity_id));
   }
   private applyStored(plan:EvidencePlan,validIds:Set<string>){
     for(const op of plan.operations)op.pdfReady=!!op.activity&&validIds.has(op.activity.activityId);
@@ -181,8 +236,11 @@ export class RunEvidenceService{
   private missingOf(plan:EvidencePlan):MissingPdf[]{
     return plan.operations.filter(op=>!op.pdfReady).map(op=>({path:op.path,key:op.key,activityId:op.activity?.activityId,error:op.error??"PDF belum tersedia."}));
   }
-  private auditEntry(input:{run:RunRow;plan:EvidencePlan;evaluation:Evaluation|null;attempt:number;result:AuditEntry["result"];statusAfter:string;stored:number;missing:MissingPdf[];note:string;priorErrors:MissingPdf[]}):AuditEntry{
-    return {at:new Date().toISOString(),attempt:input.attempt,stage:"pdf_reprocessing",priorStatus:input.run.status,priorOutcome:input.evaluation?.outcome??null,priorDetail:input.evaluation?.detail??"",priorErrors:input.priorErrors,result:input.result,statusBefore:input.run.status,statusAfter:input.statusAfter,stored:input.stored,required:input.plan.operations.length,missing:input.missing,note:input.note};
+  private auditEntry(input:{run:RunRow;plan:EvidencePlan;evaluation:Evaluation|null;attempt:number;result:AuditEntry["result"];statusAfter:string;stored:number;missing:MissingPdf[];note:string;priorErrors:MissingPdf[];actor?:ProcessActor}):AuditEntry{
+    const actor=input.actor;
+    const crossUser=!!actor&&!!input.run.operator_id&&actor.id!==input.run.operator_id;
+    const note=crossUser?`${input.note} [Admin ${actor!.username} memproses ulang bukti milik operator ${input.run.operator_id}.]`:input.note;
+    return {at:new Date().toISOString(),attempt:input.attempt,stage:"pdf_reprocessing",priorStatus:input.run.status,priorOutcome:input.evaluation?.outcome??null,priorDetail:input.evaluation?.detail??"",priorErrors:input.priorErrors,result:input.result,statusBefore:input.run.status,statusAfter:input.statusAfter,stored:input.stored,required:input.plan.operations.length,missing:input.missing,note,...(actor?{actorId:actor.id,actorUsername:actor.username,actorName:actor.name,actorRole:actor.role,ownerOperatorId:input.run.operator_id??undefined,crossUser}:{})};
   }
   private async appendAudit(runId:string,ownerId:string,entry:AuditEntry,log?:{stage:string;status:string;detail:string;at:string}){
     const patch=log
@@ -222,7 +280,7 @@ export class RunEvidenceService{
       requireMutatingConfirm:previous.requireMutatingConfirm===true,
     };
     const activities=plan.operations.flatMap(op=>op.activity?[{...op.activity,pdfReady:op.pdfReady,path:op.path,key:op.key}]:[]);
-    const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:httpFailed?"FAILED":complete?"COMPLETED":"INCOMPLETE",statusAfter:status,stored:count,missing,note:notes,priorErrors});
+    const entry=this.auditEntry({run,plan,evaluation,attempt:plan.retryCount,result:httpFailed?"FAILED":complete?"COMPLETED":"INCOMPLETE",statusAfter:status,stored:count,missing,note:notes,priorErrors,actor:input.input.actor});
     const summary={stage:"evidence",status:complete?"completed":"failed",detail:notes,at:entry.at};
     await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=jsonb_set(jsonb_set(request_json || $3::jsonb,'{reprocessAudit}',COALESCE(request_json->'reprocessAudit','[]'::jsonb)||$4::jsonb,true),'{progressLog}',COALESCE(request_json->'progressLog','[]'::jsonb)||$5::jsonb,true) WHERE id=$6 AND operator_id=$7",[status,notes,JSON.stringify({outcome:status,evaluation:promoted,evidence:plan,checkpoint,pdfCounts:{ready:count,required:plan.operations.length},reprocess:flags,evidenceErrors:missing,aspiActivities:activities}),JSON.stringify([entry]),JSON.stringify([summary]),run.id,input.input.ownerId]);
     await this.touchProgress(request,input.input.ownerId,status==="FAILED"?"failed":"completed",notes);

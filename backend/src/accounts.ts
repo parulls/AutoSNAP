@@ -1,7 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { DatabaseService } from "./database.service";
 import { hashPassword } from "./security";
-import { assertAccountRole, normalizeRole, normalizedPrivileges, type AccountRole } from "./privileges";
+import { assertAccountRole, assertAssignablePrivileges, can, normalizeRole, normalizedPrivileges, type AccountRole } from "./privileges";
 
 export type Operator={id:string;username:string;email:string;name:string;role:AccountRole;active:boolean;privileges:unknown;created_at:string};
 const fail=(error:string,status=400):never=>{throw {error,status};};
@@ -56,13 +56,13 @@ export async function verifyPassword(password:string,row:{salt:string;password_h
 export async function updateAccount(db:DatabaseService,input:Record<string,unknown>,current:Operator){
   const id=String(input.id??current.id);
   const own=id===current.id;
-  if(current.role!=="admin"&&!own)fail("Hanya admin yang boleh mengubah akun lain.",403);
+  if(!own&&!can(current,"user_management","update")&&current.role!=="admin")fail("Anda tidak memiliki privilege untuk mengubah akun lain.",403);
   return db.transaction(async query=>{
     const rows=await query<Operator&{salt:string;password_hash:string}>("SELECT * FROM autosnap_users FOR UPDATE");
     const row=rows.find(item=>item.id===id);
     if(!row)fail("Akun tidak ditemukan.",404);
     if(input.action==="userDelete"){
-      if(current.role!=="admin")fail("Hanya admin yang boleh menghapus akun.",403);
+      if(!can(current,"user_management","delete")&&current.role!=="admin")fail("Anda tidak memiliki privilege untuk menghapus akun.",403);
       if(own)fail("Akun yang sedang dipakai tidak dapat dihapus.",409);
       if(row!.role==="admin"&&rows.filter(item=>item.role==="admin"&&item.active).length<=1)fail("Minimal satu admin aktif diperlukan.",409);
       await query("DELETE FROM autosnap_users WHERE id=$1",[id]);return;
@@ -79,8 +79,16 @@ export async function updateAccount(db:DatabaseService,input:Record<string,unkno
     const email=input.email===undefined?row!.email:String(input.email).trim().toLowerCase();
     if(!/^\S+@\S+\.\S+$/.test(email)||email.length>254)fail("Email akun AutoSNAP harus valid.");
     if(rows.some(item=>item.id!==id&&item.email.toLowerCase()===email))fail("Email sudah dipakai.",409);
-    const privileges=input.privileges===undefined?normalizedPrivileges(row!.privileges,role):normalizedPrivileges(input.privileges,role);
-    if(input.privileges!==undefined&&current.role!=="admin")fail("Hanya admin yang boleh mengubah privilege.",403);
+    let privileges=normalizedPrivileges(row!.privileges,role);
+    if(input.privileges!==undefined){
+      const next=assertAssignablePrivileges(current,input.privileges);
+      const same=next.length===privileges.length&&next.every(key=>privileges.includes(key));
+      if(!same){
+        if(current.role!=="admin"&&!can(current,"user_management","update"))fail("Anda tidak memiliki privilege untuk mengubah privilege akun.",403);
+        if(own&&current.role!=="admin")fail("Tidak dapat mengubah privilege akun sendiri.",403);
+        privileges=next;
+      }
+    }
     await query("UPDATE autosnap_users SET role=$1,active=$2,email=$3,privileges=$4::jsonb WHERE id=$5",[role,active,email,JSON.stringify(privileges),id]);
     if(!active||role!==stored)await query("DELETE FROM autosnap_sessions WHERE user_id=$1",[id]);
     if(input.password){

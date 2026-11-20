@@ -1,0 +1,135 @@
+<!DOCTYPE html><html><head>
+    <title>Report Aktivitas Aplikasi Pengujian - SNAP Developer Site</title>
+    <style>
+        pre {
+            white-space: pre-wrap; /* Since CSS 2.1 */
+            word-wrap: break-word; /* Internet Explorer 5.5+ */
+        }
+
+        .logo-left {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        .logo-right {
+            position: absolute;
+            top: 0;
+            right: 0;
+        }
+
+    </style>
+</head>
+<body>
+    <div id="printPdf">
+
+        <div class="logo-left">
+            <img src="/img/icon/snap-header-black-100.png" width="242" height="55" alt="snap-logo">
+        </div>
+        <div class="logo-right">
+            <img src="/img/icon/aspi-logo-pdf.png" width="195" height="60" alt="aspi-logo">
+        </div>
+
+        <br><br><br>
+
+        <div style="word-wrap: break-word">
+            <div>
+                <h4>Informasi Umum</h4>
+                <table>
+                    <tbody><tr>
+                        <td>User</td>
+                        <td>ronaldositanggang@banksumut.co.id</td>
+                    </tr>
+                    <tr>
+                        <td>Service</td>
+                        <td>Signature Authentication</td>
+                    </tr>
+                    <tr>
+                        <td>Timestamp</td>
+                        <td>2026-11-20T10:53:19+07:00</td>
+                    </tr>
+                </tbody></table>
+
+                <h4>Request Data</h4>
+                <div>
+                    <pre style="margin-bottom:0">POST api/v1.0/utilities/signature-auth</pre>
+
+
+
+
+                            <pre style="margin : 0; padding-top:0">X-TIMESTAMP: 2026-11-20T10:54:05+07:00</pre>
+
+                            <pre style="margin : 0; padding-top:0">X-CLIENY-KEY: 12e50679d40f41a186899a5c022db330</pre>
+
+
+
+
+
+
+
+
+
+
+                            <pre style="margin : 0; padding-top:0">Private_Key: GVAI8tvAx8r/vpRoNyFr3j7hdtAyH2rwGpnWeJcjZHA=</pre>
+
+
+
+
+
+                            <br>
+                            <pre style="margin : 0; padding-top:0">{}</pre>
+
+                </div>
+
+                <h4>Response Data</h4>
+                <div>
+                            <pre style="margin : 0; padding-top:0">Content-type: application/json</pre>
+
+                            <pre style="margin : 0; padding-top:0">X-TIMESTAMP: 2026-11-20T10:53:19+07:00</pre>
+
+
+
+                            <br>
+                            <pre style="margin : 0; padding-top:0">{
+  "signature": "crVeSFPPorwmfwcK1Bj9HHwlSDD9O+YdncT5ixTZxaSmsuyGIPPXGQ5PVsLhRfpDwrL7G4zftRTXbP2oR4LBz+FOlKD60eDdI9Itqq2KBdjxIBh8KNa4u/f4mJ0foyorpcxBl7AQm4rZeLBoywgaJxmCowxawB1ADmfFmwPucc8dNcQwQ7PqQjBC9vsQS2/ZTpth0JRJ4HwxBlc/0sqZ6hpOpY+f89YTR6TC+sAiV6HiW/1AsZSM8X3tKazYabi9lF2oQM8Gx5TFmFGDgxrLasanDFxm0z6wN9kyDlr9s5vrX1wYfskiFA4PYPCQYMg8v6mnrtEbpA0O9gZ4nD/23A=="
+}</pre>
+
+                </div>
+
+            </div>
+        </div>
+    </div>
+    
+
+    <script src="/js/html2pdf.bundle.js"></script>
+    <script>
+        var nameFile = 'Signature Authentication';
+        var name = nameFile + ".pdf"
+
+        function download() {
+            html2pdf(printPdf, {
+                margin: [10, 10, 10, 10], //top, left, buttom, right
+                filename: name,
+                pagebreak: { avoid: 'tr' },
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, logging: true, dpi: 192, letterRendering: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            });
+
+        }
+        function closeWindow() {
+            let new_window = open(location, '_self');
+            new_window.close();
+            return false;
+        }
+
+        download()
+        //setTimeout(function () {
+        //    closeWindow()
+        //}, 1000);
+
+    </script>
+
+
+
+</body></html>

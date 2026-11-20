@@ -1,5 +1,5 @@
 import {pdfSettings} from "./pdf-settings";
-import { correlateActivity, type AspiActivity } from "./aspi-evidence";
+import { correlateActivity, describeActivityMatch, type AspiActivity } from "./aspi-evidence";
 import type {EvidenceOperation} from "./evidence-plan";
 
 export type PdfEvidence={path:string;key?:string;activity?:AspiActivity;pdf?:Buffer;error?:string;attempts?:number};
@@ -19,14 +19,15 @@ type BatchInput={
 
 function downloadError(error:unknown){
   const message=error instanceof Error?error.message:"";
-  if(message.includes("ASPI_REPORT_TIMEOUT_headers"))return "Timeout menunggu HTTP headers laporan ASPI; belum ada response laporan.";
+  if(message.includes("ASPI_REPORT_TIMEOUT_headers"))return "DOWNLOAD_TIMEOUT: Timeout menunggu HTTP headers laporan ASPI.";
   const bodyStatus=/ASPI_REPORT_TIMEOUT_body_http_(\d{3})/.exec(message)?.[1];
-  if(bodyStatus)return `HTTP ${bodyStatus} diterima, tetapi pembacaan isi laporan ASPI timeout.`;
-  return /HTTP \d{3}/.exec(message)?.[0]
-    ??(/timeout|batas waktu|AbortError/i.test(message)?"Batas waktu download PDF terlewati"
-    :/login|sesi/i.test(message)?"Sesi ASPI tidak dapat membuka laporan"
-    :/PDF|laporan/i.test(message)?"ASPI belum memberikan PDF atau laporan pengujian yang valid"
-    :"Koneksi download PDF ASPI gagal");
+  if(bodyStatus)return `DOWNLOAD_TIMEOUT: HTTP ${bodyStatus} diterima, tetapi isi laporan ASPI timeout.`;
+  if(/HTTP (\d{3})/.test(message))return `DOWNLOAD_HTTP_ERROR: ${/HTTP \d{3}/.exec(message)?.[0]}`;
+  if(/timeout|batas waktu|AbortError/i.test(message))return "DOWNLOAD_TIMEOUT: Batas waktu download PDF terlewati";
+  if(/login|sesi/i.test(message))return "ASPI_AUTH_EXPIRED: Sesi ASPI tidak dapat membuka laporan";
+  if(/HTML|bukan binary|%%EOF|%PDF-/i.test(message))return `INVALID_PDF_RESPONSE: ${message.slice(0,180)}`;
+  if(/PDF|laporan/i.test(message))return `INVALID_PDF_RESPONSE: ${message.slice(0,180)}`;
+  return `DOWNLOAD_HTTP_ERROR: ${message.slice(0,180)||"Koneksi download PDF ASPI gagal"}`;
 }
 
 /** Read-only evidence phase. Never Execute an API again to obtain a missing PDF. */
@@ -42,23 +43,30 @@ export async function collectActivityPdfs(input:BatchInput):Promise<PdfEvidence[
   // One shared activity listing for the entire run, rather than a new page per API.
   // Retry the listing only while an unambiguous activity is still missing.
   let listingError="";
-  for(let attempt=0;attempt<3&&active()&&!paths.every((_,index)=>!!pinned(index));attempt++){
+  // ASPI may persist activity rows a few seconds after Execute; poll before giving up.
+  for(let attempt=0;attempt<5&&active()&&!paths.every((_,index)=>!!pinned(index));attempt++){
     try{
       for(const row of await input.read())rows.set(row.activityId,row);
       listingError="";
+      for(const path of paths){
+        const match=describeActivityMatch(before,[...rows.values()],path,input.activityNames?.[path]);
+        await input.report("running",`Activity search ${path}: listed=${match.listed} fresh=${match.fresh} candidates=${match.candidates.length} → ${match.result}`);
+      }
     }catch(cause){
       const message=cause instanceof Error?cause.message:"";
-      listingError=/timeout|batas waktu/i.test(message)?"Timeout membaca aktivitas ASPI."
-        :/autentikasi|dialihkan|login|sesi/i.test(message)?"Akses daftar aktivitas ASPI memerlukan login ulang."
-        :/tabel|tautan/i.test(message)?"Struktur tabel/tautan aktivitas ASPI tidak sesuai."
-        :/HTTP \d{3}/i.test(message)?"Halaman aktivitas ASPI menolak request HTTP."
-        :"Daftar aktivitas ASPI belum dapat dibaca.";
+      listingError=/timeout|batas waktu/i.test(message)?"DOWNLOAD_TIMEOUT: Timeout membaca aktivitas ASPI."
+        :/autentikasi|dialihkan|login|sesi/i.test(message)?"ASPI_AUTH_EXPIRED: Akses daftar aktivitas ASPI memerlukan login ulang."
+        :/tabel|tautan/i.test(message)?"ACTIVITY_NOT_FOUND: Struktur tabel/tautan aktivitas ASPI tidak sesuai."
+        :/HTTP \d{3}/i.test(message)?"DOWNLOAD_HTTP_ERROR: Halaman aktivitas ASPI menolak request HTTP."
+        :"ACTIVITY_NOT_FOUND: Daftar aktivitas ASPI belum dapat dibaca.";
     }
     if(paths.every((_,index)=>candidate(index)))break;
-    if(attempt<2&&active()){
-      const pause=Math.min(1000*(attempt+1),Math.max(0,deadline-Date.now()));
+    // Keep budget for actual downloads; stop polling when little time remains.
+    const remainingMs=deadline-Date.now();
+    if(attempt<4&&active()&&remainingMs>2500){
+      const pause=Math.min(1200*(attempt+1),remainingMs-2000);
       if(pause>0)await new Promise<void>(resolve=>setTimeout(resolve,pause));
-    }
+    }else break;
   }
   const results=new Array<PdfEvidence>(paths.length);
   let cursor=0;
@@ -67,9 +75,16 @@ export async function collectActivityPdfs(input:BatchInput):Promise<PdfEvidence[
       const index=cursor++,path=paths[index];
       // Two identical service calls cannot be distinguished safely using just a service name.
       const selected=candidate(index),sameId=selected?paths.filter((_,i)=>candidate(i)?.activityId===selected.activityId).length:0;
+      const match=describeActivityMatch(before,[...rows.values()],path,input.activityNames?.[path]);
       const activity=sameId===1?selected:null;
       if(!active())results[index]=failure(path,stopped());
-      else if(!activity)results[index]=failure(path,listingError||`Activity ID unik untuk ${path} belum ditemukan; PDF tidak dikaitkan dengan aktivitas lain.`);
+      else if(!activity){
+        const code=match.result==="ACTIVITY_AMBIGUOUS"?"ACTIVITY_AMBIGUOUS":"ACTIVITY_NOT_FOUND";
+        const detail=match.candidates.length
+          ?`${code}: ${match.candidates.length} kandidat untuk ${path} (${match.candidates.map(item=>`${item.service}/${item.activityId}`).join("; ")}). PDF tidak dikaitkan secara sembarang.`
+          :listingError||`${code}: Activity ID unik untuk ${path} belum ditemukan (aliases: ${match.aliases.join(", ")||"—"}; fresh rows: ${match.fresh}).`;
+        results[index]=failure(path,detail);
+      }
       else{
         await input.report("running",`${path}: mengunduh PDF; Activity ID ${activity.activityId}.`);
         let error="";

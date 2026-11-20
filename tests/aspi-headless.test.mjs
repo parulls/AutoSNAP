@@ -20,7 +20,7 @@ test("ASPI activity PDF URL accepts only a UUID on the fixed ASPI host",()=>{
 test("ASPI PDF cache coalesces downloads and isolates SNAP accounts",async()=>{
   const engine=new PortalEngine(null,null),activityId="93f163ae-e2fc-4f2e-9a03-518094515b49";
   let renders=0;
-  engine.renderActivityPdf=async()=>{renders++;await new Promise(resolve=>setTimeout(resolve,10));return Buffer.from("%PDF-test");};
+  engine.fetchOfficialActivityPdf=async()=>{renders++;await new Promise(resolve=>setTimeout(resolve,10));return Buffer.from("%PDF-test\n%%EOF\n");};
   const [first,second]=await Promise.all([engine.downloadActivityPdf({id:"one"},activityId),engine.downloadActivityPdf({id:"one"},activityId)]);
   assert.deepEqual(first,second);assert.equal(renders,1);
   await engine.downloadActivityPdf({id:"one"},activityId);assert.equal(renders,1);
@@ -30,7 +30,7 @@ test("ASPI PDF cache coalesces downloads and isolates SNAP accounts",async()=>{
 test("ASPI PDF failed renders can be retried without caching the failure",async()=>{
   const engine=new PortalEngine(null,null),activityId="93f163ae-e2fc-4f2e-9a03-518094515b49";
   let renders=0;
-  engine.renderActivityPdf=async()=>{if(++renders===1)throw Error("temporary failure");return Buffer.from("%PDF-test");};
+  engine.fetchOfficialActivityPdf=async()=>{if(++renders===1)throw Error("temporary failure");return Buffer.from("%PDF-test\n%%EOF\n");};
   await assert.rejects(engine.downloadActivityPdf({id:"one"},activityId),/temporary failure/);
   await engine.downloadActivityPdf({id:"one"},activityId);assert.equal(renders,2);
 });

@@ -1,0 +1,24 @@
+{
+  "activityId": "3597e432-66b3-4677-8d95-a243b949810c",
+  "first": {
+    "label": "gen-a",
+    "suggested": "Signature Authentication.pdf",
+    "url": "blob:https://apidevportal.aspi-indonesia.or.id/02da345c-0a41-49aa-b498-2b69b6d240da",
+    "bytes": 280003,
+    "sha256": "cb81a66f7a48128b06f19da512f5403623b1f86938336653155f8d87b42ed6d2",
+    "creation": "D:20261120121208+07'00'",
+    "producer": "jsPDF 0.0.0"
+  },
+  "second": {
+    "label": "gen-b",
+    "suggested": "Signature Authentication.pdf",
+    "url": "blob:https://apidevportal.aspi-indonesia.or.id/951d1e03-99dd-497a-9e82-8002781415bb",
+    "bytes": 280003,
+    "sha256": "9b304929b437c7da34fa4d7fe8c1826712f87cfac2be2580dddf0536cd837dc7",
+    "creation": "D:20261120121229+07'00'",
+    "producer": "jsPDF 0.0.0"
+  },
+  "byteIdentical": false,
+  "sameSize": true,
+  "metaStrippedIdentical": true
+}

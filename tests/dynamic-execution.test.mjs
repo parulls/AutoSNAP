@@ -110,7 +110,7 @@ test("six services execute the real headless form pipeline, signatures, positive
     const portal=new PortalEngine({getAuthenticatedContext:async(user,host,validate)=>{assert.equal(user.id,"execution-user");const page=await context.newPage();assert.equal(await validate(page),true);return {page,release:async()=>page.close()};}},new AspiFormResolver());
     portal.activitiesInContext=async()=>[];
     let evidencePaths=[];
-    portal.collectEvidence=async input=>{evidencePaths=input.paths;return input.paths.map((path,index)=>({key:input.operations?.[index]?.key,path,activity:{activityId:randomUUID(),service:path,timestamp:now,downloadUrl:"https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity"},pdf:Buffer.from(`%PDF-1.7\nFixture ${index}`)}));};
+    portal.collectEvidence=async input=>{evidencePaths=input.paths;return input.paths.map((path,index)=>({key:input.operations?.[index]?.key,path,activity:{activityId:randomUUID(),service:path,timestamp:now,downloadUrl:"https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity"},pdf:Buffer.from(`%PDF-1.7\nFixture ${index}\n%%EOF\n`)}));};
     const controller=new AutoSnapController(db, null, portal, null, new RunEvidenceService(db, portal));controller.user=async()=>({id:owner,role:"admin"});controller.enforceRateLimit=async()=>{};
     const action=async(action,input={})=>{const res={code:200,status(code){this.code=code;return this;},json(body){return {status:this.code,body};}};return controller.action({body:{action,...input},headers:{}},res);};
     for(const f of fixtures){

@@ -54,7 +54,7 @@ test("retryAspiEvidence promotes COMPLETED to PASSED and keeps HTTP FAILED",asyn
     let downloads=0;
     const portal={collectEvidence:async input=>{
       downloads++;
-      return input.operations.map(op=>({key:op.key,path:op.path,activity:op.activity??ops.find(o=>o.key===op.key).activity,pdf:Buffer.from(`%PDF-1.7\n${op.path}`),attempts:1}));
+      return input.operations.map(op=>({key:op.key,path:op.path,activity:op.activity??ops.find(o=>o.key===op.key).activity,pdf:Buffer.from(`%PDF-1.7\n${op.path}\n%%EOF\n`),attempts:1}));
     }};
     const evidenceService=new RunEvidenceService(db,portal);
     const controller=new AutoSnapController(db,null,portal,null,evidenceService);
@@ -131,7 +131,7 @@ test("active evidence lease reports PROCESSING, stored PDFs reconcile, and a sta
     const evidence={version:1,phase:"INCOMPLETE",retryCount:0,accountHash:sha256("qa@example.test"),beforeIds:[],operations:ops};
     const insert=async(id,status="COMPLETED")=>db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,mode,status,http_status,response_code,expected_code,duration_ms,notes,request_json,response_json,created_at) VALUES($1,$2,'c','p','e','lease-user','s','ep','portal',$5,200,'2001100',null,10,'open',$3::jsonb,'{}'::jsonb,$4)",[id,owner,JSON.stringify({evaluation,evidence,outcome:status,progressLog:[{stage:"evidence",status:"failed",detail:"awal",at:now}]}),now,status]);
     let downloads=0;
-    const portal={collectEvidence:async input=>{downloads++;return input.operations.map(op=>({key:op.key,path:op.path,activity:op.activity,pdf:Buffer.from(`%PDF-1.7\n${op.path}`),attempts:1}));}};
+    const portal={collectEvidence:async input=>{downloads++;return input.operations.map(op=>({key:op.key,path:op.path,activity:op.activity,pdf:Buffer.from(`%PDF-1.7\n${op.path}\n%%EOF\n`),attempts:1}));}};
     const controller=new AutoSnapController(db,null,portal,null,new RunEvidenceService(db,portal));
     controller.user=async()=>({id:owner,role:"admin"});controller.enforceRateLimit=async()=>{};
     const action=async(name,input={})=>{const res={code:200,status(c){this.code=c;return this;},json(body){return {status:this.code,body};}};return controller.action({body:{action:name,...input},headers:{}},res);};
@@ -149,7 +149,8 @@ test("active evidence lease reports PROCESSING, stored PDFs reconcile, and a sta
     const doneId=randomUUID();
     await insert(doneId);
     await db.query("INSERT INTO autosnap_automation_leases(key,owner,expires_at,heartbeat_at) VALUES($1,'other',$2,$3)",[`evidence:${doneId}`,fresh,new Date().toISOString()]);
-    await db.query("INSERT INTO autosnap_evidence_pdfs(run_id,activity_id,service,pdf_data,byte_size,created_at) VALUES($1,$2,'balance',$3,12,$4)",[doneId,ops[0].activity.activityId,Buffer.from("%PDF-1.7\nstored"),now]);
+    const storedPdf=Buffer.from("%PDF-1.7\nstored\n%%EOF\n");
+    await db.query("INSERT INTO autosnap_evidence_pdfs(run_id,activity_id,service,pdf_data,byte_size,created_at) VALUES($1,$2,'balance',$3,$4,$5)",[doneId,ops[0].activity.activityId,storedPdf,storedPdf.length,now]);
     const reconciled=await action("retryAspiEvidence",{id:doneId});
     assert.equal(reconciled.status,200,JSON.stringify(reconciled.body));
     assert.equal(reconciled.body.status,"PASSED");
@@ -183,7 +184,7 @@ test("partial PDF reprocessing stays COMPLETED and lists the missing evidence",a
     const evidence={version:1,phase:"INCOMPLETE",retryCount:1,accountHash:sha256("qa@example.test"),beforeIds:[],operations:ops};
     const runId=randomUUID();
     await db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,mode,status,http_status,response_code,expected_code,duration_ms,notes,request_json,response_json,created_at) VALUES($1,$2,'c','p','e','partial-user','s','ep','portal','COMPLETED',200,'2001100',null,10,'partial',$3::jsonb,'{}'::jsonb,$4)",[runId,owner,JSON.stringify({evaluation,evidence,outcome:"COMPLETED",progressLog:[{stage:"evidence",status:"failed",detail:"awal",at:now}],reprocessAudit:[{at:now,stage:"pdf_reprocessing",priorStatus:"COMPLETED",result:"INCOMPLETE",note:"percobaan lama"}]}),now]);
-    const portal={collectEvidence:async input=>input.operations.map(op=>op.key==="op-0"?{key:op.key,path:op.path,activity:op.activity,pdf:Buffer.from(`%PDF-1.7\n${op.path}`),attempts:1}:{key:op.key,path:op.path,error:"PDF belum tersedia",attempts:1})};
+    const portal={collectEvidence:async input=>input.operations.map(op=>op.key==="op-0"?{key:op.key,path:op.path,activity:op.activity,pdf:Buffer.from(`%PDF-1.7\n${op.path}\n%%EOF\n`),attempts:1}:{key:op.key,path:op.path,error:"PDF belum tersedia",attempts:1})};
     const controller=new AutoSnapController(db,null,portal,null,new RunEvidenceService(db,portal));
     controller.user=async()=>({id:owner,role:"admin"});controller.enforceRateLimit=async()=>{};
     const res={code:200,status(c){this.code=c;return this;},json(body){return {status:this.code,body};}};
@@ -220,8 +221,8 @@ test("ASPI account lock blocks the same session, allows another account, and kee
     let calls=0;
     const portal={collectEvidence:async input=>{
       calls++;
-      if(input.user.data.email==="b@example.test")return input.operations.map(item=>({key:item.key,path:item.path,activity:item.activity,pdf:Buffer.from("%PDF-1.7\nother"),attempts:1}));
-      await input.onEvidence({key:input.operations[0].key,path:input.operations[0].path,activity:input.operations[0].activity,pdf:Buffer.from("%PDF-1.7\nstored"),attempts:1});
+      if(input.user.data.email==="b@example.test")return input.operations.map(item=>({key:item.key,path:item.path,activity:item.activity,pdf:Buffer.from("%PDF-1.7\nother\n%%EOF\n"),attempts:1}));
+      await input.onEvidence({key:input.operations[0].key,path:input.operations[0].path,activity:input.operations[0].activity,pdf:Buffer.from("%PDF-1.7\nstored\n%%EOF\n"),attempts:1});
       throw new AspiAutomationError("TIMEOUT","Timeout saat mengambil PDF ASPI.");
     }};
     const service=new RunEvidenceService(db,portal);
@@ -294,7 +295,7 @@ test("two AutoSNAP operators sharing one ASPI account serialize; Activity IDs st
       await new Promise(resolve=>setTimeout(resolve,40));
       const op=input.operations[0];
       seen.push(op.activity.activityId);
-      const pdf=Buffer.from(`%PDF-1.7\n${op.activity.activityId}`);
+      const pdf=Buffer.from(`%PDF-1.7\n${op.activity.activityId}\n%%EOF\n`);
       active--;
       return [{key:op.key,path:op.path,activity:op.activity,pdf,attempts:1}];
     }};

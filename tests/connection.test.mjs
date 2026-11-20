@@ -77,7 +77,7 @@ test("testing starts with explicit choices, no hidden target or manual token inp
     {id:"template",kind:"template",name:"Default",parentId:"endpoint",data:{body:JSON.stringify({partnerReferenceNo:"{{partner_reference_no}}",accountNo:"2000100101",additionalInfo:{}})}}
   ];
   const html=renderToStaticMarkup(createElement(Testing,{state:{records,runs:[],scenarios:[]},api:async()=>({}),reload:async()=>{},setError:()=>{},setNotice:()=>{}}));
-  assert.match(html,/<span>Endpoint URL<\/span>/);assert.match(html,/<span>API Service<\/span>/);assert.match(html,/<span>User SNAP<\/span>/);assert.match(html,/<span>Dev Site Client<\/span>/);
+  assert.match(html,/<span>Dev Site Endpoint<\/span>/);assert.match(html,/<span>API Service<\/span>/);assert.match(html,/<span>User SNAP<\/span>/);assert.match(html,/<span>Dev Site Client<\/span>/);
   assert.doesNotMatch(html,/<span>[^<]+ \*<\/span>/,"required markers stay in validation, not in visible labels");
   assert.match(html,/CHANNEL-ID/);assert.match(html,/History Testing/);assert.match(html,/Jalankan Testing/);
   assert.match(html,/disabled=""/);assert.doesNotMatch(html,/2000100101/,"a sample account is not selected before choosing a service");

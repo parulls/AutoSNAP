@@ -18,6 +18,8 @@ const DEFAULT_BY_CODE:Record<string,ServiceCapabilities>={
   "07":{persistFields:["bankCardToken","accountNo","authCode","refreshToken"]},
   "08":{persistFields:["bankCardToken","accountNo","authCode","refreshToken"]},
   "11":{allowUnreviewed:true,autoRegisterFromCode:"01",activityAliases:["balanceinquiry","informasisaldo"]},
+  // ASPI activity table labels often read "API Generate QR MPM" (not the path tail alone).
+  "47":{activityAliases:["generateqrmpm","qrmpmgenerate","apigenerateqrmpm"]},
   "74":{persistCustomerToken:true},
 };
 
@@ -25,6 +27,10 @@ const PATH_ACTIVITY_ALIASES:Record<string,string[]>={
   "/api/v1.0/utilities/signature-auth":["signatureauth","signatureauthentication","signatureaccesstoken"],
   "/api/v1.0/access-token/b2b":["accesstokenb2b","b2baccesstoken"],
   "/api/v1.0/utilities/signature-service":["signatureservice"],
+  "/api/v1.0/qr/qr-mpm-generate":["generateqrmpm","qrmpmgenerate","apigenerateqrmpm"],
+  "/api/v1.0/qr/qr-mpm-decode":["decodeqrmpm","qrmpmdecode"],
+  "/api/v1.0/qr/qr-mpm-query":["queryqrmpm","qrmpmquery","querypayment"],
+  "/api/v1.0/balance-inquiry":["balanceinquiry","informasisaldo"],
 };
 
 function asCapabilities(raw:unknown):ServiceCapabilities|null{

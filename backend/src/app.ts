@@ -15,17 +15,20 @@ import { AspiFormResolver } from "./aspi-form-resolver";
 import { AspiSessionManager } from "./aspi-session-manager";
 import { clientAddress } from "./http-security";
 import { requestPasswordReset, resetPasswordWithOtp } from "./password-reset";
-import { hasPrivilege, normalizeRole } from "./privileges";
+import { can, hasPrivilege, normalizeRole, assertAssignablePrivileges } from "./privileges";
 import { createZip } from "./zip";
 import { RunControl } from "./run-control";
-import { readHistory } from "./history";
+import { canAccessRun, readHistory } from "./history";
+import { writeAudit } from "./audit-log";
+import { runClientSimulator } from "./simulator-run";
+import { normalizeSignatureMode } from "./simulator-signing";
 import {DocumentationReader} from "./documentation-reader";
 import {validateConfig,configuredChecks,methods} from "./endpoint-config";
 import {prepareBody,resolveRequestPath,managedHeaders} from "./request-builder";
 import {assertOperationIdentity,resolveEndpoint,scenarioExpectation} from "./endpoint-resolver";
 import {authenticationWorkflow} from "./auth-workflow";
 import {evaluateTest,finalOutcome,hasRecordedHttp,type ResultCheck,type RunStatus} from "./test-evaluation";
-import type { AspiActivity } from "./aspi-evidence";
+import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateOfficialPdf, type AspiActivity } from "./aspi-evidence";
 import {annotateServiceData,resolveCapabilities,savesPrerequisite} from "./service-capabilities";
 import {buildEvidencePlan} from "./evidence-plan";
 import {RunEvidenceService} from "./run-evidence";
@@ -33,8 +36,8 @@ import {buildCheckpoint,canResumeTesting,canRetryEvidence,failedStage,markStage,
 
 type Scenario={id:string;group:string;service:string;scenario:string;expected:string;expectedCode:string|null};
 type Input=Record<string,unknown>;
-const kinds=new Set(["client","project","environment","snap_user","service","endpoint","template"]);
-const parentKinds:Record<string,string>={project:"client",environment:"project",service:"endpoint",template:"endpoint"};
+const kinds=new Set(["client","project","environment","snap_user","service","endpoint","template","sim_provider","sim_service"]);
+const parentKinds:Record<string,string>={project:"client",environment:"project",service:"endpoint",template:"endpoint",sim_service:"sim_provider"};
 const get=(rows:RecordRow[],id:unknown,kind:string)=>rows.find(row=>row.id===id&&row.kind===kind);
 const value=(row:RecordRow|undefined,key:string)=>String(row?.data[key]??"");
 const codeFor=(raw:string|null|undefined,code:string)=>raw?.replace("xx",/^\d{2}$/.test(code)?code:"00")??null;
@@ -65,7 +68,17 @@ export class AutoSnapController {
     res.cookie("autosnap_session",token,{httpOnly:true,sameSite:"strict",secure:process.env.NODE_ENV==="production"||req.headers["x-autosnap-proto"]==="https",path:"/",expires:expiry});
   }
   private fail(res:Response,error:unknown){
-    const e=error as {error?:string;status?:number;message?:string;code?:string};
+    const e=error as {error?:string;status?:number;message?:string;code?:string;detail?:string};
+    // PostgreSQL SQLSTATE is five chars (e.g. 42703). App codes use SCREAMING_SNAKE.
+    const pgCode=typeof e.code==="string"&&/^[0-9A-Z]{5}$/.test(e.code)?e.code:undefined;
+    if(pgCode==="42703"){
+      console.error("[DATABASE_SCHEMA_ERROR]",e.message??e.detail??e.error);
+      return res.status(503).json({error:"Skema database belum lengkap (kolom hilang). Terapkan migrasi evidence PDF / leases, lalu coba Proses Ulang Bukti lagi.",code:"DATABASE_SCHEMA_ERROR"});
+    }
+    if(pgCode){
+      console.error(`[DATABASE_ERROR_${pgCode}]`,e.message??e.detail??e.error);
+      return res.status(500).json({error:e.error??"Kesalahan database saat memproses bukti. Hubungi administrator.",code:"DATABASE_ERROR"});
+    }
     return res.status(e.status??500).json({error:e.error??"Terjadi kesalahan server. Hubungi administrator.",...(e.code?{code:e.code}:{})});
   }
   @Get()
@@ -77,7 +90,8 @@ export class AutoSnapController {
         return res.json({setupRequired:true,setupTokenRequired:process.env.NODE_ENV==="production"||!["localhost","127.0.0.1"].includes(host),...recaptchaPublicConfig()});
       }
       const user=await this.user(req);if(!user)return res.json({loginRequired:true,...recaptchaPublicConfig()});
-      const [records,runs,scenarios,operators]=await Promise.all([this.allRecords(),this.db.query<RunRow>("SELECT * FROM autosnap_runs WHERE operator_id=$1 ORDER BY created_at DESC LIMIT 500",[user.id]),this.catalog(),this.db.query<Operator>("SELECT id,name,email,username,role,active,privileges,created_at FROM autosnap_users WHERE ($1=TRUE OR id=$2) ORDER BY created_at",[user.role==="admin",user.id])]);
+      const canListUsers=can(user,"user_management","view")||can(user,"history","view_all");
+      const [records,runs,scenarios,operators]=await Promise.all([this.allRecords(),this.db.query<RunRow>("SELECT * FROM autosnap_runs WHERE operator_id=$1 ORDER BY created_at DESC LIMIT 500",[user.id]),this.catalog(),this.db.query<Operator>("SELECT id,name,email,username,role,active,privileges,created_at FROM autosnap_users WHERE ($1=TRUE OR id=$2) ORDER BY created_at",[canListUsers,user.id])]);
       return res.json({user,operators:operators.map(item=>({...item,role:normalizeRole(item.role)??"petugas",createdAt:item.created_at})),records:records.map(publicRecord),runs:runs.map(run=>({...run,request:run.request_json,response:run.response_json})),scenarios});
     }catch(error){return this.fail(res,error);}
   }
@@ -127,11 +141,11 @@ export class AutoSnapController {
         const progress=await this.db.one("SELECT id,status,stage,steps,updated_at FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[String(input.id??""),user.id]);
         return progress?res.json(progress):this.fail(res,clientError("Progress testing tidak ditemukan.",404));
       }
-      if(action==="getHistory")return res.json(await readHistory(this.db,user.id,input));
+      if(action==="getHistory")return res.json(await readHistory(this.db,user,input));
       if(action==="deleteEndpointConfiguration"){
-        if(user.role!=="admin")return this.fail(res,clientError("Hanya admin dapat menghapus konfigurasi endpoint.",403));
+        if(!can(user,"master_data","delete"))return this.fail(res,clientError("Anda tidak memiliki privilege menghapus Dev Site Endpoint.",403));
         const records=await this.allRecords(),endpoint=get(records,input.id,"endpoint");
-        if(!endpoint)return this.fail(res,clientError("Endpoint tidak ditemukan.",404));
+        if(!endpoint)return this.fail(res,clientError("Dev Site Endpoint tidak ditemukan.",404));
         const ids=[endpoint.id,...records.filter(row=>row.kind==="service"&&row.parent_id===endpoint.id).map(row=>row.id)];
         if(records.some(row=>row.parent_id&&ids.includes(row.parent_id)&&!ids.includes(row.id)&&row.kind!=="template"))return this.fail(res,clientError("Konfigurasi masih dipakai data lain.",409));
         const slots=ids.map((_,index)=>`$${index+1}`).join(",");
@@ -139,10 +153,11 @@ export class AutoSnapController {
           await query(`DELETE FROM autosnap_records WHERE kind='template' AND parent_id IN (${slots})`,ids);
           await query(`DELETE FROM autosnap_records WHERE id IN (${slots})`,ids);
         });
+        await writeAudit(this.db,user.id,"delete_endpoint","endpoint",endpoint.id,{name:endpoint.name,serviceCount:ids.length-1});
         return res.json({ok:true});
       }
       if(action==="inspectDocumentation"||action==="saveImportedService"){
-        if(user.role!=="admin")return this.fail(res,clientError("Hanya admin dapat mengimpor dokumentasi.",403));
+        if(!can(user,"master_data","create")&&!can(user,"master_data","update"))return this.fail(res,clientError("Anda tidak memiliki privilege mengimpor dokumentasi Dev Site Endpoint.",403));
         await this.enforceRateLimit(`import:${user.id}`,10,60_000);
         if(action==="inspectDocumentation"){
           const snapUser=get(await this.allRecords(),input.userId,"snap_user");
@@ -176,20 +191,47 @@ export class AutoSnapController {
         });
         return res.json({ok:true,endpointId,serviceId});
       }
-      if(["save","saveConnection","delete","userCreate","userDelete"].includes(action)&&user.role!=="admin")return this.fail(res,clientError("Hanya admin yang boleh mengubah master data atau mengelola akun.",403));
-      if(action==="save")return await this.save(res,input);
-      if(action==="saveConnection")return res.json(await saveConnection(this.db,input));
-      if(action==="delete")return await this.remove(res,input);
-      if(action==="userCreate"){await createAccount(this.db,input,input.role==="admin"?"admin":"petugas",true);return res.json({ok:true});}
-      if(action==="userDelete"||action==="userUpdate"){await updateAccount(this.db,input,user);return res.json({ok:true});}
+      if(action==="save"||action==="saveConnection"){
+        const kind=String(input.kind??(action==="saveConnection"?"environment":""));
+        const isSim=kind==="sim_provider"||kind==="sim_service";
+        const creating=!input.id;
+        if(isSim){
+          if(!can(user,"client_simulator","manage")&&!can(user,"master_data",creating?"create":"update"))return this.fail(res,clientError("Anda tidak memiliki privilege mengelola Penyedia Client Simulator.",403));
+        }else if(!can(user,"master_data",creating?"create":"update"))return this.fail(res,clientError("Anda tidak memiliki privilege mengubah Master Data.",403));
+      }
+      if(action==="delete"){
+        const existing=await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1",[String(input.id??"")]);
+        const isSim=existing?.kind==="sim_provider"||existing?.kind==="sim_service";
+        if(isSim){
+          if(!can(user,"client_simulator","manage")&&!can(user,"master_data","delete"))return this.fail(res,clientError("Anda tidak memiliki privilege menghapus Penyedia Client Simulator.",403));
+        }else if(!can(user,"master_data","delete"))return this.fail(res,clientError("Anda tidak memiliki privilege menghapus Master Data.",403));
+      }
+      if(action==="userCreate"){
+        if(!can(user,"user_management","create"))return this.fail(res,clientError("Anda tidak memiliki privilege membuat akun.",403));
+        if(input.role==="admin"&&user.role!=="admin")return this.fail(res,clientError("Hanya admin yang boleh membuat akun admin.",403));
+        const privileges=assertAssignablePrivileges(user,input.privileges);
+        await createAccount(this.db,{...input,privileges},input.role==="admin"?"admin":"petugas",true);
+        await writeAudit(this.db,user.id,"user_create","user",null,{username:input.username,role:input.role==="admin"?"admin":"petugas"});
+        return res.json({ok:true});
+      }
+      if(action==="userDelete"){
+        if(!can(user,"user_management","delete"))return this.fail(res,clientError("Anda tidak memiliki privilege menghapus akun.",403));
+        await updateAccount(this.db,input,user);
+        await writeAudit(this.db,user.id,"user_delete","user",String(input.id??""),{});
+        return res.json({ok:true});
+      }
+      if(action==="save")return await this.save(res,input,user);
+      if(action==="saveConnection"){const result=await saveConnection(this.db,input);await writeAudit(this.db,user.id,"save_connection","environment",String(result.id??""),{});return res.json(result);}
+      if(action==="delete")return await this.remove(res,input,user);
+      if(action==="userUpdate"){await updateAccount(this.db,input,user);await writeAudit(this.db,user.id,"user_update","user",String(input.id??user.id),{fields:Object.keys(input).filter(k=>k!=="password"&&k!=="currentPassword")});return res.json({ok:true});}
       if(action==="downloadAspiActivityPdf"){
         await this.enforceRateLimit(`pdf:${user.id}`,20,10*60_000);
-        if(!hasPrivilege(user,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege download bukti Dev Site.",403));
+        if(!can(user,"dev_site","evidence"))return this.fail(res,clientError("Anda tidak memiliki privilege download bukti Dev Site.",403));
         return await this.downloadAspiActivityPdf(res,input,user);
       }
       if(action==="retryAspiEvidence"){
         await this.enforceRateLimit(`retry-evidence:${user.id}`,10,10*60_000);
-        if(!hasPrivilege(user,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege untuk memproses ulang bukti Dev Site.",403));
+        if(!can(user,"dev_site","evidence"))return this.fail(res,clientError("Anda tidak memiliki privilege untuk memproses ulang bukti Dev Site.",403));
         return await this.retryAspiEvidence(res,input,user);
       }
       if(action==="resumeTesting"){
@@ -198,10 +240,15 @@ export class AutoSnapController {
       }
       if(action==="downloadAspiActivitiesZip"){
         await this.enforceRateLimit(`zip:${user.id}`,10,10*60_000);
-        if(!hasPrivilege(user,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege download bukti Dev Site.",403));
+        if(!can(user,"dev_site","evidence"))return this.fail(res,clientError("Anda tidak memiliki privilege download bukti Dev Site.",403));
         return await this.downloadAspiActivitiesZip(res,input,user);
       }
       if(action==="aspiBusy")return res.json({busyUserIds:await this.evidenceService.busyUserIds(await this.allRecords())});
+      if(action==="runClientSimulator"){
+        await this.enforceRateLimit(`run-sim:${user.id}`,20,10*60_000);
+        if(!can(user,"client_simulator","run"))return this.fail(res,clientError("Anda tidak memiliki privilege menjalankan Client Simulator.",403));
+        return res.json(await runClientSimulator(this.db,await this.allRecords(),user,input));
+      }
       if(action==="run")await this.enforceRateLimit(`run:${user.id}`,20,10*60_000);
       if(action==="run"){
         const environment=await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='environment'",[String(input.environmentId??"")]);
@@ -212,24 +259,53 @@ export class AutoSnapController {
       return this.fail(res,clientError("Action tidak dikenal.",404));
     }catch(error){return this.fail(res,error);}
   }
+  /** Load a run for view/download/retry. Admin may access any run; petugas only own. Ownership is never rewritten. */
+  private async loadAccessibleRun(runId:string,operator:Operator){
+    const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1",[runId]);
+    if(!run||!canAccessRun(operator,run))return null;
+    return run;
+  }
+  private requireCrossUserConfirm(run:RunRow,operator:Operator,input:Input,actionLabel:string){
+    if(run.operator_id&&run.operator_id!==operator.id){
+      if(!can(operator,"history","view_all")&&operator.role!=="admin")throw clientError("Anda tidak berwenang mengakses History pengguna lain.",403);
+      if(input.confirmCrossUser!==true)throw clientError(`${actionLabel} milik pengguna lain memerlukan konfirmasi (confirmCrossUser=true).`,409,"CROSS_USER_CONFIRM");
+    }
+  }
+  private loadStoredOfficialPdf(row:{pdf_data:Buffer;content_sha256?:string|null;byte_size?:number;verification_status?:string|null}){
+    const pdf=validateOfficialPdf(Buffer.from(row.pdf_data));
+    const hash=pdfContentSha256(pdf);
+    if(row.content_sha256&&row.content_sha256!==hash)throw clientError("Integritas PDF tersimpan rusak (SHA-256 tidak cocok). Proses ulang bukti tanpa menjalankan API.",409);
+    if(row.byte_size!=null&&row.byte_size!==pdf.length)throw clientError("Ukuran PDF tersimpan tidak konsisten.",409);
+    const provenance=inspectPdfProvenance(pdf);
+    if(provenance.fromChromiumPrint||row.verification_status==="UNVERIFIED"||!provenance.fromAspHtml2Pdf){
+      throw clientError("PDF tersimpan belum terverifikasi sebagai Download resmi ASPI (UNVERIFIED). Proses ulang bukti tanpa menjalankan API.",409);
+    }
+    return {pdf,hash,fingerprint:pdfEvidenceFingerprint(pdf),provenance};
+  }
   private async downloadAspiActivityPdf(res:Response,input:Input,operator:Operator){
     const runId=String(input.id??""),activityId=String(input.activityId??"");
-    const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1 AND operator_id=$2",[runId,operator.id]);
+    const run=await this.loadAccessibleRun(runId,operator);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
     const request=object(run.request_json)?run.request_json:{},activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
     const activity=activities.find(item=>String(item.activityId??"")===activityId);
     if(!activity)return this.fail(res,clientError("Aktivitas ASPI tidak terdaftar pada history ini.",404));
-    const cached=await this.db.one<{pdf_data:Buffer}>("SELECT pdf_data FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id=$2",[runId,activityId]);
+    const cached=await this.db.one<{pdf_data:Buffer;content_sha256:string|null;byte_size:number;verification_status:string|null}>("SELECT pdf_data,content_sha256,byte_size,verification_status FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id=$2",[runId,activityId]);
     if(!cached)return this.fail(res,clientError("PDF resmi ASPI belum tersimpan untuk aktivitas ini. Lihat detail bukti pada History.",409));
-    const pdf=cached.pdf_data,service=String(activity.service??"ASPI").replace(/[^A-Za-z0-9_-]+/g,"-").slice(0,60);
+    let pdf:Buffer,hash:string,fingerprint:string;
+    try{({pdf,hash,fingerprint}=this.loadStoredOfficialPdf(cached));}catch(error){return this.fail(res,error);}
+    if(!cached.content_sha256)await this.db.query("UPDATE autosnap_evidence_pdfs SET content_sha256=$1 WHERE run_id=$2 AND activity_id=$3",[hash,runId,activityId]).catch(()=>undefined);
+    const service=String(activity.service??"ASPI").replace(/[^A-Za-z0-9_-]+/g,"-").slice(0,60);
     const filename=`ASPI-${service||"Activity"}-${activityId}.pdf`;
     res.setHeader("Content-Type","application/pdf");
     res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);
     res.setHeader("Content-Length",String(pdf.length));
+    res.setHeader("X-Content-SHA256",hash);
+    res.setHeader("X-Content-Fingerprint",fingerprint);
+    res.setHeader("X-ASPI-Activity-Id",activityId);
     return res.send(pdf);
   }
   private async downloadAspiActivitiesZip(res:Response,input:Input,operator:Operator){
-    const runId=String(input.id??""),run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1 AND operator_id=$2",[runId,operator.id]);
+    const runId=String(input.id??""),run=await this.loadAccessibleRun(runId,operator);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
     const request=object(run.request_json)?run.request_json:{},activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
     if(!activities.length)return this.fail(res,clientError("History ini belum memiliki bukti aktivitas ASPI.",409));
@@ -237,20 +313,24 @@ export class AutoSnapController {
     for(const [index,activity] of activities.entries()){
       const activityId=String(activity.activityId??"");
       if(!activityId)continue;
-      const service=String(activity.service??`Service-${index+1}`),cached=await this.db.one<{pdf_data:Buffer}>("SELECT pdf_data FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id=$2",[runId,activityId]);
+      const service=String(activity.service??`Service-${index+1}`),cached=await this.db.one<{pdf_data:Buffer;content_sha256:string|null;byte_size:number;verification_status:string|null}>("SELECT pdf_data,content_sha256,byte_size,verification_status FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id=$2",[runId,activityId]);
       if(!cached)return this.fail(res,clientError("Sebagian PDF belum tersimpan; ZIP tidak dibuat agar bukti tidak terlewat.",409));
-      const pdf=cached.pdf_data;
+      let pdf:Buffer;
+      try{({pdf}=this.loadStoredOfficialPdf(cached));}catch(error){return this.fail(res,error);}
       entries.push({name:`${String(index+1).padStart(2,"0")}-${service}.pdf`,data:pdf});
     }
-    const zip=createZip(entries),filename=`ASPI-Evidence-${runId.replace(/[^A-Za-z0-9_-]/g,"-")}.zip`;
+    const zip=createZip(entries),filename=`ASPI-Evidence-${runId.replace(/[^A-Za-z0-9_-]+/g,"-")}.zip`;
     if(zip.length>50*1024*1024)return this.fail(res,clientError("Ukuran gabungan bukti melebihi 50 MB.",413));
     res.setHeader("Content-Type","application/zip");res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);res.setHeader("Content-Length",String(zip.length));
     return res.send(zip);
   }
   private async retryAspiEvidence(res:Response,input:Input,operator:Operator){
     const runId=String(input.id??"");
-    const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1 AND operator_id=$2",[runId,operator.id]);
+    const run=await this.loadAccessibleRun(runId,operator);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
+    try{this.requireCrossUserConfirm(run,operator,input,"Proses ulang bukti");}catch(error){return this.fail(res,error);}
+    const ownerId=run.operator_id;
+    if(!ownerId)return this.fail(res,clientError("History ini tidak memiliki operator_id; proses ulang ditolak agar kepemilikan tidak berubah.",409));
     const request=object(run.request_json)?run.request_json:{};
     const evaluation=object(request.evaluation)?request.evaluation:{};
     const httpMatched=object(evaluation.httpValidation)?evaluation.httpValidation.matches===true:false;
@@ -260,15 +340,17 @@ export class AutoSnapController {
     if(!canRetryEvidence({status:run.status,httpMatched,evidenceIncomplete:incomplete||run.status==="COMPLETED"}))return this.fail(res,clientError("Proses ulang bukti tidak tersedia untuk history ini.",409));
     const userId=run.user_id,snapUser=userId?await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='snap_user'",[userId]):null;
     if(!snapUser)return this.fail(res,clientError("User SNAP pada history tidak ditemukan.",404));
-    const result=await this.evidenceService.process({runId,ownerId:operator.id,user:snapUser,initial:false});
+    const actor={id:operator.id,username:operator.username,name:operator.name,role:normalizeRole(operator.role)??"petugas"};
+    const result=await this.evidenceService.process({runId,ownerId,user:snapUser,initial:false,actor});
     const aspiReady=!(await this.evidenceService.accountBusy(snapUser));
     const busyUserIds=await this.evidenceService.busyUserIds(await this.allRecords());
     return res.json({ok:true,...result,aspiReady,busyUserIds,formReady:aspiReady});
   }
   private async resumeTesting(res:Response,input:Input,operator:Operator){
     const runId=String(input.id??"");
-    const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1 AND operator_id=$2",[runId,operator.id]);
+    const run=await this.loadAccessibleRun(runId,operator);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
+    try{this.requireCrossUserConfirm(run,operator,input,"Lanjutkan Testing");}catch(error){return this.fail(res,error);}
     const request=object(run.request_json)?run.request_json:{};
     const checkpoint=(object(request.checkpoint)?request.checkpoint:null) as RunCheckpoint|null;
     const fail=failedStage(checkpoint);
@@ -288,6 +370,9 @@ export class AutoSnapController {
       testType:object(request.context)?String(request.context.testType??"positive"):"positive",
       useCase:object(request.context)?String(request.context.useCase??"B2B"):"B2B",
       progressId:randomUUID(),resumeRunId:runId,confirmMutatingRetry:input.confirmMutatingRetry===true,
+      // Keep original ownership when Admin resumes another user's run.
+      ownerOperatorId:run.operator_id??operator.id,
+      resumeActorId:operator.id,
     };
     if(!get(rows,resumeInput.clientId,"client")||!get(rows,resumeInput.serviceId,"service"))return this.fail(res,clientError("Konfigurasi master data untuk resume tidak lengkap.",409));
     return await this.run(res,resumeInput,operator);
@@ -319,13 +404,14 @@ export class AutoSnapController {
     const result=await this.db.one<{attempts:number}>("INSERT INTO autosnap_rate_limits (key,attempts,expires_at) VALUES ($1,1,$2) ON CONFLICT (key) DO UPDATE SET attempts=autosnap_rate_limits.attempts+1 RETURNING attempts",[sha256(`${key}:${bucket}`),new Date((bucket+1)*windowMs).toISOString()]);
     if(!result||result.attempts>max)throw clientError("Terlalu banyak permintaan. Tunggu beberapa menit lalu coba lagi.",429);
   }
-  private async save(res:Response,input:Input){
+  private async save(res:Response,input:Input,actor?:Operator){
     const kind=String(input.kind??""),id=input.id?String(input.id):randomUUID(),name=String(input.name??"").trim(),parentId=input.parentId?String(input.parentId):null;
     let partnerId=input.partnerId?String(input.partnerId).trim():null;
     if(!kinds.has(kind)||!name||name.length>120)return this.fail(res,clientError("Jenis dan nama data tidak valid."));
     const rows=await this.allRecords(),old=rows.find(row=>row.id===id);
     if(old&&old.kind!==kind)return this.fail(res,clientError("Jenis data tidak dapat diubah."));
-    if(kind==="endpoint"&&parentId)return this.fail(res,clientError("Endpoint URL adalah akar konfigurasi; parent harus kosong."));
+    if(kind==="endpoint"&&parentId)return this.fail(res,clientError("Dev Site Endpoint adalah akar konfigurasi; parent harus kosong."));
+    if(kind==="sim_provider"&&parentId)return this.fail(res,clientError("Penyedia Client Simulator adalah akar; parent harus kosong."));
     if(parentKinds[kind]&&!get(rows,parentId,parentKinds[kind]))return this.fail(res,clientError(`Pilih ${parentKinds[kind]} induk yang valid.`));
     const incoming=input.data&&typeof input.data==="object"&&!Array.isArray(input.data)?input.data as Record<string,unknown>:{};
     const data:Record<string,unknown>={...(old?.data??{}),...incoming};
@@ -371,16 +457,43 @@ export class AutoSnapController {
       try{JSON.parse(String(data.body??"{}"));}catch{return this.fail(res,clientError("Template body harus JSON valid."));}
       if(data.headers&&typeof data.headers!=="object")return this.fail(res,clientError("Header tambahan harus objek JSON."));
     }
+    if(kind==="sim_provider"){
+      try{if(new URL(String(data.baseUrl??"")).protocol!=="https:")return this.fail(res,clientError("Base URL penyedia wajib HTTPS."));}catch{return this.fail(res,clientError("Base URL penyedia wajib HTTPS."));}
+      if(!String(data.clientKey??data.clientId??"").trim())return this.fail(res,clientError("Client Key / Client ID penyedia wajib diisi."));
+      try{data.signatureAccessTokenMode=normalizeSignatureMode(data.signatureAccessTokenMode??"FUNCTION");data.signatureServiceMode=normalizeSignatureMode(data.signatureServiceMode??"FUNCTION");}catch(error){return this.fail(res,error);}
+      if(data.signatureAccessTokenMode==="HIT_API"&&!String(data.signatureAccessTokenUrl??"").trim())return this.fail(res,clientError("URL Signature Access Token wajib untuk mode HIT_API."));
+      if(data.signatureServiceMode==="HIT_API"&&!String(data.signatureServiceUrl??"").trim())return this.fail(res,clientError("URL Signature Service wajib untuk mode HIT_API."));
+      if(data.rsaEncoding&&!["hex","base64"].includes(String(data.rsaEncoding)))return this.fail(res,clientError("Encoding RSA harus hex atau base64."));
+      if(data.hmacEncoding&&!["hex","base64"].includes(String(data.hmacEncoding)))return this.fail(res,clientError("Encoding HMAC harus hex atau base64."));
+      const ts=data.timestampConfig&&typeof data.timestampConfig==="object"&&!Array.isArray(data.timestampConfig)?data.timestampConfig as Record<string,unknown>:{offsetMinutes:420,includeMillis:false};
+      const offset=Number(ts.offsetMinutes??420);
+      if(!Number.isFinite(offset)||Math.abs(offset)>14*60)return this.fail(res,clientError("Offset timezone timestamp tidak valid."));
+      data.timestampConfig={offsetMinutes:Math.trunc(offset),includeMillis:ts.includeMillis===true};
+      // Never mix Client Simulator provider config with Dev Site Endpoint ASPI fields.
+      delete data.portalUrl;delete data.config;
+    }
+    if(kind==="sim_service"){
+      if(!methods.includes(String(data.method??"")))return this.fail(res,clientError("Method HTTP service tidak valid."));
+      const path=String(data.path??data.serviceUrl??"").trim();
+      if(!path.startsWith("/")||path.startsWith("//"))return this.fail(res,clientError("Service URL / Relative Path harus diawali / tanpa protokol."));
+      data.path=path;
+      if(data.defaultBody||data.requestBody){
+        try{const body=String(data.defaultBody??data.requestBody);if(body.trim()&&!object(JSON.parse(body)))throw Error();data.defaultBody=body;}catch{return this.fail(res,clientError("Default request body harus object JSON valid."));}
+      }
+      if(data.expectedHttpStatus!=null&&data.expectedHttpStatus!==""&&!(Number(data.expectedHttpStatus)>=100&&Number(data.expectedHttpStatus)<=599))return this.fail(res,clientError("Expected HTTP Status tidak valid."));
+    }
     const now=new Date().toISOString();
     if(old)await this.db.query("UPDATE autosnap_records SET name=$1,parent_id=$2,partner_id=$3,data=$4::jsonb,updated_at=$5 WHERE id=$6",[name,parentId,partnerId,JSON.stringify(data),now,id]);
     else await this.db.query("INSERT INTO autosnap_records (id,kind,name,parent_id,partner_id,data,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$7)",[id,kind,name,parentId,partnerId,JSON.stringify(data),now]);
+    if(actor)await writeAudit(this.db,actor.id,old?"update_record":"create_record",kind,id,{name});
     return res.json({ok:true,id});
   }
-  private async remove(res:Response,input:Input){
+  private async remove(res:Response,input:Input,actor?:Operator){
     const id=String(input.id??""),rows=await this.allRecords(),row=rows.find(item=>item.id===id);
     if(!row)return this.fail(res,clientError("Data tidak ditemukan.",404));
     if(rows.some(item=>item.parent_id===id&&item.kind!=="template"))return this.fail(res,clientError("Data masih dipakai. Hapus atau pindahkan data turunannya dahulu.",409));
     if(row.kind==="snap_user"&&rows.some(item=>item.kind==="environment"&&value(item,"defaultUserId")===id))return this.fail(res,clientError("User SNAP masih dipakai oleh Dev Site Client.",409));
+    if(row.kind==="sim_provider"&&rows.some(item=>item.parent_id===id))return this.fail(res,clientError("Hapus seluruh API Service penyedia terlebih dahulu.",409));
     await this.db.transaction(async query=>{
       await query("DELETE FROM autosnap_records WHERE kind='template' AND parent_id=$1",[id]);
       await query("DELETE FROM autosnap_records WHERE id=$1",[id]);
@@ -393,6 +506,7 @@ export class AutoSnapController {
         }
       }
     });
+    if(actor)await writeAudit(this.db,actor.id,"delete_record",row.kind,id,{name:row.name});
     return res.json({ok:true});
   }
   private async updateProgress(id:string,userId:string,stage:string,status:"queued"|"running"|"completed"|"failed"|"cancelled",detail=""){
@@ -586,6 +700,8 @@ export class AutoSnapController {
     const now=new Date().toISOString();
     const resumeRunId=typeof input.resumeRunId==="string"?input.resumeRunId:"";
     const id=resumeRunId||("RUN-"+now.slice(0,10).replaceAll("-","")+"-"+randomUUID().slice(0,8).toUpperCase());
+    // Keep original ownership when Admin resumes another user's history.
+    const ownerOperatorId=typeof input.ownerOperatorId==="string"&&input.ownerOperatorId?String(input.ownerOperatorId):operator.id;
     let checkpoint=buildCheckpoint(workflow.nodes,{registration:!!automaticRegistration});
     checkpoint=markStage(checkpoint,"preparing","COMPLETED","Konfigurasi tervalidasi");
     if(automaticRegistration)checkpoint=markStage(checkpoint,"registration","COMPLETED");
@@ -609,20 +725,25 @@ export class AutoSnapController {
     const evidenceMetadata:Array<AspiActivity&{pdfReady:boolean}>=[];
     const email=String(snapUser?.data.email??snapUser?.data.username??"");
     const evidencePlan=mode==="portal"&&snapUser&&evaluation.httpValidation.matches?buildEvidencePlan(result,path,method,service.name,email):null;
-    const requestSnapshot:Record<string,unknown>={...cleanRequest,outcome:status,executionOutcome,evaluation,validation:checks,endpointConfiguration:config,workflow:workflow.profile,checkpoint,evidence:evidencePlan,progressId,configurationIds:{endpointId:endpoint.id,serviceId:service.id,endpointRevision:endpoint.updated_at,serviceRevision:service.updated_at},expectation:{...expectation,expectedCode:expected,expectedHttpStatus:expectedHttp},aspiActivities:evidenceMetadata,reprocess:{retryEvidence:false,resumeTesting:false},context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
+    const priorOperator=object(cleanRequest)&&object(cleanRequest.operator)?cleanRequest.operator:null;
+    const operatorSnapshot=priorOperator??(ownerOperatorId===operator.id
+      ?{id:operator.id,name:operator.name,username:operator.username,role:normalizeRole(operator.role)??"petugas"}
+      :{id:ownerOperatorId,name:"Tidak diketahui",username:"-",role:"unknown"});
+    if(resumeRunId&&ownerOperatorId!==operator.id)notes+=` (Resume oleh Admin ${operator.username}).`;
+    else if(resumeRunId)notes+=" (Resume Testing).";
+    const requestSnapshot:Record<string,unknown>={...cleanRequest,outcome:status,executionOutcome,evaluation,validation:checks,endpointConfiguration:config,workflow:workflow.profile,checkpoint,evidence:evidencePlan,progressId,configurationIds:{endpointId:endpoint.id,serviceId:service.id,endpointRevision:endpoint.updated_at,serviceRevision:service.updated_at},expectation:{...expectation,expectedCode:expected,expectedHttpStatus:expectedHttp},aspiActivities:evidenceMetadata,reprocess:{retryEvidence:false,resumeTesting:false},operator:operatorSnapshot,context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
     if(resumeRunId){
-      notes+=" (Resume Testing).";
-      await this.db.query("UPDATE autosnap_runs SET status=$1,http_status=$2,response_code=$3,expected_code=$4,duration_ms=$5,request_json=$6::jsonb,response_json=$7::jsonb,notes=$8 WHERE id=$9 AND operator_id=$10",[status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,id,operator.id]);
+      await this.db.query("UPDATE autosnap_runs SET status=$1,http_status=$2,response_code=$3,expected_code=$4,duration_ms=$5,request_json=$6::jsonb,response_json=$7::jsonb,notes=$8 WHERE id=$9 AND operator_id=$10",[status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,id,ownerOperatorId]);
     }else{
-      await this.db.query("INSERT INTO autosnap_runs (id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19)",[id,operator.id,client.id,project.id,environment.id,snapUser?.id??null,service.id,endpoint.id,scenarioId,mode,status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,now]);
+      await this.db.query("INSERT INTO autosnap_runs (id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19)",[id,ownerOperatorId,client.id,project.id,environment.id,snapUser?.id??null,service.id,endpoint.id,scenarioId,mode,status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,now]);
     }
     // Official ASPI PDFs only when HTTP matched (COMPLETED path). FAILED HTTP never becomes PASSED via PDFs.
     if(mode==="portal"&&evaluation.httpValidation.matches&&evidencePlan&&snapUser&&!control.signal.aborted){
       checkpoint=markStage(checkpoint,"evidence","RUNNING","Mengambil PDF resmi ASPI");
       await progress("evidence","running","Respons HTTP tersimpan. Mengambil PDF resmi ASPI untuk operasi yang sudah dijalankan.");
-      await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({evidence:evidencePlan,checkpoint}),id,operator.id]);
+      await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({evidence:evidencePlan,checkpoint}),id,ownerOperatorId]);
       try{
-        const evidenceResult=await this.evidenceService.process({runId:id,ownerId:operator.id,user:snapUser,initial:true,session:activePortalSession,signal:control.signal,onProgress:progress});
+        const evidenceResult=await this.evidenceService.process({runId:id,ownerId:ownerOperatorId,user:snapUser,initial:true,session:activePortalSession,signal:control.signal,onProgress:progress,actor:{id:operator.id,username:operator.username,name:operator.name,role:normalizeRole(operator.role)??"petugas"}});
         // Evidence finishes locks before returning; clear the handoff so finally does not double-hold.
         activePortalSession=undefined;
         status=evidenceResult.status as RunStatus;
@@ -634,7 +755,7 @@ export class AutoSnapController {
         checkpoint=markStage(checkpoint,"evidence","FAILED","Download PDF ASPI gagal");
         await progress("evidence","failed","Download PDF ASPI gagal; hasil HTTP tetap tersimpan.");
       }
-      await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=request_json || $3::jsonb WHERE id=$4 AND operator_id=$5",[status,notes,JSON.stringify({checkpoint,outcome:status}),id,operator.id]);
+      await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=request_json || $3::jsonb WHERE id=$4 AND operator_id=$5",[status,notes,JSON.stringify({checkpoint,outcome:status}),id,ownerOperatorId]);
     }else if(mode==="portal"){
       checkpoint=markStage(checkpoint,"evidence","SKIPPED",status==="FAILED"?"HTTP gagal; bukti ASPI tidak diunduh.":"Belum ada HTTP target.");
       await progress("evidence","completed",status==="FAILED"?"HTTP tidak sesuai; bukti ASPI tidak diunduh.":control.signal.aborted?"Pengambilan PDF ASPI dibatalkan.":"Belum ada HTTP response dari operasi ASPI.");
@@ -642,7 +763,7 @@ export class AutoSnapController {
       // Mock/live have no ASPI PDF gate — HTTP match is the final outcome.
       status=finalOutcome(evaluation,true);
       Object.assign(evaluation,{outcome:status,detail:`HTTP ${result.status} sesuai expected ${expectedHttp}.`,suggestion:""});
-      await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=request_json || $3::jsonb WHERE id=$4 AND operator_id=$5",[status,`${evaluation.detail} Outcome: ${status}.`,JSON.stringify({outcome:status,evaluation}),id,operator.id]);
+      await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=request_json || $3::jsonb WHERE id=$4 AND operator_id=$5",[status,`${evaluation.detail} Outcome: ${status}.`,JSON.stringify({outcome:status,evaluation}),id,ownerOperatorId]);
     }
     await progress("finalizing","running","Melepaskan sesi ASPI dan menyelesaikan status…");
     if(activePortalSession){
@@ -657,7 +778,7 @@ export class AutoSnapController {
       status="CANCELLED";result.outcome="CANCELLED";notes="Pengujian dibatalkan pengguna. Request yang sudah terkirim tetap tercatat.";
       Object.assign(evaluation,{outcome:"CANCELLED",detail:notes,suggestion:"Periksa request yang sudah terkirim pada History Testing sebelum mencoba ulang."});
       checkpoint=markStage(checkpoint,"finished","FAILED",notes);
-      await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=request_json || $3::jsonb WHERE id=$4 AND operator_id=$5",[status,notes,JSON.stringify({outcome:"CANCELLED",evaluation,checkpoint}),id,operator.id]);
+      await this.db.query("UPDATE autosnap_runs SET status=$1,notes=$2,request_json=request_json || $3::jsonb WHERE id=$4 AND operator_id=$5",[status,notes,JSON.stringify({outcome:"CANCELLED",evaluation,checkpoint}),id,ownerOperatorId]);
     }
     const finalProgress=await this.db.one<{steps:unknown}>("SELECT steps FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[progressId,operator.id]);
     const savedRow=await this.db.one<RunRow>("SELECT request_json FROM autosnap_runs WHERE id=$1",[id]);
@@ -670,7 +791,7 @@ export class AutoSnapController {
       resumeTesting:canResumeTesting({status,hasTargetHttp:hasRecordedHttp({http_status:result.status,request_json:cleanRequest}),failedStageId:failedStage(checkpoint)?.id??null})||(!hasRecordedHttp({http_status:result.status,request_json:cleanRequest})&&failedStage(checkpoint)?.id==="api_request"),
       requireMutatingConfirm:requiresMutatingConfirm(method,hasRecordedHttp({http_status:result.status,request_json:cleanRequest}),failedStage(checkpoint)?.id==="api_request"),
     };
-    await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({progressLog:finalProgress?.steps??[],checkpoint,reprocess,pdfCounts:{ready:pdfReady,required:pdfRequired}}),id,operator.id]);
+    await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({progressLog:finalProgress?.steps??[],checkpoint,reprocess,pdfCounts:{ready:pdfReady,required:pdfRequired},operator:operatorSnapshot}),id,ownerOperatorId]);
     return res.json({ok:true,id,progressId,status,outcome:status,executionOutcome,evaluation,checkpoint,reprocess,pdfCounts:{ready:pdfReady,required:pdfRequired},failedStage:responseBody.failedStage??failedStage(checkpoint)?.id??null,httpStatus:result.status,responseCode,expectedCode:expected,expectedHttpStatus:expectedHttp,durationMs:duration,response:redact(result.body),checks,notes,aspiReady,busyUserIds,formReady:aspiReady});
     }finally{
       // Important: release the borrowed ASPI browser even if DB writes,

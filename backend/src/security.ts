@@ -4,6 +4,8 @@ import { promisify } from "node:util";
 const pbkdf2=promisify(pbkdf2Callback);
 export const secretFields=new Set(["clientSecret","privateKey","password","accessToken","customerToken","refreshToken","accountNo","bankCardToken","authCode"]);
 export const sha256=(value:string)=>createHash("sha256").update(value).digest("hex");
+/** SHA-256 of raw bytes (official ASPI PDF integrity). */
+export const sha256Bytes=(value:Buffer|Uint8Array|string)=>createHash("sha256").update(value).digest("hex");
 export async function hashPassword(password:string,salt=randomBytes(16).toString("hex")){
   const hash=(await pbkdf2(password,Buffer.from(salt,"hex"),210000,32,"sha256")).toString("hex");
   return {salt,hash};

@@ -53,7 +53,12 @@ export class AspiSessionManager{
       if (!sessionValid) {
         await this.loginIfRequired(page, user);
 
-        const validAfterLogin = await validate(page);
+        let validAfterLogin = await validate(page);
+        // Swagger/panel can lag right after redirect from sign-in.
+        if (!validAfterLogin) {
+          await new Promise<void>(resolve=>setTimeout(resolve,1500));
+          validAfterLogin = await validate(page);
+        }
 
         if (!validAfterLogin) {
           throw new AspiAutomationError(
@@ -73,12 +78,12 @@ export class AspiSessionManager{
     if(process.env.VERCEL){
       const {default:serverlessChromium}=await import("@sparticuz/chromium");
       const profile=join(tmpdir(),"autosnap-browser",lease);mkdirSync(profile,{recursive:true,mode:0o700});
-      return chromium.launchPersistentContext(profile,{executablePath:await serverlessChromium.executablePath(),headless:true,viewport:{width:1440,height:900},args:serverlessChromium.args});
+      return chromium.launchPersistentContext(profile,{executablePath:await serverlessChromium.executablePath(),headless:true,acceptDownloads:true,viewport:{width:1440,height:900},args:serverlessChromium.args});
     }
     const configured=process.env.AUTOSNAP_CHROME_PATH?.trim(),candidates=[configured,"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe","C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"].filter(Boolean) as string[],executablePath=candidates.find(existsSync);
     if(!executablePath)throw new AspiAutomationError("AUTOMATION_ERROR","Google Chrome tidak ditemukan. Isi AUTOSNAP_CHROME_PATH.");
     const root=process.env.AUTOSNAP_PORTAL_PROFILE_DIR?.trim()||join(process.cwd(),".autosnap-browser-profile"),profile=join(root,lease);mkdirSync(profile,{recursive:true,mode:0o700});
-    return chromium.launchPersistentContext(profile,{executablePath,headless:true,viewport:{width:1440,height:900},args:["--disable-blink-features=AutomationControlled"]});
+    return chromium.launchPersistentContext(profile,{executablePath,headless:true,acceptDownloads:true,viewport:{width:1440,height:900},args:["--disable-blink-features=AutomationControlled"]});
   }
   async loginIfRequired(page:Page,user:RecordRow){
     const signIn=page.getByRole("link",{name:/sign in|login|masuk/i}).or(page.getByRole("button",{name:/sign in|login|masuk/i})).first();

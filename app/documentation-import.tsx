@@ -56,7 +56,7 @@ export default function DocumentationImport({users,endpoint,service,api,reload,o
         else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
       }}>
       <header className="documentation-heading">
-        <h2 id="import-title">{endpoint?"Edit Endpoint URL":"Tambah Endpoint URL"}</h2>
+        <h2 id="import-title">{endpoint?"Edit Dev Site Endpoint":"Tambah Dev Site Endpoint"}</h2>
         <p>Tempel URL operasi ASPI untuk mengambil konfigurasi dan sample request.</p>
       </header>
       {error&&<p role="alert" className="form-error">{error}</p>}

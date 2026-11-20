@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import type { Api, State } from "./model";
+import { useMemo, useState } from "react";
+import type { Api, HistoryFilters, State } from "./model";
 import HistoryFilter from "./history-filter";
 import { rangeForPeriod } from "./history-period";
-import { useHistory } from "./use-history";
+import { operatorLabel, useHistory } from "./use-history";
+import { can } from "./privileges";
 
 type Target =
   | "Dev Site Client"
@@ -42,19 +43,16 @@ export default function Dashboard({
   navigate: (target: Target) => void;
   reload?: () => Promise<void>;
 }) {
+  const isAdmin = can(state.user, "history", "view_all");
   const [range, setRange] = useState(() => rangeForPeriod("today"));
   const [offset, setOffset] = useState(0);
+  const [mode, setMode] = useState("all");
+  const [filters, setFilters] = useState<HistoryFilters>({ scope: isAdmin ? "all" : "mine" });
   const [refreshing, setRefreshing] = useState(false);
+  const services = useMemo(() => state.records.filter((item) => item.kind === "service"), [state.records]);
+  const endpoints = useMemo(() => state.records.filter((item) => item.kind === "endpoint" && !item.parentId), [state.records]);
 
-  const history = useHistory(
-    api,
-    range,
-    "all",
-    "",
-    offset,
-    15,
-    state.runs
-  );
+  const history = useHistory(api, range, mode, "", offset, 15, state.runs, filters);
 
   const recent = history.runs;
   const { dev, simulator, passed, failed, errors, completed = 0, cancelled = 0 } = history.summary as typeof history.summary & { completed?: number; cancelled?: number };
@@ -91,6 +89,12 @@ export default function Dashboard({
     ...(cancelled ? [{ label: "CANCELLED", value: cancelled, status: "cancelled", badge: "CANCELLED" }] : []),
   ];
 
+  const scopeLabel = isAdmin
+    ? filters.scope === "mine"
+      ? "pengujian Anda"
+      : "seluruh pengguna AutoSNAP"
+    : "pengujian milik akun Anda";
+
   return (
     <div className="dashboard-page">
       <div className="dashboard-toolbar">
@@ -98,6 +102,21 @@ export default function Dashboard({
           value={range}
           onChange={(value) => {
             setRange(value);
+            setOffset(0);
+          }}
+          filters={filters}
+          onFiltersChange={(next) => {
+            setFilters(next);
+            setOffset(0);
+          }}
+          isAdmin={isAdmin}
+          operators={state.operators ?? []}
+          services={services}
+          endpoints={endpoints}
+          showMode
+          mode={mode}
+          onModeChange={(next) => {
+            setMode(next);
             setOffset(0);
           }}
         />
@@ -149,13 +168,49 @@ export default function Dashboard({
         })}
       </section>
 
+      {isAdmin && filters.scope !== "mine" && history.byOperator.length > 0 && (
+        <section className="card dashboard-history">
+          <div className="section-header">
+            <div>
+              <h2>Ringkasan per Pengguna</h2>
+              <p>Jumlah pengujian pada filter dan periode terpilih.</p>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>PENGGUNA</th>
+                  <th>ROLE</th>
+                  <th>TOTAL</th>
+                  <th>PASSED</th>
+                  <th>FAILED</th>
+                  <th>COMPLETED</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.byOperator.map((row) => (
+                  <tr key={row.operator_id ?? row.username}>
+                    <td>{row.name}{row.username && row.username !== "-" ? ` (@${row.username})` : ""}</td>
+                    <td>{row.role === "admin" ? "Admin" : row.role === "petugas" ? "Petugas" : "—"}</td>
+                    <td>{row.total}</td>
+                    <td>{row.passed}</td>
+                    <td>{row.failed}</td>
+                    <td>{row.completed}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       <section className="card dashboard-history">
         <div className="section-header">
           <div>
             <h2>History Testing</h2>
             <p>
-              {history.total} pengujian milik akun Anda
-              pada periode terpilih.
+              {history.total} {scopeLabel} pada periode terpilih.
             </p>
           </div>
         </div>
@@ -165,6 +220,7 @@ export default function Dashboard({
             <thead>
               <tr>
                 <th>WAKTU</th>
+                {isAdmin && <th>PELAKSANA</th>}
                 <th>SERVICE</th>
                 <th>DEV SITE CLIENT</th>
                 <th>SKENARIO</th>
@@ -175,11 +231,13 @@ export default function Dashboard({
             <tbody>
               {recent.map((run) => {
                 const context = contextOf(run);
+                const actor = operatorLabel(run);
                 return (
                   <tr key={run.id}>
                     <td>
                       {new Date(run.created_at).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })}
                     </td>
+                    {isAdmin && <td>{actor.text}</td>}
                     <td>{String(context.service ?? "—")}</td>
                     <td>{String(context.environment ?? "—")}</td>
                     <td>{context.testType === "invalid_access_token" ? "Negatif" : "Positif"}</td>

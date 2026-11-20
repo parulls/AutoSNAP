@@ -221,7 +221,7 @@ export class PortalEngine{
     this.pdfCache.delete(cacheKey);
     const pending=this.pendingPdfs.get(cacheKey);
     if(pending)return pending;
-    const job=this.renderActivityPdf(user,activityId).then(pdf=>{
+    const job=this.fetchOfficialActivityPdf(user,activityId).then(pdf=>{
       for(const [key,item] of this.pdfCache)if(item.expiresAt<=Date.now())this.pdfCache.delete(key);
       let bytes=[...this.pdfCache.values()].reduce((total,item)=>total+item.pdf.length,0);
       for(const [key,item] of this.pdfCache){
@@ -234,24 +234,16 @@ export class PortalEngine{
     this.pendingPdfs.set(cacheKey,job);
     return job;
   }
-  private async renderActivityPdf(user:RecordRow,activityId:string){
+  /** Download official ASPI Download-button bytes only. Never generates or prints a PDF. */
+  private async fetchOfficialActivityPdf(user:RecordRow,activityId:string){
     const url=aspiActivityDownloadUrl(activityId);let release:(()=>Promise<void>)|undefined;
     try{
       const acquired=await this.sessions.getAuthenticatedContext(user,"apidevportal.aspi-indonesia.or.id",async page=>{
-        await page.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
+        await page.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:30000});
         return !page.url().includes("/sign-in");
       });
       release=acquired.release;
-      const reportPage=acquired.page;
-      try{
-        if(reportPage.url()!==url){
-          const response=await reportPage.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
-          if(!response||response.status()!==200)throw new Error(`ASPI menolak laporan aktivitas dengan HTTP ${response?.status()??"unknown"}.`);
-        }
-        const current=new URL(reportPage.url());
-        if(current.hostname!=="apidevportal.aspi-indonesia.or.id"||current.pathname!=="/sandboxactivity/downloadreportactivity"||current.searchParams.get("activityId")!==activityId||reportPage.url().includes("/sign-in"))throw new Error("Sesi ASPI tidak dapat membuka laporan aktivitas ini.");
-        return await fetchOfficialPdf(reportPage,url);
-      }finally{await reportPage.close();}
+      return await fetchOfficialPdf(acquired.page,url,undefined,"navigation");
     }finally{await release?.();}
   }
   private async execute(page:Page,url:string,path:string,method:string,headers:Record<string,string>,body:Record<string,unknown>,parameters?:Record<string,unknown>,policy:ExecutePolicy={}):Promise<HitResult>{

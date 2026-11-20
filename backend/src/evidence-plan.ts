@@ -4,7 +4,7 @@ import {isHttpResponse} from "./test-evaluation";
 import {sha256} from "./security";
 import type {AspiActivity} from "./aspi-evidence";
 
-export type EvidenceOperation={key:string;path:string;method:string;service:string;httpStatus:number;startedAt?:string;finishedAt?:string;activity?:AspiActivity;pdfReady:boolean;attempts:number;error?:string};
+export type EvidenceOperation={key:string;path:string;method:string;service:string;httpStatus:number;startedAt?:string;finishedAt?:string;activity?:AspiActivity;pdfReady:boolean;attempts:number;error?:string;contentSha256?:string;contentFingerprint?:string;byteSize?:number;pdfProducer?:string;downloadedAt?:string;authenticity?:"aspi-html2pdf-download"|"unverified"};
 export type EvidencePlan={version:1;beforeIds?:string[];accountHash:string;operations:EvidenceOperation[];phase:"PENDING"|"COLLECTING"|"COMPLETE"|"INCOMPLETE";retryCount:number};
 export function buildEvidencePlan(result:HitResult,path:string,method:string,service:string,email:string):EvidencePlan{
   const steps=Array.isArray(result.request.steps)?result.request.steps.filter(object):[];

@@ -24,7 +24,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     await page.route("**/api/autosnap",async route=>{
       const input=route.request().method()==="POST"?route.request().postDataJSON():{};let data;
       if(!input.action)data={user:{id:"admin",username:"qa",role:"admin",active:true},records,runs:runs?[run]:[],scenarios:[]};
-      else if(input.action==="getHistory")data={runs:runs?[run]:[],total:runs?1:0,summary:{total:runs?1:0,dev:runs?1:0,simulator:0,passed:0,completed:runs?1:0,failed:0,errors:0,cancelled:0}};
+      else if(input.action==="getHistory")data={runs:runs?[{...run,operator:{id:"admin",name:"QA",username:"qa",role:"admin",mine:true,source:"snapshot"}}]:[],total:runs?1:0,summary:{total:runs?1:0,dev:runs?1:0,simulator:0,passed:0,completed:runs?1:0,failed:0,errors:0,cancelled:0},byOperator:runs?[{operator_id:"admin",name:"QA",username:"qa",role:"admin",total:1,passed:0,failed:0,completed:1}]:[],scope:"all"};
       else if(input.action==="inspectDocumentation"){assert.equal(input.url,url);await new Promise(resolve=>setTimeout(resolve,250));data=draft;}
       else if(input.action==="saveImportedService"){
         assert.equal(input.draft.config.authFlow,"b2b");assert.equal(input.draft.config.reviewed,true);assert.equal(input.draft.config.expectedCode,null,"optional expected stays null when saved");
@@ -37,7 +37,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     });
     await page.goto(base);await page.getByRole("navigation").getByRole("button",{name:"Master Data",exact:true}).click();
     assert.equal(await page.getByRole("tab",{name:"API Service",exact:true}).count(),0);
-    await page.getByRole("tab",{name:"Endpoint URL",exact:true}).click();await page.getByRole("button",{name:"Tambah Endpoint URL",exact:true}).click();
+    await page.getByRole("tab",{name:"Dev Site Endpoint",exact:true}).click();await page.getByRole("button",{name:"Tambah Dev Site Endpoint",exact:true}).click();
     const dialog=page.getByRole("dialog");
     assert.equal(await dialog.getByRole("combobox",{name:"User SNAP untuk sesi portal"}).count(),0,"single SNAP user is selected automatically");
     assert.equal(await dialog.getByRole("combobox",{name:"Referensi layanan"}).count(),0,"no hardcoded service reference picker");
@@ -72,7 +72,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     await checkbox.check();
     await dialog.getByRole("button",{name:"Simpan",exact:true}).click();await dialog.waitFor({state:"hidden"});
     await page.getByRole("navigation").getByRole("button",{name:"Dev Site Client",exact:true}).click();
-    for(const [label,id]of [["User SNAP","snap"],["Dev Site Client","site"],["Endpoint URL","endpoint"],["API Service","service"]])await page.getByRole("combobox",{name:label,exact:true}).selectOption(id);
+    for(const [label,id]of [["User SNAP","snap"],["Dev Site Client","site"],["Dev Site Endpoint","endpoint"],["API Service","service"]])await page.getByRole("combobox",{name:label,exact:true}).selectOption(id);
     assert.equal(JSON.parse(await page.getByLabel("Request Body",{exact:true}).inputValue()).virtualAccountNo,"123");
     await page.getByLabel(/merchantId \(query\)/).fill("merchant-qa");await page.getByLabel("virtualAccountNo *",{exact:true}).fill("456");await page.getByRole("button",{name:"Jalankan Testing",exact:true}).click();
     await page.getByRole("dialog").getByRole("button",{name:"Tutup",exact:true}).click();assert.equal(runs,1);
@@ -82,6 +82,6 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     await result.screenshot({path:".next/completed-http-result.png"});
     await page.locator(".history-card tbody").getByText("COMPLETED",{exact:true}).waitFor();
     await page.getByRole("button",{name:"Detail validasi",exact:true}).click();await page.locator(".run-modal").getByText("Outcome: COMPLETED",{exact:true}).waitFor();await page.locator(".run-modal").getByRole("button",{name:"Tutup",exact:true}).click();
-    await page.getByRole("navigation").getByRole("button",{name:"Dashboard",exact:true}).click();await page.getByText("COMPLETED",{exact:true}).first().waitFor();assert.deepEqual(errors,[]);
+    await page.getByRole("navigation").getByRole("button",{name:"Dashboard",exact:true}).click();await page.locator(".dashboard-history .status-badge.completed, .dashboard-grid .status-badge.completed").filter({hasText:"COMPLETED"}).first().waitFor();assert.deepEqual(errors,[]);
   }finally{await browser?.close();server.kill();}
 });

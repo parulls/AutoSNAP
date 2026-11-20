@@ -35,7 +35,7 @@ test("Refresh clears filled testing form and response, retains history, and both
       await route.fulfill({contentType:"application/json",body:JSON.stringify(data)});
     });
     await page.goto(base);await page.getByRole("navigation").getByRole("button",{name:"Dev Site Client",exact:true}).click();
-    const choose=async()=>{for(const [label,id] of [["User SNAP","user"],["Dev Site Client","site"],["Endpoint URL","endpoint"],["API Service","service"]])await page.getByRole("combobox",{name:label,exact:true}).selectOption(id);};
+    const choose=async()=>{for(const [label,id] of [["User SNAP","user"],["Dev Site Client","site"],["Dev Site Endpoint","endpoint"],["API Service","service"]])await page.getByRole("combobox",{name:label,exact:true}).selectOption(id);};
     await choose();await page.getByLabel("Request Body",{exact:true}).fill('{"accountNo":"edited-draft"}');
     accountBusy=true;await page.getByRole("status").filter({hasText:"Akun ASPI ini sedang dipakai"}).waitFor({timeout:5000});
     assert.equal(await page.getByRole("button",{name:"Akun ASPI sedang dipakai proses lain"}).isDisabled(),true);assert.equal(runCalls,0);
@@ -45,7 +45,7 @@ test("Refresh clears filled testing form and response, retains history, and both
     await page.locator(".response-card .status-badge").getByText("PASSED",{exact:true}).waitFor();
     assert.match(await page.locator(".response-card").innerText(),/2001100/);
     await page.getByRole("button",{name:"Refresh",exact:true}).click();
-    for(const label of ["User SNAP","Dev Site Client","Endpoint URL","API Service"])assert.equal(await page.getByRole("combobox",{name:label,exact:true}).inputValue(),"");
+    for(const label of ["User SNAP","Dev Site Client","Dev Site Endpoint","API Service"])assert.equal(await page.getByRole("combobox",{name:label,exact:true}).inputValue(),"");
     assert.equal(await page.locator("textarea").count(),0);assert.doesNotMatch(await page.locator(".response-card").innerText(),/2001100/);
     await choose();assert.doesNotMatch(await page.getByLabel("Request Body",{exact:true}).inputValue(),/edited-draft/);assert.doesNotMatch(await page.locator(".response-card").innerText(),/2001100/);
     await page.getByLabel("Periode",{exact:true}).selectOption("custom");await page.getByLabel("Dari tanggal").fill("2025-01-01");
