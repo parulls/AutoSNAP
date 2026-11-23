@@ -14,9 +14,10 @@ import {aspiAccountLease,pdfAccountLease} from "./aspi-session-manager";
 import {AspiAutomationError} from "./aspi-types";
 import {canRetryEvidence,markStage,type RunCheckpoint} from "./run-checkpoint";
 import {activityAliasesFor} from "./service-capabilities";
+import type {PdfCaptureProfile} from "./pdf-browser";
 
 type ProcessActor={id:string;username:string;name:string;role:string};
-type ProcessInput={runId:string;ownerId:string;user:RecordRow;initial?:boolean;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:(stage:string,status:"running"|"completed"|"failed",detail?:string)=>Promise<void>;actor?:ProcessActor};
+type ProcessInput={runId:string;ownerId:string;user:RecordRow;initial?:boolean;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:(stage:string,status:"running"|"completed"|"failed",detail?:string)=>Promise<void>;actor?:ProcessActor;pdfCapture?:PdfCaptureProfile};
 type MissingPdf={path:string;key:string;activityId?:string;error:string};
 type AuditEntry={at:string;attempt:number;stage:"pdf_reprocessing";priorStatus:string;priorOutcome:string|null;priorDetail:string;priorErrors:MissingPdf[];result:"COMPLETED"|"INCOMPLETE"|"PROCESSING"|"FAILED";statusBefore:string;statusAfter:string;stored:number;required:number;missing:MissingPdf[];note:string;actorId?:string;actorUsername?:string;actorName?:string;actorRole?:string;ownerOperatorId?:string;crossUser?:boolean};
 export type EvidenceProcessResult={status:string;notes:string;complete:boolean;stored:number;required:number;processing?:boolean;missing:MissingPdf[];evidence?:EvidencePlan;reprocessAudit?:AuditEntry[];pdfCounts?:{ready:number;required:number};reprocess?:{retryEvidence:boolean;resumeTesting:boolean;requireMutatingConfirm:boolean}};
@@ -184,7 +185,7 @@ export class RunEvidenceService{
           results=await this.portal.collectEvidence({
             user:input.user,before:plan.beforeIds,paths:missing.map(op=>op.path),operations:missing,knownActivities:pinned,
             activityNames:Object.fromEntries(missing.map(op=>[op.path,[op.service,...activityAliasesFor(op.path)]])),
-            deadline:Date.now()+Math.max(1,deadline-Date.now()),session:input.session,signal:input.signal,onProgress:emit,onEvidence:accept,
+            deadline:Date.now()+Math.max(1,deadline-Date.now()),session:input.session,signal:input.signal,onProgress:emit,onEvidence:accept,pdfCapture:input.pdfCapture,
           });
         }
         catch(cause){results=missing.map(op=>({key:op.key,path:op.path,error:describePdfFailure(cause)}));}

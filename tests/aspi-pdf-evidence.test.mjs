@@ -7,6 +7,7 @@ import {createRequire} from "node:module";
 import {existsSync} from "node:fs";
 const require=createRequire(import.meta.url);
 const {correlateActivity,fetchOfficialPdf,validateOfficialPdf,validateAspiDownloadPdf,pdfEvidenceFingerprint,inspectPdfProvenance}=require("../backend/dist/aspi-evidence.js");
+const {pdfBrowserFromUserAgent}=require("../backend/dist/pdf-browser.js");
 const {AutoSnapController}=require("../backend/dist/app.js");
 const {PortalEngine}=require("../backend/dist/portal-engine.js");
 const {collectActivityPdfs}=require("../backend/dist/aspi-pdf-batch.js");
@@ -28,6 +29,12 @@ test("Generate QR MPM activity label matches path aliases without picking latest
   const other={...mpm,activityId:"cccccccc-cccc-4ccc-8ccc-cccccccccccc",service:"API Balance Inquiry"};
   assert.equal(correlateActivity(new Set(),[other,mpm],"/api/v1.0/qr/qr-mpm-generate"),mpm);
   assert.equal(correlateActivity(new Set(),[mpm,{...mpm,activityId:"dddddddd-dddd-4ddd-8ddd-dddddddddddd"}],"/api/v1.0/qr/qr-mpm-generate"),null);
+});
+
+test("PDF capture browser follows the user's engine, not a spoofed Chrome label",()=>{
+  assert.equal(pdfBrowserFromUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"),"firefox");
+  assert.equal(pdfBrowserFromUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"),"edge");
+  assert.equal(pdfBrowserFromUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),"chrome");
 });
 
 test("official PDF download forbids request/browser transports and rejects HTML",async()=>{
@@ -195,13 +202,16 @@ test("native navigation saves an attachment and rejects a redirected login page"
   }finally{await browser.close();}
 });
 
-test("report navigation has no silent click→URL fallback helpers",async()=>{
+test("report navigation captures ASPI blob only — no PDF generators or route.fetch",async()=>{
   const {readFileSync}=await import("node:fs");
   const {join}=await import("node:path");
   const src=readFileSync(join(process.cwd(),"backend","src","aspi-report-navigation.ts"),"utf8")
     .replace(/\/\*[\s\S]*?\*\//g,"").replace(/\/\/.*$/gm,"");
-  assert.equal(/downloadViaOfficialUrl|downloadViaActivityLinkClick/.test(src),false);
+  assert.equal(/(?:page|report|frame)\s*\.\s*pdf\s*\(/.test(src),false);
+  assert.equal(/printToPDF\s*\(/.test(src),false);
   assert.equal(/route\.fetch\s*\(/.test(src),false,"route.fetch bypasses cookies/context routes");
+  assert.equal(/installHtml2PdfGate|__aspiQueuedHtml2Pdf|__aspiAssetsReady/.test(src),false,"holding html2pdf changes the Chrome snapshot");
   assert.match(src,/captureAspHtml2PdfBlob/);
-  assert.match(src,/installHtml2PdfGate|__aspiQueuedHtml2Pdf/);
+  assert.match(src,/captureViaDownloadLinkClick/);
+  assert.match(src,/tidak membuat PDF pengganti/);
 });

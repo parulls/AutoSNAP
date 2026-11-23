@@ -115,7 +115,7 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
       endOwnProcess();
     };
     try{
-      const result=await api("run",{progressId,clientId:client?.id,projectId:project?.id,environmentId:site?.id,userId:user?.id,serviceId:service?.id,endpointId:endpoint?.id,useCase:"B2B",testType,body,parameters});
+      const result=await api("run",{progressId,clientId:client?.id,projectId:project?.id,environmentId:site?.id,userId:user?.id,serviceId:service?.id,endpointId:endpoint?.id,useCase:"B2B",testType,body,parameters,pdfScreen:{width:Math.round(window.innerWidth),height:Math.round(window.innerHeight),deviceScaleFactor:window.devicePixelRatio||1}});
       try{const current=await api("getProgress",{id:progressId}) as unknown as TestProgress;lastStage.current=current.stage;setProgress(current);}catch{}
       await unlockForm(result);
       await reload();setResultId(String(result.id??""));
@@ -153,7 +153,7 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
     reprocessLock.current=true;setReprocessingId(run.id);setTestingError(null);
     try{
       if(!confirmCrossUser(run,"Proses ulang bukti")){reprocessLock.current=false;setReprocessingId("");return;}
-      const result=await api("retryAspiEvidence",{id:run.id,confirmCrossUser:run.operator_id!==state.user?.id});
+      const result=await api("retryAspiEvidence",{id:run.id,confirmCrossUser:run.operator_id!==state.user?.id,pdfScreen:{width:Math.round(window.innerWidth),height:Math.round(window.innerHeight),deviceScaleFactor:window.devicePixelRatio||1}});
       applyBusyFromResult(result);
       setReprocessingId("");
       const stored=Number(result.stored??0),required=Number(result.required??0);

@@ -12,6 +12,7 @@ import { AspiFormResolver, normalizedParameterName } from "./aspi-form-resolver"
 import { AspiSessionManager } from "./aspi-session-manager";
 import { AspiAutomationError, type HitOutcome } from "./aspi-types";
 import { ACTIVITY_PAGE, fetchOfficialPdf, readActivities } from "./aspi-evidence";
+import { openPdfCaptureBrowser, type PdfCaptureProfile } from "./pdf-browser";
 import { collectActivityPdfs, type PdfEvidence } from "./aspi-pdf-batch";
 
 export {normalizedParameterName};
@@ -356,7 +357,7 @@ export class PortalEngine{
     try{return await readActivities(activityPage,deadline);}finally{await activityPage.close();}
   }
   /** Called by the controller only after all API calls are validated and History is saved. */
-  async collectEvidence(input:{activityNames?:Record<string,string[]>;operations?:import("./evidence-plan").EvidenceOperation[];knownActivities?:Record<string,import("./aspi-evidence").AspiActivity>;onEvidence?:(result:PdfEvidence)=>Promise<void>;user:RecordRow;before:string[]|undefined;paths:string[];deadline:number;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:ProgressReporter}):Promise<PdfEvidence[]>{
+  async collectEvidence(input:{activityNames?:Record<string,string[]>;operations?:import("./evidence-plan").EvidenceOperation[];knownActivities?:Record<string,import("./aspi-evidence").AspiActivity>;onEvidence?:(result:PdfEvidence)=>Promise<void>;user:RecordRow;before:string[]|undefined;paths:string[];deadline:number;session?:AspiEvidenceSession;signal?:AbortSignal;onProgress?:ProgressReporter;pdfCapture?:PdfCaptureProfile}):Promise<PdfEvidence[]>{
     const deadline=Math.min(input.deadline,Date.now()+pdfSettings().budgetMs);
     const report=async(status:"running"|"completed"|"failed",detail:string)=>{
       await input.onProgress?.("pdf_download",status,detail).catch(()=>undefined);
@@ -365,6 +366,7 @@ export class PortalEngine{
       return input.paths.map(path=>({path,error:input.signal?.aborted?"Download PDF dibatalkan.":!input.before?"Daftar aktivitas awal tidak tersedia; Activity ID tidak ditebak.":"Batas waktu pengambilan PDF tercapai."}));
     }
     let release:(()=>Promise<void>)|undefined;
+    let closePdfBrowser:(()=>Promise<void>)|undefined;
     // Borrow the still-authenticated testing browser when available. The
     // controller always releases it in finally, including cancelled/failed runs.
     // Only the fallback (old data path) owns its browser here.
@@ -418,11 +420,20 @@ export class PortalEngine{
       );
       if(!input.session)release=session.release;
       await Promise.resolve(session.beat?.()).catch(()=>undefined);
-      this.logger.log(`[ASPI PDF] Menggunakan ${input.session?"sesi testing aktif":"sesi baru"} untuk membaca bukti.`);
+      const pdfCapture=input.pdfCapture??{kind:"chrome" as const};
+      const opened=await openPdfCaptureBrowser(pdfCapture,session.page);
+      closePdfBrowser=opened.close;
+      const downloadPage=opened.page;
+      await downloadPage.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:Math.max(1000,Math.min(30000,deadline-Date.now()))});
+      if(downloadPage.url().includes("/sign-in")||await downloadPage.locator('input[type="password"]').count()){
+        await this.sessions.loginIfRequired(downloadPage,input.user);
+        await downloadPage.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:Math.max(1000,Math.min(30000,deadline-Date.now()))});
+      }
+      this.logger.log(`[ASPI PDF] PDF digambar ${pdfCapture.kind} ${pdfCapture.width??1280}x${pdfCapture.height??800} @${pdfCapture.deviceScaleFactor??1}x. Skrip download ASPI tidak ditahan.`);
       return await collectActivityPdfs({
         before:input.before,paths:input.paths,operations:input.operations,knownActivities:input.knownActivities,activityNames:input.activityNames,deadline,signal:controller.signal,
         read:()=>this.activitiesInContext(session.page,deadline),
-        download:activity=>fetchOfficialPdf(session.page,activity.downloadUrl,deadline,"navigation"),
+        download:activity=>fetchOfficialPdf(downloadPage,activity.downloadUrl,deadline,"navigation"),
         report,onResult:input.onEvidence
       });
     }catch(cause){
@@ -435,6 +446,7 @@ export class PortalEngine{
       return input.paths.map(path=>({path,error}));
     }finally{
       clearTimeout(timer);input.signal?.removeEventListener("abort",abort);
+      await closePdfBrowser?.().catch(()=>undefined);
       await release?.();
     }
   }

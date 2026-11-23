@@ -2,16 +2,9 @@ import type {Download,Page} from "playwright-core";
 import {ACTIVITY_PAGE,validateAspiDownloadPdf} from "./aspi-evidence";
 
 /**
- * ASPI Download is not a static PDF. The portal serves HTML that runs:
- *   html2pdf(printPdf, { …jsPDF options… }); download();
- * AutoSNAP must capture that blob only — never page.pdf() / printToPDF.
- *
- * The portal calls download() immediately on load, often before logos finish.
- * We gate html2pdf via init script (same options ASPI queued), wait for #printPdf
- * assets, then run the official generator — still ASPI's code, not AutoSNAP's PDF.
- *
- * Do not use route.fetch() to rewrite HTML: Playwright's fetch bypasses the
- * browser cookie jar / context routes and can hit a bare login page.
+ * ASPI Download is HTML that calls its own download() → html2pdf().
+ * AutoSNAP only captures that browser download. It does not delay, wrap, or
+ * replay html2pdf — doing so changes the snapshot versus a normal Chrome click.
  */
 
 async function readOfficialDownload(download:Download,expectedUrl:string){
@@ -33,95 +26,27 @@ async function readOfficialDownload(download:Download,expectedUrl:string){
   return validateAspiDownloadPdf(Buffer.concat(chunks));
 }
 
-/** Hold ASPI's html2pdf call until #printPdf images/fonts are ready, then replay it. */
-async function installHtml2PdfGate(page:Page){
-  await page.addInitScript(()=>{
-    const w=window as Window&{
-      __aspiAssetsReady?:boolean;
-      __aspiQueuedHtml2Pdf?:{el:unknown;opts:unknown;real:(...args:unknown[])=>unknown};
-      __aspiHtml2PdfSeen?:boolean;
-    };
-    w.__aspiAssetsReady=false;
-    let real:((...args:unknown[])=>unknown)|null=null;
-    Object.defineProperty(w,"html2pdf",{
-      configurable:true,
-      enumerable:true,
-      set(fn:unknown){
-        real=typeof fn==="function"?(fn as(...args:unknown[])=>unknown):null;
-        w.__aspiHtml2PdfSeen=true;
-      },
-      get(){
-        const wrapper=function(this:unknown,...args:unknown[]){
-          w.__aspiHtml2PdfSeen=true;
-          if(!real)throw Error("html2pdf belum dimuat.");
-          if(w.__aspiAssetsReady)return real.apply(this,args);
-          w.__aspiQueuedHtml2Pdf={el:args[0],opts:args[1],real};
-          const fake={then(cb?:(v:unknown)=>unknown){cb?.(fake);return fake;},catch(){return fake;},finally(cb?:()=>void){cb?.();return fake;}};
-          return fake;
-        };
-        return wrapper;
-      },
-    });
-  });
-}
-
-async function waitForPrintPdfAssets(page:Page,budgetMs:number){
-  await page.locator("#printPdf").first().waitFor({state:"attached",timeout:Math.min(15000,Math.max(1000,budgetMs))});
-  await page.waitForFunction("typeof window.html2pdf === 'function' || window.__aspiHtml2PdfSeen === true",null,{timeout:Math.min(20000,Math.max(1000,budgetMs))});
-  await page.evaluate(async()=>{
-    const root=document.querySelector("#printPdf");
-    if(!root)return;
-    const images=[...root.querySelectorAll("img")];
-    await Promise.all(images.map(img=>{
-      if(img.complete&&img.naturalWidth>0)return Promise.resolve();
-      return new Promise<void>(resolve=>{
-        const done=()=>resolve();
-        img.addEventListener("load",done,{once:true});
-        img.addEventListener("error",done,{once:true});
-        setTimeout(done,8000);
-      });
-    }));
-    if(document.fonts?.ready)await document.fonts.ready.catch(()=>undefined);
-  });
-}
-
-/**
- * Open the Download-button href in a new tab, gate ASPI's html2pdf until assets
- * are ready, then capture the blob ASPI generates.
- */
+/** Open the Download href and wait for the file ASPI's own script downloads. */
 async function captureAspHtml2PdfBlob(page:Page,url:string,timeout:number){
   const report=await page.context().newPage();
-  let settled=false;
-  let settle!:(download:Download)=>void;
-  let fail!:(error:Error)=>void;
-  const pending=new Promise<Download>((resolve,reject)=>{settle=resolve;fail=reject;});
-  const onDownload=(download:Download)=>{if(settled)return;settled=true;report.off("download",onDownload);settle(download);};
   let timer:ReturnType<typeof setTimeout>|undefined;
   let expired=false;
-
+  const downloadPromise=report.waitForEvent("download",{timeout});
   try{
-    report.on("download",onDownload);
-    await installHtml2PdfGate(report);
-
     const work=(async()=>{
-      // Attachment responses: Playwright rejects goto ("Download is starting"). Catch that
-      // so Promise.race can still resolve via the download event.
       const navigated=report.goto(url,{waitUntil:"domcontentloaded",referer:ACTIVITY_PAGE,timeout}).then(
         response=>({kind:"response" as const,response}),
         error=>({kind:"naverror" as const,error}),
       );
       const early=await Promise.race([
-        pending.then(download=>({kind:"download" as const,download})),
+        downloadPromise.then(download=>({kind:"download" as const,download})),
         navigated,
       ]);
       if(early.kind==="download"){
         await navigated.catch(()=>undefined);
         return readOfficialDownload(early.download,url);
       }
-      if(early.kind==="naverror"){
-        const download=await pending;
-        return readOfficialDownload(download,url);
-      }
+      if(early.kind==="naverror")return readOfficialDownload(await downloadPromise,url);
 
       const response=early.response;
       const current=new URL(report.url()),expected=new URL(url);
@@ -129,56 +54,22 @@ async function captureAspHtml2PdfBlob(page:Page,url:string,timeout:number){
         throw Error("Sesi ASPI dialihkan dari halaman laporan Download.");
       }
       if(response&&!response.ok())throw Error(`Laporan ASPI mengembalikan HTTP ${response.status()}.`);
-
       const contentType=String(response?.headers()["content-type"]??"").toLowerCase();
-      if(contentType.includes("application/pdf")){
-        const download=await pending;
-        return readOfficialDownload(download,url);
-      }
-
+      if(contentType.includes("application/pdf"))return readOfficialDownload(await downloadPromise,url);
       if(await report.locator('input[type="password"],form[action*="login"],form[action*="sign-in"]').count()){
         throw Error("ASPI mengembalikan halaman login, bukan PDF resmi. Bukti belum berhasil diunduh.");
       }
-
-      const hasPrintPdf=await report.locator("#printPdf").count();
-      if(!hasPrintPdf){
-        throw Error("Halaman Download ASPI tidak memuat #printPdf/html2pdf resmi. AutoSNAP menolak membuat PDF pengganti.");
+      if(!(await report.locator("#printPdf").count())&&!/html2pdf|function\s+download\s*\(/.test(await report.content())){
+        throw Error("Halaman Download ASPI tidak memuat skrip html2pdf resmi. AutoSNAP tidak membuat PDF pengganti.");
       }
-
-      await waitForPrintPdfAssets(report,Math.min(25000,timeout));
-
-      // Replay ASPI's queued html2pdf(printPdf, opts) — same options the portal passed.
-      const started=await report.evaluate(()=>{
-        const w=window as Window&{
-          __aspiAssetsReady?:boolean;
-          __aspiQueuedHtml2Pdf?:{el:unknown;opts:unknown;real:(...args:unknown[])=>unknown};
-        };
-        w.__aspiAssetsReady=true;
-        if(w.__aspiQueuedHtml2Pdf?.real){
-          w.__aspiQueuedHtml2Pdf.real(w.__aspiQueuedHtml2Pdf.el,w.__aspiQueuedHtml2Pdf.opts);
-          return "queued";
-        }
-        const download=(w as unknown as {download?:()=>void}).download;
-        if(typeof download==="function"){
-          download();
-          return "download";
-        }
-        return null;
-      });
-      if(!started){
-        throw Error("Fungsi download()/html2pdf resmi ASPI tidak tersedia. AutoSNAP tidak membuat PDF pengganti.");
-      }
-
-      const download=await pending;
-      return readOfficialDownload(download,url);
+      // html2canvas keeps running after DOMContentLoaded. Wait for ASPI's download only.
+      return readOfficialDownload(await downloadPromise,url);
     })();
-
     return await Promise.race([
       work,
       new Promise<never>((_,reject)=>{
         timer=setTimeout(()=>{
           expired=true;
-          if(!settled){settled=true;fail(Error("Timeout menunggu blob PDF dari download() resmi ASPI."));}
           reject(Error("Timeout menunggu blob PDF dari download() resmi ASPI. AutoSNAP tidak membuat PDF pengganti."));
           void report.close().catch(()=>undefined);
         },timeout);
@@ -189,21 +80,46 @@ async function captureAspHtml2PdfBlob(page:Page,url:string,timeout:number){
     throw error;
   }finally{
     if(timer)clearTimeout(timer);
-    report.off("download",onDownload);
-    settled=true;
     await report.close().catch(()=>undefined);
   }
 }
 
+/** Click the activity-row Download link and take the file that click produces. */
+async function captureViaDownloadLinkClick(page:Page,url:string,timeout:number){
+  const activityId=new URL(url).searchParams.get("activityId");
+  if(!activityId)throw Error("URL Download ASPI tidak valid.");
+  const location=(()=>{try{return new URL(page.url());}catch{return null;}})();
+  if(!location||location.origin!=="https://apidevportal.aspi-indonesia.or.id"||location.pathname!=="/aktivitas-aplikasi-pengujian"){
+    const response=await page.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:Math.min(20000,timeout)});
+    const here=new URL(page.url());
+    if(here.pathname!=="/aktivitas-aplikasi-pengujian")throw Error("Tidak dapat membuka daftar aktivitas ASPI untuk klik Download.");
+    if(response&&!response.ok())throw Error(`Halaman aktivitas ASPI mengembalikan HTTP ${response.status()}.`);
+  }
+  const link=page.locator(`a[href*="downloadreportactivity"][href*="activityId=${activityId}"]`).first();
+  if(!(await link.count()))throw Error(`Tombol Download untuk Activity ID ${activityId} tidak ditemukan di tabel aktivitas ASPI.`);
+  const downloadPromise=page.context().waitForEvent("download",{timeout});
+  await link.click({timeout:Math.min(10000,timeout)});
+  return readOfficialDownload(await downloadPromise,url);
+}
+
 /**
- * Official ASPI Download only — single path, no silent method switching.
- * Uses the same URL as the portal Download button (target=_blank href).
- * Never page.pdf(), never AutoSNAP-built PDF, never silent fallback.
+ * Official ASPI Download only. The page script runs untouched.
+ * Click the activity Download link first; if it is missing, open the same href.
  */
 export async function downloadReportByNavigation(page:Page,url:string,timeout:number){
   const parsed=new URL(url);
   if(parsed.pathname!=="/sandboxactivity/downloadreportactivity"||!parsed.searchParams.get("activityId")){
     throw Error("URL Download ASPI tidak valid.");
   }
-  return captureAspHtml2PdfBlob(page,url,timeout);
+  try{
+    return await captureViaDownloadLinkClick(page,url,timeout);
+  }catch(clickError){
+    const reason=clickError instanceof Error?clickError.message:String(clickError);
+    try{
+      return await captureAspHtml2PdfBlob(page,url,timeout);
+    }catch(navError){
+      const navReason=navError instanceof Error?navError.message:String(navError);
+      throw Error(`Unduhan Download ASPI gagal. Klik tombol: ${reason.slice(0,180)}. Buka href Download: ${navReason.slice(0,180)}. AutoSNAP tidak membuat PDF pengganti.`);
+    }
+  }
 }

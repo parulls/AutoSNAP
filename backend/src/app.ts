@@ -33,6 +33,7 @@ import {annotateServiceData,resolveCapabilities,savesPrerequisite} from "./servi
 import {buildEvidencePlan} from "./evidence-plan";
 import {RunEvidenceService} from "./run-evidence";
 import {buildCheckpoint,canResumeTesting,canRetryEvidence,failedStage,markStage,requiresMutatingConfirm,type RunCheckpoint} from "./run-checkpoint";
+import {pdfCaptureProfile,type PdfCaptureProfile} from "./pdf-browser";
 
 type Scenario={id:string;group:string;service:string;scenario:string;expected:string;expectedCode:string|null};
 type Input=Record<string,unknown>;
@@ -232,7 +233,7 @@ export class AutoSnapController {
       if(action==="retryAspiEvidence"){
         await this.enforceRateLimit(`retry-evidence:${user.id}`,10,10*60_000);
         if(!can(user,"dev_site","evidence"))return this.fail(res,clientError("Anda tidak memiliki privilege untuk memproses ulang bukti Dev Site.",403));
-        return await this.retryAspiEvidence(res,input,user);
+        return await this.retryAspiEvidence(res,input,user,pdfCaptureProfile(req.headers["user-agent"],input.pdfScreen));
       }
       if(action==="resumeTesting"){
         await this.enforceRateLimit(`resume:${user.id}`,10,10*60_000);
@@ -254,7 +255,7 @@ export class AutoSnapController {
         const environment=await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='environment'",[String(input.environmentId??"")]);
         const required=value(environment??undefined,"mode")==="mock"?"client_simulator":"dev_site";
         if(!hasPrivilege(user,required))return this.fail(res,clientError("Anda tidak memiliki privilege untuk menjalankan pengujian ini.",403));
-        return await this.run(res,input,user);
+        return await this.run(res,input,user,pdfCaptureProfile(req.headers["user-agent"],input.pdfScreen));
       }
       return this.fail(res,clientError("Action tidak dikenal.",404));
     }catch(error){return this.fail(res,error);}
@@ -325,7 +326,7 @@ export class AutoSnapController {
     res.setHeader("Content-Type","application/zip");res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);res.setHeader("Content-Length",String(zip.length));
     return res.send(zip);
   }
-  private async retryAspiEvidence(res:Response,input:Input,operator:Operator){
+  private async retryAspiEvidence(res:Response,input:Input,operator:Operator,pdfCapture:PdfCaptureProfile={kind:"chrome"}){
     const runId=String(input.id??"");
     const run=await this.loadAccessibleRun(runId,operator);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
@@ -342,7 +343,7 @@ export class AutoSnapController {
     const userId=run.user_id,snapUser=userId?await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='snap_user'",[userId]):null;
     if(!snapUser)return this.fail(res,clientError("User SNAP pada history tidak ditemukan.",404));
     const actor={id:operator.id,username:operator.username,name:operator.name,role:normalizeRole(operator.role)??"petugas"};
-    const result=await this.evidenceService.process({runId,ownerId,user:snapUser,initial:false,actor});
+    const result=await this.evidenceService.process({runId,ownerId,user:snapUser,initial:false,actor,pdfCapture});
     const aspiReady=!(await this.evidenceService.accountBusy(snapUser));
     const busyUserIds=await this.evidenceService.busyUserIds(await this.allRecords());
     return res.json({ok:true,...result,aspiReady,busyUserIds,formReady:aspiReady});
@@ -521,7 +522,7 @@ export class AutoSnapController {
       return status;
     });
   }
-  private async run(res:Response,input:Input,operator:Operator){
+  private async run(res:Response,input:Input,operator:Operator,pdfCapture:PdfCaptureProfile={kind:"chrome"}){
     const rows=await this.allRecords(),client=get(rows,input.clientId,"client"),project=get(rows,input.projectId,"project"),environment=get(rows,input.environmentId,"environment"),snapUser=input.userId?get(rows,input.userId,"snap_user"):null,service=get(rows,input.serviceId,"service"),endpoint=get(rows,input.endpointId,"endpoint"),template=input.templateId?get(rows,input.templateId,"template"):rows.find(row=>row.kind==="template"&&row.parent_id===input.endpointId);
     if(!client||!project||!environment||!service||!endpoint)return this.fail(res,clientError("Konfigurasi test belum lengkap."));
     if(input.userId&&!snapUser)return this.fail(res,clientError("User SNAP tidak ditemukan."));
@@ -732,7 +733,7 @@ export class AutoSnapController {
       :{id:ownerOperatorId,name:"Tidak diketahui",username:"-",role:"unknown"});
     if(resumeRunId&&ownerOperatorId!==operator.id)notes+=` (Resume oleh Admin ${operator.username}).`;
     else if(resumeRunId)notes+=" (Resume Testing).";
-    const requestSnapshot:Record<string,unknown>={...cleanRequest,outcome:status,executionOutcome,evaluation,validation:checks,endpointConfiguration:config,workflow:workflow.profile,checkpoint,evidence:evidencePlan,progressId,configurationIds:{endpointId:endpoint.id,serviceId:service.id,endpointRevision:endpoint.updated_at,serviceRevision:service.updated_at},expectation:{...expectation,expectedCode:expected,expectedHttpStatus:expectedHttp},aspiActivities:evidenceMetadata,reprocess:{retryEvidence:false,resumeTesting:false},operator:operatorSnapshot,context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
+    const requestSnapshot:Record<string,unknown>={...cleanRequest,outcome:status,executionOutcome,evaluation,validation:checks,endpointConfiguration:config,workflow:workflow.profile,checkpoint,evidence:evidencePlan,progressId,pdfCapture,configurationIds:{endpointId:endpoint.id,serviceId:service.id,endpointRevision:endpoint.updated_at,serviceRevision:service.updated_at},expectation:{...expectation,expectedCode:expected,expectedHttpStatus:expectedHttp},aspiActivities:evidenceMetadata,reprocess:{retryEvidence:false,resumeTesting:false},operator:operatorSnapshot,context:{client:client.name,project:project.name,environment:environment.name,user:snapUser?.name??null,service:service.name,endpoint:endpoint.name,template:template?.name??null,useCase,testType}};
     if(resumeRunId){
       await this.db.query("UPDATE autosnap_runs SET status=$1,http_status=$2,response_code=$3,expected_code=$4,duration_ms=$5,request_json=$6::jsonb,response_json=$7::jsonb,notes=$8 WHERE id=$9 AND operator_id=$10",[status,result.status,responseCode,expected,duration,JSON.stringify(redact(requestSnapshot)),JSON.stringify(redact(result.body)),notes,id,ownerOperatorId]);
     }else{
@@ -744,7 +745,7 @@ export class AutoSnapController {
       await progress("evidence","running","Respons HTTP tersimpan. Mengambil PDF resmi ASPI untuk operasi yang sudah dijalankan.");
       await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({evidence:evidencePlan,checkpoint}),id,ownerOperatorId]);
       try{
-        const evidenceResult=await this.evidenceService.process({runId:id,ownerId:ownerOperatorId,user:snapUser,initial:true,session:activePortalSession,signal:control.signal,onProgress:progress,actor:{id:operator.id,username:operator.username,name:operator.name,role:normalizeRole(operator.role)??"petugas"}});
+        const evidenceResult=await this.evidenceService.process({runId:id,ownerId:ownerOperatorId,user:snapUser,initial:true,session:activePortalSession,signal:control.signal,onProgress:progress,actor:{id:operator.id,username:operator.username,name:operator.name,role:normalizeRole(operator.role)??"petugas"},pdfCapture});
         // Evidence finishes locks before returning; clear the handoff so finally does not double-hold.
         activePortalSession=undefined;
         status=evidenceResult.status as RunStatus;
