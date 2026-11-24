@@ -3,17 +3,17 @@
 import { FormEvent, useState } from "react";
 import type { Api, Operator, State } from "./model";
 import PasswordInput from "./password-input";
-import { can, privilegeOptions } from "./privileges";
+import { can, normalizePrivileges, privilegeOptions } from "./privileges";
 
 export default function UserManagement({state,api,reload,setError,setNotice}:{state:State;api:Api;reload:()=>Promise<void>;setError:(s:string)=>void;setNotice:(s:string)=>void}){
   const [target,setTarget]=useState<Operator|"new"|null>(null),[busy,setBusy]=useState(false),[modalError,setModalError]=useState("");
   const [form,setForm]=useState({username:"",email:"",password:"",currentPassword:"",role:"petugas",privileges:["dashboard","dev_site","client_simulator"] as string[]});
-  const canCreate=can(state.user,"user_management","create");
-  const canUpdate=can(state.user,"user_management","update");
-  const canDelete=can(state.user,"user_management","delete");
+  const canManageUsers=can(state.user,"user_management");
+  const canCreate=canManageUsers,canUpdate=canManageUsers,canDelete=canManageUsers;
   const isAdmin=state.user?.role==="admin";
-  const assignable=isAdmin?privilegeOptions:privilegeOptions.filter(item=>(state.user?.privileges??[]).includes(item.key)||item.key==="dashboard");
-  function open(user:Operator|"new"){setTarget(user);setModalError("");setError("");setForm({username:user==="new"?"":user.username,email:user==="new"?"":user.email??"",password:"",currentPassword:"",role:user==="new"||user.role!=="admin"?"petugas":"admin",privileges:user==="new"?["dashboard","dev_site","client_simulator"]:user.privileges??["dashboard","dev_site","client_simulator"]});}
+  const held=normalizePrivileges(state.user?.privileges,state.user?.role);
+  const assignable=isAdmin?privilegeOptions:privilegeOptions.filter(item=>held.includes(item.key));
+  function open(user:Operator|"new"){setTarget(user);setModalError("");setError("");const role=user==="new"||user.role!=="admin"?"petugas":"admin";setForm({username:user==="new"?"":user.username,email:user==="new"?"":user.email??"",password:"",currentPassword:"",role,privileges:user==="new"?["dashboard","dev_site","client_simulator"]:normalizePrivileges(user.privileges,role)});}
   function togglePrivilege(key:string){setForm(current=>({...current,privileges:current.privileges.includes(key)?current.privileges.filter(item=>item!==key):[...current.privileges,key]}));}
   async function save(event:FormEvent){
     event.preventDefault();setBusy(true);setModalError("");setError("");
@@ -33,7 +33,7 @@ export default function UserManagement({state,api,reload,setError,setNotice}:{st
     <div className="section-header"><div><h2>Akun AutoSNAP</h2><p>Kelola akun sesuai privilege. Admin terakhir dilindungi; privilege diri sendiri tidak dapat dinaikkan tanpa kewenangan.</p></div>{canCreate&&<button className="primary-button" onClick={()=>open("new")}>Tambah Akun</button>}</div>
     <div className="table-wrap"><table><thead><tr><th>USER</th><th>ROLE</th><th>PRIVILEGE</th><th>STATUS</th><th>AKSI</th></tr></thead><tbody>{(state.operators??[]).map(user=><tr key={user.id}>
       <td><strong>{user.username}</strong>{user.id===state.user?.id&&<span className="cell-caption">Akun Anda</span>}</td>
-      <td>{user.role==="admin"?"Admin":"Petugas"}</td><td><div className="privilege-list">{(user.role==="admin"?privilegeOptions.map(item=>item.key):user.privileges??[]).map(key=><span key={key}>{privilegeOptions.find(item=>item.key===key)?.label??key}</span>)}</div></td><td><span className={`status-badge ${user.active?"passed":"skipped"}`}>{user.active?"Aktif":"Menunggu aktivasi / nonaktif"}</span></td>
+      <td>{user.role==="admin"?"Admin":"Petugas"}</td><td><div className="privilege-list">{normalizePrivileges(user.privileges,user.role).map(key=><span key={key}>{privilegeOptions.find(item=>item.key===key)?.label??key}</span>)}</div></td><td><span className={`status-badge ${user.active?"passed":"skipped"}`}>{user.active?"Aktif":"Menunggu aktivasi / nonaktif"}</span></td>
       <td><div className="inline-actions">{(canUpdate||user.id===state.user?.id)&&<button disabled={busy} onClick={()=>open(user)}>Kelola</button>}{canUpdate&&isAdmin&&user.id!==state.user?.id&&<button disabled={busy} onClick={()=>change(user,"active")}>{user.active?"Nonaktifkan":"Aktifkan"}</button>}{canDelete&&user.id!==state.user?.id&&<button disabled={busy} className="danger-action" onClick={()=>change(user,"delete")}>Hapus</button>}</div></td>
     </tr>)}</tbody></table></div>
     {target&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save}>
@@ -42,7 +42,7 @@ export default function UserManagement({state,api,reload,setError,setNotice}:{st
       <div className="form-grid">
         {target==="new"&&<><label className="form-field"><span>Username AutoSNAP *</span><input required minLength={3} maxLength={40} autoComplete="off" value={form.username} onChange={e=>setForm({...form,username:e.target.value})}/></label>{isAdmin&&<label className="form-field"><span>Peran</span><select value={form.role} onChange={e=>setForm({...form,role:e.target.value})}><option value="petugas">Petugas</option><option value="admin">Admin</option></select></label>}</>}
         <label className="form-field wide"><span>Email AutoSNAP *</span><input type="email" required maxLength={254} autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label>
-        {showPrivilegeEditor&&<fieldset className="privilege-field wide"><legend>Privilege</legend><div className="privilege-options">{assignable.map(item=><label key={item.key}><input type="checkbox" checked={form.privileges.includes(item.key)} onChange={()=>togglePrivilege(item.key)}/><span>{item.label}</span></label>)}</div><small className="helper">Hanya privilege yang Anda miliki yang dapat diberikan. Backend menolak privilege escalation.</small></fieldset>}
+        {showPrivilegeEditor&&<fieldset className="privilege-field wide"><legend>Privilege</legend><div className="privilege-options">{assignable.map(item=><label key={item.key}><input type="checkbox" checked={form.privileges.includes(item.key)} onChange={()=>togglePrivilege(item.key)}/><span>{item.label}</span></label>)}</div><small className="helper">Centang memberi akses penuh ke modul itu. History Semua Pengguna menambah riwayat pengguna lain; tanpa itu hanya riwayat sendiri. Backend menolak privilege yang tidak Anda miliki.</small></fieldset>}
         {target!=="new"&&target.id===state.user?.id&&<label className="form-field wide"><span>Password saat ini *</span><PasswordInput required autoComplete="current-password" value={form.currentPassword} onChange={e=>setForm({...form,currentPassword:e.target.value})}/></label>}
         <label className="form-field wide"><span>{target==="new"?"Password":"Password baru"}{target==="new"?" *":""}</span><PasswordInput required={target==="new"} {...(form.password||target==="new"?{minLength:12}:{})} maxLength={256} autoComplete="new-password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small className="helper">Minimal 12 karakter. Kosongkan saat edit jika tidak mengubah password.</small></label>
       </div>

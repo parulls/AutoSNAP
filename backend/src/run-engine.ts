@@ -3,6 +3,7 @@ import { request as playwrightRequest, type APIRequestContext, type Page } from 
 import { decrypt, hmacSignature, redact, rsaSignature, sha256 } from "./security";
 import type { RecordRow } from "./database.service";
 import type { HitOutcome } from "./aspi-types";
+import { profileField } from "./header-profile";
 
 /** Ephemeral browser ownership handoff, never copied into persisted request_json. */
 export type AspiEvidenceSession = {page:Page;release:()=>Promise<void>;beat?:()=>Promise<unknown>|undefined|void};
@@ -39,7 +40,7 @@ export class RunEngine {
   async hit(input:HitInput):Promise<HitResult>{
     input.signal?.throwIfAborted();
     const {baseUrl,path,method,body,client,user,scenarioId,externalId,extraHeaders,authFlow}=input;
-    const clientId=value(client,"clientId"),channelId=value(client,"channelId");
+    const clientId=profileField(client.data,"clientId"),channelId=profileField(client.data,"channelId")||"95221";
     const tokenPath=input.tokenPath||"/api/v1.0/access-token/b2b";
     const b2bTokenService=path===tokenPath||path==="/api/v1.0/access-token/b2b";
     const tokenService=b2bTokenService||path==="/api/v1.0/access-token/b2b2c";
@@ -49,7 +50,8 @@ export class RunEngine {
     const useCase=input.useCase??"B2B";
     const rsaEncoding=input.rsaEncoding==="hex"?"hex":"base64",hmacEncoding=input.hmacEncoding==="base64"?"base64":"hex";
     if(path.endsWith("/balance-inquiry")&&authFlow==="direct_rsa")throw new Error("Balance Inquiry ini memerlukan Bearer token B2B; pilih token_b2b atau provided_token.");
-    if(useCase==="B2B2C"&&!value(client,"deviceId")&&!path.includes("/access-token/"))throw new Error("X-DEVICE-ID diperlukan pada transaksi B2B2C.");
+    const deviceId=profileField(client.data,"deviceId");
+    if(useCase==="B2B2C"&&!deviceId&&!path.includes("/access-token/"))throw new Error("X-DEVICE-ID diperlukan pada transaksi B2B2C.");
     if((authFlow==="token_b2b"||authFlow==="provided_token")&&!path.includes("/access-token/")&&!value(client,"clientSecret"))throw new Error("Client Secret wajib diisi untuk signature service.");
     checkHeaders(extraHeaders);
     const timestamp=isoJakarta();
@@ -95,10 +97,10 @@ export class RunEngine {
       const relative=url.pathname+url.search;
       let signature=authFlow==="direct_rsa"?rsaSignature(privateKey,`${method}:${relative}:${sha256(serialized)}:${timestamp}`,rsaEncoding):hmacSignature(decrypt(value(client,"clientSecret")),`${method}:${relative}:${token}:${sha256(serialized)}:${timestamp}`,hmacEncoding);
       if(scenarioId?.endsWith(".2"))signature="invalid-signature";
-      const headers:Record<string,string>={"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-SIGNATURE":signature,"X-PARTNER-ID":value(client,"partnerIdSource")==="client_id"?clientId:client.partner_id??"","X-EXTERNAL-ID":externalId,"CHANNEL-ID":channelId,...extraHeaders};
+      const headers:Record<string,string>={"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-SIGNATURE":signature,"X-PARTNER-ID":(value(client,"partnerIdSource")||"client_id")==="client_id"?clientId:client.partner_id??"","X-EXTERNAL-ID":externalId,"CHANNEL-ID":channelId,...extraHeaders};
       if(token)headers.Authorization=`Bearer ${token}`;
       if(customerToken)headers["Authorization-Customer"]=`Bearer ${customerToken}`;
-      if(value(client,"deviceId"))headers["X-DEVICE-ID"]=value(client,"deviceId");
+      if(deviceId)headers["X-DEVICE-ID"]=deviceId;
       input.signal?.throwIfAborted();
       const result=await responseOf(context,url,method,headers,noBody?undefined:serialized);
       return {...result,request:{method,path:url.pathname+url.search,timestamp,externalId,body:noBody?null:body,headers:redact(headers),responseHeaders:redact(result.responseHeaders),steps,signatureEncoding:{rsa:rsaEncoding,hmac:hmacEncoding}}};

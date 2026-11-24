@@ -15,7 +15,7 @@ import { AspiFormResolver } from "./aspi-form-resolver";
 import { AspiSessionManager } from "./aspi-session-manager";
 import { clientAddress } from "./http-security";
 import { requestPasswordReset, resetPasswordWithOtp } from "./password-reset";
-import { can, hasPrivilege, normalizeRole, assertAssignablePrivileges } from "./privileges";
+import { can, hasPrivilege, normalizeRole, normalizedPrivileges, assertAssignablePrivileges } from "./privileges";
 import { createZip } from "./zip";
 import { RunControl } from "./run-control";
 import { canAccessRun, readHistory } from "./history";
@@ -33,6 +33,7 @@ import {annotateServiceData,resolveCapabilities,savesPrerequisite} from "./servi
 import {buildEvidencePlan} from "./evidence-plan";
 import {RunEvidenceService} from "./run-evidence";
 import {buildCheckpoint,canResumeTesting,canRetryEvidence,failedStage,markStage,requiresMutatingConfirm,type RunCheckpoint} from "./run-checkpoint";
+import {withSentProfile} from "./header-profile";
 import {pdfCaptureProfile,type PdfCaptureProfile} from "./pdf-browser";
 
 type Scenario={id:string;group:string;service:string;scenario:string;expected:string;expectedCode:string|null};
@@ -91,9 +92,10 @@ export class AutoSnapController {
         return res.json({setupRequired:true,setupTokenRequired:process.env.NODE_ENV==="production"||!["localhost","127.0.0.1"].includes(host),...recaptchaPublicConfig()});
       }
       const user=await this.user(req);if(!user)return res.json({loginRequired:true,...recaptchaPublicConfig()});
-      const canListUsers=can(user,"user_management","view")||can(user,"history","view_all");
+      const canListUsers=can(user,"user_management")||can(user,"history","view_all");
       const [records,runs,scenarios,operators]=await Promise.all([this.allRecords(),this.db.query<RunRow>("SELECT * FROM autosnap_runs WHERE operator_id=$1 ORDER BY created_at DESC LIMIT 500",[user.id]),this.catalog(),this.db.query<Operator>("SELECT id,name,email,username,role,active,privileges,created_at FROM autosnap_users WHERE ($1=TRUE OR id=$2) ORDER BY created_at",[canListUsers,user.id])]);
-      return res.json({user,operators:operators.map(item=>({...item,role:normalizeRole(item.role)??"petugas",createdAt:item.created_at})),records:records.map(publicRecord),runs:runs.map(run=>({...run,request:run.request_json,response:run.response_json})),scenarios});
+      const account=(item:Operator)=>{const role=normalizeRole(item.role)??"petugas";return {...item,role,privileges:normalizedPrivileges(item.privileges,role),createdAt:item.created_at};};
+      return res.json({user:account(user),operators:operators.map(account),records:records.map(publicRecord),runs:runs.map(run=>({...run,request:run.request_json,response:run.response_json})),scenarios});
     }catch(error){return this.fail(res,error);}
   }
   @Post()
@@ -144,7 +146,7 @@ export class AutoSnapController {
       }
       if(action==="getHistory")return res.json(await readHistory(this.db,user,input));
       if(action==="deleteEndpointConfiguration"){
-        if(!can(user,"master_data","delete"))return this.fail(res,clientError("Anda tidak memiliki privilege menghapus Dev Site Endpoint.",403));
+        if(!can(user,"master_data"))return this.fail(res,clientError("Anda tidak memiliki privilege Master Data.",403));
         const records=await this.allRecords(),endpoint=get(records,input.id,"endpoint");
         if(!endpoint)return this.fail(res,clientError("Dev Site Endpoint tidak ditemukan.",404));
         const ids=[endpoint.id,...records.filter(row=>row.kind==="service"&&row.parent_id===endpoint.id).map(row=>row.id)];
@@ -158,7 +160,7 @@ export class AutoSnapController {
         return res.json({ok:true});
       }
       if(action==="inspectDocumentation"||action==="saveImportedService"){
-        if(!can(user,"master_data","create")&&!can(user,"master_data","update"))return this.fail(res,clientError("Anda tidak memiliki privilege mengimpor dokumentasi Dev Site Endpoint.",403));
+        if(!can(user,"master_data"))return this.fail(res,clientError("Anda tidak memiliki privilege Master Data.",403));
         await this.enforceRateLimit(`import:${user.id}`,10,60_000);
         if(action==="inspectDocumentation"){
           const snapUser=get(await this.allRecords(),input.userId,"snap_user");
@@ -195,20 +197,19 @@ export class AutoSnapController {
       if(action==="save"||action==="saveConnection"){
         const kind=String(input.kind??(action==="saveConnection"?"environment":""));
         const isSim=kind==="sim_provider"||kind==="sim_service";
-        const creating=!input.id;
         if(isSim){
-          if(!can(user,"client_simulator","manage")&&!can(user,"master_data",creating?"create":"update"))return this.fail(res,clientError("Anda tidak memiliki privilege mengelola Penyedia Client Simulator.",403));
-        }else if(!can(user,"master_data",creating?"create":"update"))return this.fail(res,clientError("Anda tidak memiliki privilege mengubah Master Data.",403));
+          if(!can(user,"client_simulator")&&!can(user,"master_data"))return this.fail(res,clientError("Anda tidak memiliki privilege Client Simulator atau Master Data.",403));
+        }else if(!can(user,"master_data"))return this.fail(res,clientError("Anda tidak memiliki privilege Master Data.",403));
       }
       if(action==="delete"){
         const existing=await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1",[String(input.id??"")]);
         const isSim=existing?.kind==="sim_provider"||existing?.kind==="sim_service";
         if(isSim){
-          if(!can(user,"client_simulator","manage")&&!can(user,"master_data","delete"))return this.fail(res,clientError("Anda tidak memiliki privilege menghapus Penyedia Client Simulator.",403));
-        }else if(!can(user,"master_data","delete"))return this.fail(res,clientError("Anda tidak memiliki privilege menghapus Master Data.",403));
+          if(!can(user,"client_simulator")&&!can(user,"master_data"))return this.fail(res,clientError("Anda tidak memiliki privilege Client Simulator atau Master Data.",403));
+        }else if(!can(user,"master_data"))return this.fail(res,clientError("Anda tidak memiliki privilege Master Data.",403));
       }
       if(action==="userCreate"){
-        if(!can(user,"user_management","create"))return this.fail(res,clientError("Anda tidak memiliki privilege membuat akun.",403));
+        if(!can(user,"user_management"))return this.fail(res,clientError("Anda tidak memiliki privilege User Management.",403));
         if(input.role==="admin"&&user.role!=="admin")return this.fail(res,clientError("Hanya admin yang boleh membuat akun admin.",403));
         const privileges=assertAssignablePrivileges(user,input.privileges);
         await createAccount(this.db,{...input,privileges},input.role==="admin"?"admin":"petugas",true);
@@ -216,7 +217,7 @@ export class AutoSnapController {
         return res.json({ok:true});
       }
       if(action==="userDelete"){
-        if(!can(user,"user_management","delete"))return this.fail(res,clientError("Anda tidak memiliki privilege menghapus akun.",403));
+        if(!can(user,"user_management"))return this.fail(res,clientError("Anda tidak memiliki privilege User Management.",403));
         await updateAccount(this.db,input,user);
         await writeAudit(this.db,user.id,"user_delete","user",String(input.id??""),{});
         return res.json({ok:true});
@@ -227,12 +228,12 @@ export class AutoSnapController {
       if(action==="userUpdate"){await updateAccount(this.db,input,user);await writeAudit(this.db,user.id,"user_update","user",String(input.id??user.id),{fields:Object.keys(input).filter(k=>k!=="password"&&k!=="currentPassword")});return res.json({ok:true});}
       if(action==="downloadAspiActivityPdf"){
         await this.enforceRateLimit(`pdf:${user.id}`,20,10*60_000);
-        if(!can(user,"dev_site","evidence"))return this.fail(res,clientError("Anda tidak memiliki privilege download bukti Dev Site.",403));
+        if(!can(user,"dev_site")&&!can(user,"client_simulator"))return this.fail(res,clientError("Anda tidak memiliki privilege untuk mengunduh bukti ini.",403));
         return await this.downloadAspiActivityPdf(res,input,user);
       }
       if(action==="retryAspiEvidence"){
         await this.enforceRateLimit(`retry-evidence:${user.id}`,10,10*60_000);
-        if(!can(user,"dev_site","evidence"))return this.fail(res,clientError("Anda tidak memiliki privilege untuk memproses ulang bukti Dev Site.",403));
+        if(!can(user,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege Dev Site Client.",403));
         return await this.retryAspiEvidence(res,input,user,pdfCaptureProfile(req.headers["user-agent"],input.pdfScreen));
       }
       if(action==="resumeTesting"){
@@ -241,14 +242,34 @@ export class AutoSnapController {
       }
       if(action==="downloadAspiActivitiesZip"){
         await this.enforceRateLimit(`zip:${user.id}`,10,10*60_000);
-        if(!can(user,"dev_site","evidence"))return this.fail(res,clientError("Anda tidak memiliki privilege download bukti Dev Site.",403));
+        if(!can(user,"dev_site")&&!can(user,"client_simulator"))return this.fail(res,clientError("Anda tidak memiliki privilege untuk mengunduh bukti ini.",403));
         return await this.downloadAspiActivitiesZip(res,input,user);
       }
       if(action==="aspiBusy")return res.json({busyUserIds:await this.evidenceService.busyUserIds(await this.allRecords())});
       if(action==="runClientSimulator"){
         await this.enforceRateLimit(`run-sim:${user.id}`,20,10*60_000);
-        if(!can(user,"client_simulator","run"))return this.fail(res,clientError("Anda tidak memiliki privilege menjalankan Client Simulator.",403));
-        return res.json(await runClientSimulator(this.db,await this.allRecords(),user,input));
+        if(!can(user,"client_simulator"))return this.fail(res,clientError("Anda tidak memiliki privilege Client Simulator.",403));
+        const progressId=/^[0-9a-f-]{36}$/i.test(String(input.progressId??""))?String(input.progressId):randomUUID();
+        await this.db.query("DELETE FROM autosnap_test_progress WHERE updated_at<$1",[new Date(Date.now()-24*3600000).toISOString()]);
+        const registered=await this.db.query("INSERT INTO autosnap_test_progress (id,user_id,status,stage,steps,updated_at) VALUES ($1,$2,'queued','preparing','[]'::jsonb,$3) ON CONFLICT (id) DO NOTHING RETURNING id",[progressId,user.id,new Date().toISOString()]);
+        if(!registered.length)return this.fail(res,clientError("Pengujian dengan ID ini sudah diterima. Periksa Log Testing, jangan kirim ulang.",409));
+        const progress=async(stage:string,status:"running"|"completed"|"failed",detail="")=>{await this.updateProgress(progressId,user.id,stage,status,detail);};
+        const control=new RunControl(this.db,progressId,user.id);
+        await control.start();
+        try{
+          await progress("preparing","completed","Konfigurasi Client Simulator tervalidasi. Form ASPI akan diisi, lalu PDF ditunggu dari Client Simulator Activity.");
+          const result=await runClientSimulator(this.db,await this.allRecords(),user,input,{submit:(snapUser,form)=>this.portal.submitClientSimulator(snapUser,form,{onProgress:progress,signal:control.signal})},progress,control.signal);
+          const finished=await this.updateProgress(progressId,user.id,"finished",result.status==="FAILED"||!result.pdfReady?"failed":"completed",String(result.notes??result.activityName??""));
+          const stored=await this.db.one<{steps:unknown}>("SELECT steps FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[progressId,user.id]);
+          await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2",[JSON.stringify({progressId,progressLog:Array.isArray(stored?.steps)?stored.steps:[]}),result.id]);
+          return res.json({...result,progressId,formReady:true,aspiReady:finished!=="cancelled"});
+        }catch(error){
+          const cancelled=control.signal.aborted;
+          const message=error instanceof Error?error.message:error&&typeof error==="object"&&"error" in error?String((error as {error:unknown}).error):"Client Simulator gagal.";
+          await this.updateProgress(progressId,user.id,"finished",cancelled?"cancelled":"failed",message).catch(()=>undefined);
+          if(cancelled)return res.json({ok:false,status:"CANCELLED",progressId,formReady:true,notes:message});
+          throw error;
+        }finally{control.stop();}
       }
       if(action==="run")await this.enforceRateLimit(`run:${user.id}`,20,10*60_000);
       if(action==="run"){
@@ -265,6 +286,9 @@ export class AutoSnapController {
     const run=await this.db.one<RunRow>("SELECT * FROM autosnap_runs WHERE id=$1",[runId]);
     if(!run||!canAccessRun(operator,run))return null;
     return run;
+  }
+  private canDownloadEvidence(operator:Operator,run:RunRow){
+    return run.mode==="client_sim"?can(operator,"client_simulator"):can(operator,"dev_site");
   }
   private requireCrossUserConfirm(run:RunRow,operator:Operator,input:Input,actionLabel:string){
     if(run.operator_id&&run.operator_id!==operator.id){
@@ -288,6 +312,7 @@ export class AutoSnapController {
     const runId=String(input.id??""),activityId=String(input.activityId??"");
     const run=await this.loadAccessibleRun(runId,operator);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
+    if(!this.canDownloadEvidence(operator,run))return this.fail(res,clientError("Anda tidak memiliki privilege untuk mengunduh bukti ini.",403));
     const request=object(run.request_json)?run.request_json:{},activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
     const activity=activities.find(item=>String(item.activityId??"")===activityId);
     if(!activity)return this.fail(res,clientError("Aktivitas ASPI tidak terdaftar pada history ini.",404));
@@ -309,6 +334,7 @@ export class AutoSnapController {
   private async downloadAspiActivitiesZip(res:Response,input:Input,operator:Operator){
     const runId=String(input.id??""),run=await this.loadAccessibleRun(runId,operator);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
+    if(!this.canDownloadEvidence(operator,run))return this.fail(res,clientError("Anda tidak memiliki privilege untuk mengunduh bukti ini.",403));
     const request=object(run.request_json)?run.request_json:{},activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
     if(!activities.length)return this.fail(res,clientError("History ini belum memiliki bukti aktivitas ASPI.",409));
     const entries:{name:string;data:Buffer}[]=[];
@@ -523,14 +549,16 @@ export class AutoSnapController {
     });
   }
   private async run(res:Response,input:Input,operator:Operator,pdfCapture:PdfCaptureProfile={kind:"chrome"}){
-    const rows=await this.allRecords(),client=get(rows,input.clientId,"client"),project=get(rows,input.projectId,"project"),environment=get(rows,input.environmentId,"environment"),snapUser=input.userId?get(rows,input.userId,"snap_user"):null,service=get(rows,input.serviceId,"service"),endpoint=get(rows,input.endpointId,"endpoint"),template=input.templateId?get(rows,input.templateId,"template"):rows.find(row=>row.kind==="template"&&row.parent_id===input.endpointId);
-    if(!client||!project||!environment||!service||!endpoint)return this.fail(res,clientError("Konfigurasi test belum lengkap."));
+    const rows=await this.allRecords(),sourceClient=get(rows,input.clientId,"client"),project=get(rows,input.projectId,"project"),environment=get(rows,input.environmentId,"environment"),snapUser=input.userId?get(rows,input.userId,"snap_user"):null,service=get(rows,input.serviceId,"service"),endpoint=get(rows,input.endpointId,"endpoint"),template=input.templateId?get(rows,input.templateId,"template"):rows.find(row=>row.kind==="template"&&row.parent_id===input.endpointId);
+    if(!sourceClient||!project||!environment||!service||!endpoint)return this.fail(res,clientError("Konfigurasi test belum lengkap."));
     if(input.userId&&!snapUser)return this.fail(res,clientError("User SNAP tidak ditemukan."));
     const serviceEndpointValid=service.parent_id===endpoint.id&&!endpoint.parent_id;
     const userValid=!!snapUser&&value(environment,"defaultUserId")===snapUser.id;
-    if(project.parent_id!==client.id||environment.parent_id!==project.id||!serviceEndpointValid||!userValid)return this.fail(res,clientError("Relasi data pengujian tidak sesuai."));
+    if(project.parent_id!==sourceClient.id||environment.parent_id!==project.id||!serviceEndpointValid||!userValid)return this.fail(res,clientError("Relasi data pengujian tidak sesuai."));
+    const client=withSentProfile(sourceClient,environment);
     if(input.templateId&&(!template||template.parent_id!==endpoint.id))return this.fail(res,clientError("Template tidak melekat pada endpoint terpilih."));
     const mode=value(environment,"mode");
+    if(!hasPrivilege(operator,mode==="mock"?"client_simulator":"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege untuk menjalankan pengujian ini.",403));
     if(mode==="portal"&&snapUser&&await this.evidenceService.accountBusy(snapUser))return this.fail(res,clientError("Akun ASPI ini sedang dipakai untuk pengujian atau pengambilan bukti. Tunggu hingga selesai.",409,"ASPI_SESSION_BUSY"));
     const {method,path,serviceCode,config,legacyBalance}=resolveEndpoint(endpoint,service);
     const isBalance=method==="POST"&&path===BALANCE_PATH;
@@ -649,7 +677,7 @@ export class AutoSnapController {
       // Mock bodies may include a realistic SNAP code for display; negative validation still uses HTTP only.
       const mockSnap=expected??(negativeAccessToken?`${String(expectation.expectedHttpStatus??401)}${serviceCode||"00"}01`.slice(0,7):null);
       const response=object(sample)?structuredClone(sample):negativeAccessToken?{...(mockSnap?{responseCode:mockSnap}:{}),responseMessage:"Access Token Invalid",additionalInfo:{mock:true}}:isBalance?mockBalance(body,expected??mockSnap??"2001100"):{...(expected?{responseCode:expected}:{}),responseMessage:"Mock response",additionalInfo:{mock:true}};
-      result={status:httpStatus,body:response,request:{method,path,timestamp,externalId,body:method==="GET"?null:body,headers:{"Content-Type":"application/json","Authorization":"[MOCK TOKEN]","X-TIMESTAMP":timestamp,"X-SIGNATURE":"[MOCK SIGNATURE]","X-PARTNER-ID":client.data.partnerIdSource==="client_id"?value(client,"clientId"):client.partner_id,"X-EXTERNAL-ID":externalId,"CHANNEL-ID":value(client,"channelId"),...(useCase==="B2B2C"?{"Authorization-Customer":"[MOCK CUSTOMER TOKEN]"}:{}),...(value(client,"deviceId")?{"X-DEVICE-ID":value(client,"deviceId")}:{}),...requestHeaders}}};
+      result={status:httpStatus,body:response,request:{method,path,timestamp,externalId,body:method==="GET"?null:body,headers:{"Content-Type":"application/json","Authorization":"[MOCK TOKEN]","X-TIMESTAMP":timestamp,"X-SIGNATURE":"[MOCK SIGNATURE]","X-PARTNER-ID":(client.data.partnerIdSource||"client_id")==="client_id"?value(client,"clientId"):client.partner_id,"X-EXTERNAL-ID":externalId,"CHANNEL-ID":value(client,"channelId"),...(useCase==="B2B2C"?{"Authorization-Customer":"[MOCK CUSTOMER TOKEN]"}:{}),...(value(client,"deviceId")?{"X-DEVICE-ID":value(client,"deviceId")}:{}),...requestHeaders}}};
       await progress("api_request","completed",`${service.name} — simulasi selesai`);
     }else if(mode==="portal"){
       try{

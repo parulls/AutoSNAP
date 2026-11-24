@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { Api, HistoryFilters, State } from "./model";
 import HistoryFilter from "./history-filter";
 import { rangeForPeriod } from "./history-period";
@@ -49,8 +49,6 @@ export default function Dashboard({
   const [mode, setMode] = useState("all");
   const [filters, setFilters] = useState<HistoryFilters>({ scope: isAdmin ? "all" : "mine" });
   const [refreshing, setRefreshing] = useState(false);
-  const services = useMemo(() => state.records.filter((item) => item.kind === "service"), [state.records]);
-  const endpoints = useMemo(() => state.records.filter((item) => item.kind === "endpoint" && !item.parentId), [state.records]);
 
   const history = useHistory(api, range, mode, "", offset, 15, state.runs, filters);
 
@@ -110,9 +108,6 @@ export default function Dashboard({
             setOffset(0);
           }}
           isAdmin={isAdmin}
-          operators={state.operators ?? []}
-          services={services}
-          endpoints={endpoints}
           showMode
           mode={mode}
           onModeChange={(next) => {
@@ -222,8 +217,8 @@ export default function Dashboard({
                 <th>WAKTU</th>
                 {isAdmin && <th>PELAKSANA</th>}
                 <th>SERVICE</th>
-                <th>DEV SITE CLIENT</th>
-                <th>SKENARIO</th>
+                <th>DEV SITE / PENYEDIA</th>
+                <th>JENIS</th>
                 <th>STATUS</th>
               </tr>
             </thead>
@@ -231,6 +226,9 @@ export default function Dashboard({
             <tbody>
               {recent.map((run) => {
                 const context = contextOf(run);
+                const request = run.request && typeof run.request === "object" && !Array.isArray(run.request) ? run.request as Record<string, unknown> : {};
+                const named = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) && "name" in value ? String((value as { name?: unknown }).name ?? "") : "";
+                const testType = String(request.testType ?? context.testType ?? "");
                 const actor = operatorLabel(run);
                 return (
                   <tr key={run.id}>
@@ -238,9 +236,9 @@ export default function Dashboard({
                       {new Date(run.created_at).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })}
                     </td>
                     {isAdmin && <td>{actor.text}</td>}
-                    <td>{String(context.service ?? "—")}</td>
-                    <td>{String(context.environment ?? "—")}</td>
-                    <td>{context.testType === "invalid_access_token" ? "Negatif" : "Positif"}</td>
+                    <td>{String(context.service || named(request.service) || "—")}</td>
+                    <td>{String(context.environment || named(request.provider) || "—")}</td>
+                    <td>{testType === "negative" || testType === "invalid_access_token" ? "Negatif" : testType ? "Positif" : "—"}</td>
                     <td>
                       <span className={`status-badge ${statusClass(run.status)}`}>
                         {run.status}
@@ -263,7 +261,7 @@ export default function Dashboard({
           <button type="button" className="secondary-button" disabled={!offset || history.loading} onClick={() => setOffset(Math.max(0, offset - 15))}>
             Sebelumnya
           </button>
-          <span>{history.total ? `${offset + 1}` : "0 hasil"}</span>
+          <span>{history.total ? `${offset + 1}–${Math.min(offset + recent.length, history.total)} dari ${history.total}` : "0 hasil"}</span>
           <button type="button" className="secondary-button" disabled={offset + 15 >= history.total || history.loading} onClick={() => setOffset(offset + 15)}>
             Berikutnya
           </button>

@@ -41,7 +41,7 @@ export async function readHistory(db:DatabaseService,viewerInput:string|HistoryV
 
   const scope=String(input.scope??(canViewAll?"all":"mine"));
   if(!["all","mine"].includes(scope))throw {status:400,error:"Cakupan history tidak valid."};
-  if(!canViewAll&&scope==="all")throw {status:403,error:"Anda hanya dapat melihat History milik sendiri tanpa privilege history_all."};
+  if(!canViewAll&&scope==="all")throw {status:403,error:"Anda hanya dapat melihat History milik sendiri tanpa privilege History Semua Pengguna."};
 
   const params:unknown[]=[new Date(start).toISOString(),new Date(last+24*3600000).toISOString()];
   let where="r.created_at >= $1 AND r.created_at < $2";
@@ -81,7 +81,7 @@ export async function readHistory(db:DatabaseService,viewerInput:string|HistoryV
       where+=` AND concat_ws(' ',COALESCE(r.request_json->'operator'->>'name',u.name),COALESCE(r.request_json->'operator'->>'username',u.username),u.email) ILIKE $${params.length}`;
     }
   }else if(input.operatorId||input.operatorRole||input.operatorSearch){
-    throw {status:403,error:"Filter pengguna memerlukan privilege history_all."};
+    throw {status:403,error:"Filter pengguna memerlukan privilege History Semua Pengguna."};
   }
 
   const serviceId=String(input.serviceId??"").trim();
@@ -101,7 +101,7 @@ export async function readHistory(db:DatabaseService,viewerInput:string|HistoryV
   if(search.length>120)throw {status:400,error:"Pencarian maksimal 120 karakter."};
   if(search){
     params.push(`%${escapeLike(search)}%`);
-    where+=` AND concat_ws(' ',r.status,r.response_code,r.request_json->'context'->>'service',r.request_json->'context'->>'environment',r.request_json->'context'->>'endpoint',COALESCE(r.request_json->'operator'->>'name',u.name),COALESCE(r.request_json->'operator'->>'username',u.username)) ILIKE $${params.length}`;
+    where+=` AND concat_ws(' ',r.status,r.response_code,r.notes,r.request_json->>'activityName',r.request_json->'context'->>'service',r.request_json->'service'->>'name',r.request_json->'context'->>'environment',r.request_json->'provider'->>'name',r.request_json->'context'->>'endpoint',COALESCE(r.request_json->'operator'->>'name',u.name),COALESCE(r.request_json->'operator'->>'username',u.username)) ILIKE $${params.length}`;
   }
 
   const known="('PASSED','COMPLETED','FAILED','AUTOMATION_ERROR','VALIDATION_ERROR','CANCELLED','RUNNING','Passed','Failed','Cancelled','NOT_EVALUATED','PASSED_HTTP')";

@@ -12,8 +12,10 @@ import { AspiFormResolver, normalizedParameterName } from "./aspi-form-resolver"
 import { AspiSessionManager } from "./aspi-session-manager";
 import { AspiAutomationError, type HitOutcome } from "./aspi-types";
 import { ACTIVITY_PAGE, fetchOfficialPdf, readActivities } from "./aspi-evidence";
+import { CLIENT_SIMULATOR_FORM, runClientSimulatorOnPage, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
 import { openPdfCaptureBrowser, type PdfCaptureProfile } from "./pdf-browser";
 import { collectActivityPdfs, type PdfEvidence } from "./aspi-pdf-batch";
+import { profileField } from "./header-profile";
 
 export {normalizedParameterName};
 export {resolveRequestPath};
@@ -106,6 +108,29 @@ export class PortalEngine{
   private readonly pdfCache=new Map<string,{pdf:Buffer;expiresAt:number}>();
   private readonly pendingPdfs=new Map<string,Promise<Buffer>>();
   constructor(private readonly sessions:AspiSessionManager,private readonly forms:AspiFormResolver){}
+  /** Login to ASPI, fill Client Simulator, Save Result, then capture the activity Download blob. */
+  async submitClientSimulator(user:RecordRow,form:ClientSimulatorFormInput,hooks?:{onProgress?:ProgressReporter;signal?:AbortSignal}):Promise<ClientSimulatorPortalResult>{
+    let release:(()=>Promise<void>)|undefined;
+    try{
+      await hooks?.onProgress?.("api_request","running","Login ke portal ASPI.");
+      const acquired=await this.sessions.getAuthenticatedContext(user,"apidevportal.aspi-indonesia.or.id",async page=>{
+        await page.goto(CLIENT_SIMULATOR_FORM,{waitUntil:"domcontentloaded",timeout:60000});
+        const url=new URL(page.url());
+        return url.hostname==="apidevportal.aspi-indonesia.or.id"&&url.pathname==="/client-simulator";
+      },hooks?.signal);
+      release=acquired.release;
+      return await runClientSimulatorOnPage(acquired.page,form,()=>{void acquired.beat?.();},hooks?.onProgress,hooks?.signal);
+    }catch(error){
+      if(error instanceof AspiAutomationError){
+        const busy=error.outcome==="ASPI_SESSION_BUSY";
+        throw {error:error.message,status:busy?409:502,code:error.outcome};
+      }
+      if(error&&typeof error==="object"&&"status" in error&&"error" in error)throw error;
+      throw {error:error instanceof Error?error.message:"Client Simulator ASPI gagal.",status:502};
+    }finally{
+      await release?.();
+    }
+  }
   async hit(input:PortalInput):Promise<HitResult>{
     const timestamp=isoJakarta();
     let release:(()=>Promise<void>)|undefined,page:Page|undefined,currentStage="preparing",sessionHandedOff=false;
@@ -137,8 +162,8 @@ export class PortalEngine{
         await this.activateTestingPanel(page);return this.hasSwagger(page);
       },input.signal);
       release=acquired.release;page=acquired.page;sessionBeat=acquired.beat;
-      const clientId=value(input.client,"clientId"),channelId=value(input.client,"channelId");
-      const partnerId=value(input.client,"partnerIdSource")==="client_id"?clientId:input.client.partner_id??"";
+      const clientId=profileField(input.client.data,"clientId"),channelId=profileField(input.client.data,"channelId")||"95221";
+      const partnerId=(value(input.client,"partnerIdSource")||"client_id")==="client_id"?clientId:input.client.partner_id??"";
       try{activityBaseline=(await this.activitiesInContext(page,Date.now()+15000)).map(item=>item.activityId);}
       catch{await report("evidence","failed","Daftar aktivitas awal ASPI tidak tersedia; Activity ID tidak ditebak.");}
       let signatureAuth="",token="",customerToken="",serviceSignature="";
@@ -154,7 +179,8 @@ export class PortalEngine{
         if(profile.token!=="none")Object.assign(headers,{"Authorization":`Bearer ${token}`,"X-TIMESTAMP":timestamp,"X-PARTNER-ID":partnerId,"X-EXTERNAL-ID":externalId,"CHANNEL-ID":channelId});
         if(profile.signature==="hmac")headers["X-SIGNATURE"]=signature;
         if(customerToken)headers["Authorization-Customer"]=`Bearer ${customerToken}`;
-        if(value(input.client,"deviceId"))headers["X-DEVICE-ID"]=value(input.client,"deviceId");
+        const deviceId=profileField(input.client.data,"deviceId");
+        if(deviceId)headers["X-DEVICE-ID"]=deviceId;
         return headers;
       };
       const handlers:Record<AuthStage,()=>Promise<void>>={

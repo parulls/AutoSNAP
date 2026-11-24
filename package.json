@@ -7,11 +7,11 @@
   },
   "scripts": {
     "dev": "npm run build:backend && concurrently -k -n api,web \"npm run dev:api\" \"npm run dev:web\"",
-    "dev:api": "concurrently -k -n compile,server \"tsc -p backend/tsconfig.json --watch --preserveWatchOutput\" \"node --watch-path=backend/dist backend/dist/main.js\"",
+    "dev:api": "concurrently -k -n compile,server \"tsc -p backend/tsconfig.json --watch --preserveWatchOutput\" \"node --use-system-ca --watch-path=backend/dist backend/dist/main.js\"",
     "dev:web": "next dev",
     "build:backend": "tsc -p backend/tsconfig.json",
     "build": "npm run build:backend && next build",
-    "start": "concurrently -k -n api,web \"node backend/dist/main.js\" \"next start\"",
+    "start": "concurrently -k -n api,web \"node --use-system-ca backend/dist/main.js\" \"next start\"",
     "test": "npm run build && node --test --test-concurrency=1 tests/*.test.mjs",
     "lint": "eslint app backend/src tests",
     "db:inspect": "npm run db:audit:supabase",

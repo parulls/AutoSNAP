@@ -56,13 +56,13 @@ export async function verifyPassword(password:string,row:{salt:string;password_h
 export async function updateAccount(db:DatabaseService,input:Record<string,unknown>,current:Operator){
   const id=String(input.id??current.id);
   const own=id===current.id;
-  if(!own&&!can(current,"user_management","update")&&current.role!=="admin")fail("Anda tidak memiliki privilege untuk mengubah akun lain.",403);
+  if(!own&&!can(current,"user_management"))fail("Anda tidak memiliki privilege User Management.",403);
   return db.transaction(async query=>{
     const rows=await query<Operator&{salt:string;password_hash:string}>("SELECT * FROM autosnap_users FOR UPDATE");
     const row=rows.find(item=>item.id===id);
     if(!row)fail("Akun tidak ditemukan.",404);
     if(input.action==="userDelete"){
-      if(!can(current,"user_management","delete")&&current.role!=="admin")fail("Anda tidak memiliki privilege untuk menghapus akun.",403);
+      if(!can(current,"user_management"))fail("Anda tidak memiliki privilege User Management.",403);
       if(own)fail("Akun yang sedang dipakai tidak dapat dihapus.",409);
       if(row!.role==="admin"&&rows.filter(item=>item.role==="admin"&&item.active).length<=1)fail("Minimal satu admin aktif diperlukan.",409);
       await query("DELETE FROM autosnap_users WHERE id=$1",[id]);return;
@@ -84,7 +84,7 @@ export async function updateAccount(db:DatabaseService,input:Record<string,unkno
       const next=assertAssignablePrivileges(current,input.privileges);
       const same=next.length===privileges.length&&next.every(key=>privileges.includes(key));
       if(!same){
-        if(current.role!=="admin"&&!can(current,"user_management","update"))fail("Anda tidak memiliki privilege untuk mengubah privilege akun.",403);
+        if(!can(current,"user_management"))fail("Anda tidak memiliki privilege User Management.",403);
         if(own&&current.role!=="admin")fail("Tidak dapat mengubah privilege akun sendiri.",403);
         privileges=next;
       }

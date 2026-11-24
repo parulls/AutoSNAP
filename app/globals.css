@@ -67,7 +67,14 @@ a { color:var(--primary); } small { font-size:12px; }
 .inline-actions .danger-action { color:var(--danger); }
 .inline-actions .danger-action:hover:not(:disabled) { color:#b91c1c; background:#fef2f2; }
 .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.form-grid + .form-grid { margin-top:16px; }
 .form-field,.auth-card>label { display:flex; min-width:0; flex-direction:column; gap:6px; font-size:14px; font-weight:500; }
+.timestamp-field { display:grid; gap:8px; }
+.timestamp-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.timestamp-buttons { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.timestamp-millis { display:inline-flex; align-items:center; gap:8px; margin:0; min-height:38px; padding:0 12px; border:1px solid var(--border); border-radius:6px; background:#f8fafc; color:var(--text-primary); font-size:14px; font-weight:500; line-height:20px; white-space:nowrap; cursor:pointer; }
+.timestamp-millis input[type="checkbox"] { width:16px; min-width:16px; height:16px; min-height:16px; margin:0; padding:0; accent-color:var(--primary); cursor:pointer; }
+.timestamp-millis input[type="checkbox"]:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
 .wide { grid-column:1/-1; }
 input,select,textarea { min-width:0; width:100%; border:1px solid #cbd5e1; border-radius:6px; background:white; color:var(--text-primary); padding:9px 11px; font-size:14px; line-height:20px; font-weight:400; outline:none; }
 input,select { min-height:40px; }
@@ -76,6 +83,11 @@ input,select { min-height:40px; }
 .documentation-confirmation > input[type="checkbox"] { flex:0 0 16px; width:16px; min-width:16px; height:16px; min-height:16px; margin:2px 0 0; padding:0; accent-color:var(--primary); cursor:pointer; }
 .documentation-confirmation > span { flex:1; min-width:0; }
 .documentation-confirmation > input[type="checkbox"]:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
+.check-row { display:flex; flex-direction:row; align-items:flex-start; gap:10px; margin:0; padding:12px; border:1px solid var(--border); border-radius:6px; background:#f8fafc; color:var(--text-primary); font-size:14px; font-weight:400; line-height:20px; cursor:pointer; }
+.check-row > input[type="checkbox"] { flex:0 0 16px; width:16px; min-width:16px; height:16px; min-height:16px; margin:2px 0 0; padding:0; accent-color:var(--primary); cursor:pointer; }
+.check-row > span { flex:1; min-width:0; font-weight:500; }
+.check-row > span .helper { display:block; margin-top:2px; }
+.check-row > input[type="checkbox"]:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
 .password-input input { padding-right:44px; }
 .password-toggle { position:absolute; top:50%; right:5px; display:grid; width:34px; height:34px; padding:0; place-items:center; transform:translateY(-50%); border:0; border-radius:5px; background:transparent; color:var(--text-secondary); }
 .password-toggle:hover:not(:disabled) { background:var(--primary-soft); color:var(--primary); }
@@ -154,9 +166,11 @@ tbody tr:hover { background:#f8fafc80; }
 .header-details,.advanced-settings { margin-top:16px; border:1px solid var(--border); border-radius:7px; padding:11px 12px; }
 summary { cursor:pointer; font-size:13px; font-weight:500; color:#475569; }
 .header-details dl { margin:12px 0 0; font-size:12px; }
-.header-details dl>div { display:grid; grid-template-columns:130px minmax(0,1fr); gap:12px; padding:7px 0; border-top:1px solid #f1f5f9; }
+.header-details dl>div { display:grid; grid-template-columns:168px minmax(0,1fr); gap:12px; padding:7px 0; border-top:1px solid #f1f5f9; }
 dt { font-weight:500; } dd { margin:0; color:var(--text-secondary); overflow-wrap:anywhere; }
-.advanced-settings .form-grid { margin-top:16px; }
+.form-grid > .advanced-settings { margin-top:0; }
+.advanced-settings .form-grid { margin-top:14px; }
+.advanced-settings > .helper { margin-top:8px; }
 .validation-box { margin-top:16px; padding:12px; background:#fffbeb; border:1px solid #fde68a; border-radius:7px; color:#92400e; font-size:12px; }
 .validation-box p { margin-top:4px; }
 .form-error,.form-notice { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; margin-bottom:16px; border:1px solid #fecaca; border-radius:7px; background:#fef2f2; color:#b91c1c; font-size:13px; overflow-wrap:anywhere; }
@@ -300,10 +314,10 @@ dt { font-weight:500; } dd { margin:0; color:var(--text-secondary); overflow-wra
 .terminal-actions .danger-button:disabled { opacity: .65; cursor: wait; }
 .status-badge.cancelled { color: #92400e; background: #fffbeb; border-color: #fde68a; }
 @media (max-width: 640px) { .terminal-line { display: block; margin-bottom: 8px; } .terminal-line time, .terminal-level { margin-right: 8px; } .terminal-actions { align-items: stretch; flex-direction: column; } }
-.history-filter { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 16px; }
-.history-filter label { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.history-filter label > span { color: var(--text-secondary); font-size: 13px; font-weight: 500; white-space: nowrap; }
-.history-filter select, .history-filter input { min-height: 38px; padding: 7px 10px; background: #fff; color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.history-filter { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: end; margin-bottom: 16px; }
+.history-filter label { display: flex; flex-direction: column; align-items: stretch; gap: 4px; flex: 0 1 180px; min-width: 148px; margin: 0; font-weight: 500; }
+.history-filter label > span { color: var(--text-secondary); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.history-filter select, .history-filter input { width: 100%; min-height: 38px; padding: 7px 10px; background: #fff; color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 .history-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 14px; }
 .history-pagination > span { color: var(--text-secondary); font-size: 13px; }
 @media(max-width:640px) { .history-filter label { flex: 1 1 100%; } .history-filter select, .history-filter input { flex: 1; min-width: 0; } .history-pagination { justify-content: space-between; gap: 8px; } }

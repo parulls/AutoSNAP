@@ -6,6 +6,7 @@ import ConnectionForm from "./connection-form";
 import type { Api, Item, State } from "./model";
 import PasswordInput from "./password-input";
 import { can } from "./privileges";
+import {fieldOf,linkDevSite} from "./dev-site-link";
 
 type Kind="snap_user"|"dev_site"|"endpoint"|"sim_provider";
 const labels:Record<Kind,string>={snap_user:"User SNAP",dev_site:"Dev Site Client",endpoint:"Dev Site Endpoint",sim_provider:"Penyedia Client Simulator"};
@@ -18,9 +19,8 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
   const [importing,setImporting]=useState<{endpoint?:Item;service?:Item}|null>(null);
   const [serviceEditor,setServiceEditor]=useState<{provider:Item;service?:Item}|null>(null);
   const [serviceDraft,setServiceDraft]=useState({name:"",method:"POST",path:"",channelId:"",deviceId:"",partnerId:"",externalId:"",defaultBody:"{}",expectedHttpStatus:"",expectedCode:""});
-  const canCreate=can(state.user,"master_data","create")||(kind==="sim_provider"&&can(state.user,"client_simulator","manage"));
-  const canUpdate=can(state.user,"master_data","update")||(kind==="sim_provider"&&can(state.user,"client_simulator","manage"));
-  const canDelete=can(state.user,"master_data","delete")||(kind==="sim_provider"&&can(state.user,"client_simulator","manage"));
+  const moduleAccess=kind==="sim_provider"?can(state.user,"client_simulator")||can(state.user,"master_data"):can(state.user,"master_data");
+  const canCreate=moduleAccess,canUpdate=moduleAccess,canDelete=moduleAccess;
   const canMutate=canCreate||canUpdate;
   const users=state.records.filter(x=>x.kind==="snap_user");
   const sites=state.records.filter(x=>x.kind==="environment"&&value(x,"category").trim().toLowerCase()!=="client simulator");
@@ -66,11 +66,16 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
   }
   const selectedRecord=connection&&connection!=="new"?connection:undefined;
   const selectedSite=selectedRecord?.kind==="environment"?selectedRecord:undefined;
-  const project=state.records.find(x=>x.id===selectedSite?.parentId),client=state.records.find(x=>x.id===project?.parentId);
+  const client=linkDevSite(state.records,selectedSite).client;
   const selectedClient=selectedRecord?.kind==="client"?selectedRecord:client;
   const owner=users.find(x=>x.id===value(selectedSite,"defaultUserId"));
-  const field=(key:string,label:string,multiline=false,secret=false)=><label className={`form-field${multiline?" wide":""}`}><span>{label}</span>{multiline?<textarea rows={9} spellCheck={false} value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>:secret?<PasswordInput autoComplete="off" value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>:<input type={key==="email"?"email":"text"} autoComplete="off" value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>}</label>;
+  const field=(key:string,label:string,multiline=false,secret=false,hint="")=><label className={`form-field${multiline?" wide":""}`}><span>{label}</span>{multiline?<textarea rows={6} required={label.endsWith("*")} spellCheck={false} value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>:secret?<PasswordInput autoComplete="off" value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>:<input required={label.endsWith("*")} type={key==="email"?"email":"text"} autoComplete="off" value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>}{hint&&<small className="helper">{hint}</small>}</label>;
   const ts=asObject(draft.data.timestampConfig)?draft.data.timestampConfig as {offsetMinutes?:number;includeMillis?:boolean}:{offsetMinutes:420,includeMillis:false};
+  const accessMode=String(draft.data.signatureAccessTokenMode??"FUNCTION");
+  const serviceMode=String(draft.data.signatureServiceMode??"FUNCTION");
+  const accessModeNeedsKey=accessMode==="FUNCTION";
+  const accessModeNeedsSecret=serviceMode==="FUNCTION";
+  const hitApiSigning=accessMode==="HIT_API"||serviceMode==="HIT_API";
 
   return <section className="card master-card">
     <div className="section-header"><div><h2>Master Data</h2><p>User SNAP, Dev Site Client, Dev Site Endpoint, dan Penyedia Client Simulator.</p></div>{canCreate&&<button className="primary-button" disabled={busy||(kind==="dev_site"||kind==="endpoint")&&!users.length} onClick={()=>kind==="endpoint"?setImporting({}):kind==="dev_site"?setConnection("new"):open(null)}>Tambah {labels[kind]}</button>}</div>
@@ -78,57 +83,73 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
     <div className="tabs" role="tablist">{(Object.keys(labels) as Kind[]).map(key=><button key={key} role="tab" aria-selected={kind===key} className={kind===key?"active":""} onClick={()=>{setKind(key);setEditing(null);setConnection(null);setServiceEditor(null);}}>{labels[key]}</button>)}</div>
     {kind==="dev_site"&&!users.length&&<p className="helper">Tambahkan User SNAP sebelum membuat Dev Site Client.</p>}
     <div className="table-wrap"><table><thead><tr><th>NAMA</th><th>DETAIL</th><th>DIPERBARUI</th>{canMutate&&<th>AKSI</th>}</tr></thead><tbody>{rows.map(item=>{
-      const incomplete=item.kind==="client",siteProject=incomplete?undefined:state.records.find(x=>x.id===item.parentId),siteClient=incomplete?item:state.records.find(x=>x.id===siteProject?.parentId);
+      const incomplete=item.kind==="client",siteClient=incomplete?item:linkDevSite(state.records,item).client;
       const linkedServices=services.filter(x=>x.parentId===item.id);
       const linkedSim=simServices.filter(x=>x.parentId===item.id);
-      return <tr key={item.id}><td><strong>{item.name}</strong>{incomplete&&<span className="cell-caption">Belum dilengkapi</span>}</td><td className="detail-cell">{kind==="snap_user"?(value(item,"email")||"—"):kind==="dev_site"?<>{incomplete?"Pilih Lengkapi untuk menghubungkan User SNAP":users.find(x=>x.id===value(item,"defaultUserId"))?.name??"—"}<span className="cell-caption">{[incomplete?"Client tersimpan":value(item,"mode")==="mock"?"Mock Lokal":value(item,"mode")==="live"?"Live Bank Sumut":"ASPI Sandbox",value(siteClient,"channelId")&&`CHANNEL-ID ${value(siteClient,"channelId")}`,value(siteClient,"deviceId")&&`X-DEVICE-ID ${value(siteClient,"deviceId")}`].filter(Boolean).join(" · ")}</span></>:kind==="sim_provider"?<>{value(item,"baseUrl")||"—"}<span className="cell-caption">AT {String(item.data.signatureAccessTokenMode??"FUNCTION")} · SVC {String(item.data.signatureServiceMode??"FUNCTION")} · {linkedSim.length} service</span><span className="cell-caption">{linkedSim.map(s=>s.name).join(" · ")||"Belum ada API Service"}</span></>:<>{[value(item,"method"),value(item,"path")].filter(Boolean).join(" ")||"—"}<span className="cell-caption">{value(item,"portalUrl")||"URL Aplikasi Pengujian belum diisi"}</span><span className="cell-caption">{linkedServices.map(service=>service.name).join(" · ")||"Belum ada konfigurasi layanan"}</span></>}</td><td>{new Date(item.updatedAt).toLocaleDateString("id-ID")}</td>{canMutate&&<td><div className="inline-actions">{kind==="endpoint"?linkedServices.length>1?linkedServices.map(service=><button key={service.id} disabled={busy||!canUpdate} onClick={()=>setImporting({endpoint:item,service})}>Edit {service.name}</button>):<button disabled={busy||!canUpdate} onClick={()=>setImporting({endpoint:item,service:linkedServices[0]})}>Edit</button>:kind==="sim_provider"?<>{canUpdate&&<button disabled={busy} onClick={()=>open(item)}>Edit</button>}{canCreate&&<button disabled={busy} onClick={()=>openService(item)}>Tambah Service</button>}{linkedSim.map(s=>canUpdate?<button key={s.id} disabled={busy} onClick={()=>openService(item,s)}>Edit {s.name}</button>:null)}{linkedSim.map(s=>canDelete?<button key={`d-${s.id}`} disabled={busy} className="danger-action" onClick={()=>remove(s)}>Hapus {s.name}</button>:null)}</>: <button disabled={busy||!canUpdate} onClick={()=>kind==="dev_site"?setConnection(item):open(item)}>{incomplete?"Lengkapi":"Edit"}</button>}{canDelete&&<button disabled={busy} className="danger-action" onClick={()=>remove(item)}>Hapus</button>}</div></td>}</tr>;
+      return <tr key={item.id}><td><strong>{item.name}</strong>{incomplete&&<span className="cell-caption">Belum dilengkapi</span>}</td><td className="detail-cell">{kind==="snap_user"?(value(item,"email")||"—"):kind==="dev_site"?<>{incomplete?"Pilih Lengkapi untuk menghubungkan User SNAP":users.find(x=>x.id===value(item,"defaultUserId"))?.name??"—"}<span className="cell-caption">{[incomplete?"Client tersimpan":value(item,"mode")==="mock"?"Mock Lokal":value(item,"mode")==="live"?"Live Bank Sumut":"ASPI Sandbox",fieldOf(siteClient,"channelId")&&`CHANNEL-ID ${fieldOf(siteClient,"channelId")}`,fieldOf(siteClient,"deviceId")&&`X-DEVICE-ID ${fieldOf(siteClient,"deviceId")}`].filter(Boolean).join(" · ")}</span></>:kind==="sim_provider"?<>{value(item,"baseUrl")||"—"}<span className="cell-caption">AT {String(item.data.signatureAccessTokenMode??"FUNCTION")} · SVC {String(item.data.signatureServiceMode??"FUNCTION")} · {linkedSim.length} service</span><span className="cell-caption">{linkedSim.map(s=>s.name).join(" · ")||"Belum ada API Service"}</span></>:<>{[value(item,"method"),value(item,"path")].filter(Boolean).join(" ")||"—"}<span className="cell-caption">{value(item,"portalUrl")||"URL Aplikasi Pengujian belum diisi"}</span><span className="cell-caption">{linkedServices.map(service=>service.name).join(" · ")||"Belum ada konfigurasi layanan"}</span></>}</td><td>{new Date(item.updatedAt).toLocaleDateString("id-ID")}</td>{canMutate&&<td><div className="inline-actions">{kind==="endpoint"?linkedServices.length>1?linkedServices.map(service=><button key={service.id} disabled={busy||!canUpdate} onClick={()=>setImporting({endpoint:item,service})}>Edit {service.name}</button>):<button disabled={busy||!canUpdate} onClick={()=>setImporting({endpoint:item,service:linkedServices[0]})}>Edit</button>:kind==="sim_provider"?<>{canUpdate&&<button disabled={busy} onClick={()=>open(item)}>Edit</button>}{canCreate&&<button disabled={busy} onClick={()=>openService(item)}>Tambah Service</button>}{linkedSim.map(s=>canUpdate?<button key={s.id} disabled={busy} onClick={()=>openService(item,s)}>Edit {s.name}</button>:null)}{linkedSim.map(s=>canDelete?<button key={`d-${s.id}`} disabled={busy} className="danger-action" onClick={()=>remove(s)}>Hapus {s.name}</button>:null)}</>: <button disabled={busy||!canUpdate} onClick={()=>kind==="dev_site"?setConnection(item):open(item)}>{incomplete?"Lengkapi":"Edit"}</button>}{canDelete&&<button disabled={busy} className="danger-action" onClick={()=>remove(item)}>Hapus</button>}</div></td>}</tr>;
     })}</tbody></table>{!rows.length&&<p className="empty-note">Belum ada data.</p>}</div>
     {kind==="dev_site"&&<p className="helper">CHANNEL-ID wajib. X-DEVICE-ID, ORIGIN, X-IP-ADDRESS, X-LATITUDE, dan X-LONGITUDE opsional — dikirim otomatis sesuai Master Data.</p>}
     {kind==="endpoint"&&<p className="helper">Dev Site Endpoint terpisah dari Penyedia Client Simulator.</p>}
     {kind==="snap_user"&&<p className="helper">Password SNAP disimpan terenkripsi.</p>}
     {kind==="sim_provider"&&<p className="helper">Client Secret dan Private Key disimpan terenkripsi. Signature memakai fungsi backend terdaftar (bukan eval/skrip DB).</p>}
     {editing&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save}>
-      <div className="section-header"><div><h2>{editing==="new"?"Tambah":"Edit"} {labels[kind]}</h2><p>Perbaiki isian yang ditandai sebelum menyimpan.</p></div></div>
+      <div className="section-header"><div><h2>{editing==="new"?"Tambah":"Edit"} {labels[kind]}</h2><p>{kind==="sim_provider"?"Isian bertanda * wajib. Client Secret dan Private Key wajib saat mode FUNCTION. Pengaturan lain ada di dropdown.":"Perbaiki isian yang ditandai sebelum menyimpan."}</p></div></div>
       {modalError&&<div className="form-error" role="alert">{modalError}</div>}
       <div className="form-grid">
         <label className="form-field"><span>Nama *</span><input required maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
         {kind==="snap_user"&&<>{field("email","Email SNAP")}{field("password","Password SNAP",false,true)}<p className="helper wide">Saat edit, kosongkan password untuk mempertahankan nilai tersimpan. Akun ini terpisah dari username AutoSNAP.</p></>}
         {kind==="sim_provider"&&<>
-          {field("baseUrl","Base URL (HTTPS) *")}
+          {field("baseUrl","Base URL (HTTPS) *",false,false,"Alamat dasar API tujuan. Wajib https://.")}
           {field("clientKey","Client Key / Client ID *")}
-          {field("clientSecret","Client Secret",false,true)}
-          {field("privateKey","Private Key PEM",true,false)}
-          {field("accessTokenUrl","URL Access Token")}
-          <label className="form-field"><span>Signature Access Token Mode</span><select value={String(draft.data.signatureAccessTokenMode??"FUNCTION")} onChange={e=>patch("signatureAccessTokenMode",e.target.value)}><option value="FUNCTION">FUNCTION</option><option value="HIT_API">HIT_API</option><option value="NONE">NONE</option></select></label>
-          <label className="form-field"><span>Signature Service Mode</span><select value={String(draft.data.signatureServiceMode??"FUNCTION")} onChange={e=>patch("signatureServiceMode",e.target.value)}><option value="FUNCTION">FUNCTION</option><option value="HIT_API">HIT_API</option><option value="NONE">NONE</option></select></label>
-          {String(draft.data.signatureAccessTokenMode)==="HIT_API"&&field("signatureAccessTokenUrl","URL Signature Access Token")}
-          {String(draft.data.signatureServiceMode)==="HIT_API"&&field("signatureServiceUrl","URL Signature Service")}
-          <label className="form-field"><span>RSA Encoding</span><select value={String(draft.data.rsaEncoding??"base64")} onChange={e=>patch("rsaEncoding",e.target.value)}><option value="base64">Base64</option><option value="hex">Hex</option></select></label>
-          <label className="form-field"><span>HMAC Encoding</span><select value={String(draft.data.hmacEncoding??"hex")} onChange={e=>patch("hmacEncoding",e.target.value)}><option value="hex">Hex</option><option value="base64">Base64</option></select></label>
-          <label className="form-field"><span>Offset timezone (menit)</span><input type="number" value={Number(ts.offsetMinutes??420)} onChange={e=>patch("timestampConfig",{...ts,offsetMinutes:Number(e.target.value)})}/></label>
-          <label className="form-field"><span>Milidetik timestamp</span><select value={ts.includeMillis?"1":"0"} onChange={e=>patch("timestampConfig",{...ts,includeMillis:e.target.value==="1"})}><option value="0">Tanpa milidetik</option><option value="1">Dengan milidetik</option></select></label>
-          {field("partnerId","Default X-PARTNER-ID")}{field("channelId","Default CHANNEL-ID")}{field("deviceId","Default X-DEVICE-ID")}
-          {field("origin","ORIGIN")}{field("ipAddress","X-IP-ADDRESS")}{field("latitude","X-LATITUDE")}{field("longitude","X-LONGITUDE")}
-          <label className="form-field wide"><input type="checkbox" checked={draft.data.allowPrivateKeyToSigner===true} onChange={e=>patch("allowPrivateKeyToSigner",e.target.checked)}/> Izinkan kirim Private Key ke layanan signing HIT_API (hanya jika kontrak mewajibkan)</label>
-          <p className="helper wide">Kosongkan secret/private key saat edit untuk mempertahankan nilai tersimpan.</p>
+          {field("clientSecret","Client Secret",false,true,accessModeNeedsSecret?"Wajib selama Signature Service Mode = FUNCTION. Kosongkan saat edit jika tidak diubah.":"Opsional selama Signature Service Mode bukan FUNCTION. Kosongkan saat edit jika tidak diubah.")}
+          {field("privateKey","Private Key PEM",true,false,accessModeNeedsKey?"Wajib selama Signature Access Token Mode = FUNCTION. Kosongkan saat edit jika tidak diubah.":"Opsional selama Signature Access Token Mode bukan FUNCTION. Kosongkan saat edit jika tidak diubah.")}
+          <details className="advanced-settings wide" open={hitApiSigning||undefined}>
+            <summary>Pengaturan opsional</summary>
+            <p className="helper">Nilai bawaan sudah cukup untuk pengujian biasa. Buka bagian ini hanya jika kontrak penyedia berbeda.</p>
+            <div className="form-grid">
+              {field("accessTokenUrl","URL Access Token",false,false,"Kosong berarti /api/v1.0/access-token/b2b.")}
+              <label className="form-field"><span>Signature Access Token Mode</span><select value={accessMode} onChange={e=>patch("signatureAccessTokenMode",e.target.value)}><option value="FUNCTION">FUNCTION — dihitung di AutoSNAP</option><option value="HIT_API">HIT_API — layanan signing lain</option><option value="NONE">NONE — tanpa signature</option></select></label>
+              <label className="form-field"><span>Signature Service Mode</span><select value={serviceMode} onChange={e=>patch("signatureServiceMode",e.target.value)}><option value="FUNCTION">FUNCTION — dihitung di AutoSNAP</option><option value="HIT_API">HIT_API — layanan signing lain</option><option value="NONE">NONE — tanpa signature</option></select></label>
+              {accessMode==="HIT_API"&&field("signatureAccessTokenUrl","URL Signature Access Token *",false,false,"Wajib karena mode access token adalah HIT_API.")}
+              {serviceMode==="HIT_API"&&field("signatureServiceUrl","URL Signature Service *",false,false,"Wajib karena mode service adalah HIT_API.")}
+              <label className="form-field"><span>RSA Encoding</span><select value={String(draft.data.rsaEncoding??"base64")} onChange={e=>patch("rsaEncoding",e.target.value)}><option value="base64">Base64</option><option value="hex">Hex</option></select><small className="helper">Bawaan Base64.</small></label>
+              <label className="form-field"><span>HMAC Encoding</span><select value={String(draft.data.hmacEncoding??"hex")} onChange={e=>patch("hmacEncoding",e.target.value)}><option value="hex">Hex</option><option value="base64">Base64</option></select><small className="helper">Bank Sumut SNAP Batubara memakai Base64. Hex dibalas 401 Unauthorized Signature.</small></label>
+              <label className="form-field"><span>Offset timezone (menit)</span><input type="number" value={Number(ts.offsetMinutes??420)} onChange={e=>patch("timestampConfig",{...ts,offsetMinutes:Number(e.target.value)})}/><small className="helper">420 = WIB (UTC+7).</small></label>
+              <label className="form-field"><span>Milidetik timestamp</span><select value={ts.includeMillis?"1":"0"} onChange={e=>patch("timestampConfig",{...ts,includeMillis:e.target.value==="1"})}><option value="0">Tanpa milidetik</option><option value="1">Dengan milidetik</option></select></label>
+              {field("partnerId","Default X-PARTNER-ID",false,false,"Kosong berarti memakai Client Key.")}
+              {field("channelId","Default CHANNEL-ID")}
+              {field("deviceId","Default X-DEVICE-ID",false,false,"Bank Sumut menolak request tanpa header ini. Koleksi SNAP Batubara memakai h2hBatubara.")}
+              {field("origin","ORIGIN")}
+              {field("ipAddress","X-IP-ADDRESS")}
+              {field("latitude","X-LATITUDE")}
+              {field("longitude","X-LONGITUDE")}
+              <label className="check-row wide"><input type="checkbox" checked={draft.data.allowPrivateKeyToSigner===true} onChange={e=>patch("allowPrivateKeyToSigner",e.target.checked)}/><span>Izinkan kirim Private Key ke layanan signing HIT_API<small className="helper">Centang hanya jika kontrak layanan signing mewajibkan private key. Berlaku saat Signature Access Token Mode = HIT_API.</small></span></label>
+            </div>
+          </details>
         </>}
       </div>
       <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>{setEditing(null);setModalError("");}}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
     </form></div>}
     {serviceEditor&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={saveService}>
-      <div className="section-header"><div><h2>{serviceEditor.service?"Edit":"Tambah"} API Service — {serviceEditor.provider.name}</h2><p>Relasi 1 penyedia → banyak service.</p></div></div>
+      <div className="section-header"><div><h2>{serviceEditor.service?"Edit":"Tambah"} API Service — {serviceEditor.provider.name}</h2><p>Service ini yang dipanggil halaman Client Simulator. Path dan body di bawah yang dikirim.</p></div></div>
       {modalError&&<div className="form-error" role="alert">{modalError}</div>}
       <div className="form-grid">
         <label className="form-field"><span>Nama Service *</span><input required maxLength={120} value={serviceDraft.name} onChange={e=>setServiceDraft({...serviceDraft,name:e.target.value})}/></label>
-        <label className="form-field"><span>Method *</span><select value={serviceDraft.method} onChange={e=>setServiceDraft({...serviceDraft,method:e.target.value})}><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
-        <label className="form-field wide"><span>Service URL / Relative Path *</span><input required value={serviceDraft.path} onChange={e=>setServiceDraft({...serviceDraft,path:e.target.value})} placeholder="/api/v1.0/..."/></label>
-        <label className="form-field"><span>CHANNEL-ID</span><input value={serviceDraft.channelId} onChange={e=>setServiceDraft({...serviceDraft,channelId:e.target.value})}/></label>
-        <label className="form-field"><span>X-DEVICE-ID</span><input value={serviceDraft.deviceId} onChange={e=>setServiceDraft({...serviceDraft,deviceId:e.target.value})}/></label>
-        <label className="form-field"><span>X-PARTNER-ID</span><input value={serviceDraft.partnerId} onChange={e=>setServiceDraft({...serviceDraft,partnerId:e.target.value})}/></label>
-        <label className="form-field"><span>X-EXTERNAL-ID</span><input value={serviceDraft.externalId} onChange={e=>setServiceDraft({...serviceDraft,externalId:e.target.value})}/></label>
-        <label className="form-field"><span>Expected HTTP Status</span><input value={serviceDraft.expectedHttpStatus} onChange={e=>setServiceDraft({...serviceDraft,expectedHttpStatus:e.target.value})}/></label>
-        <label className="form-field"><span>Expected SNAP responseCode</span><input value={serviceDraft.expectedCode} onChange={e=>setServiceDraft({...serviceDraft,expectedCode:e.target.value})}/></label>
-        <label className="form-field wide"><span>Default Request Body JSON</span><textarea rows={8} spellCheck={false} value={serviceDraft.defaultBody} onChange={e=>setServiceDraft({...serviceDraft,defaultBody:e.target.value})}/></label>
+        <label className="form-field"><span>Method *</span><select required value={serviceDraft.method} onChange={e=>setServiceDraft({...serviceDraft,method:e.target.value})}><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
+        <label className="form-field wide"><span>Service URL / Relative Path *</span><input required value={serviceDraft.path} onChange={e=>setServiceDraft({...serviceDraft,path:e.target.value})} placeholder="/api/v1.0/..."/><small className="helper">Path relatif, diawali /. Disambung ke Base URL penyedia saat Client Simulator mengirim request.</small></label>
+        <label className="form-field wide"><span>Request Body JSON</span><textarea rows={8} spellCheck={false} value={serviceDraft.defaultBody} onChange={e=>setServiceDraft({...serviceDraft,defaultBody:e.target.value})}/><small className="helper">Inilah body yang dikirim Client Simulator. GET/HEAD tidak mengirim body. Kosongkan dengan {"{}"} jika tidak ada payload.</small></label>
+        <details className="advanced-settings wide">
+          <summary>Header dan ekspektasi opsional</summary>
+          <p className="helper">Kosong berarti memakai nilai penyedia. X-PARTNER-ID kosong memakai Client Key.</p>
+          <div className="form-grid">
+            <label className="form-field"><span>CHANNEL-ID</span><input value={serviceDraft.channelId} onChange={e=>setServiceDraft({...serviceDraft,channelId:e.target.value})}/></label>
+            <label className="form-field"><span>X-DEVICE-ID</span><input value={serviceDraft.deviceId} onChange={e=>setServiceDraft({...serviceDraft,deviceId:e.target.value})}/></label>
+            <label className="form-field"><span>X-PARTNER-ID</span><input value={serviceDraft.partnerId} onChange={e=>setServiceDraft({...serviceDraft,partnerId:e.target.value})}/></label>
+            <label className="form-field"><span>X-EXTERNAL-ID</span><input value={serviceDraft.externalId} onChange={e=>setServiceDraft({...serviceDraft,externalId:e.target.value})}/></label>
+            <label className="form-field"><span>Expected HTTP Status</span><input value={serviceDraft.expectedHttpStatus} onChange={e=>setServiceDraft({...serviceDraft,expectedHttpStatus:e.target.value})}/></label>
+            <label className="form-field"><span>Expected SNAP responseCode</span><input value={serviceDraft.expectedCode} onChange={e=>setServiceDraft({...serviceDraft,expectedCode:e.target.value})}/></label>
+          </div>
+        </details>
       </div>
       <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>setServiceEditor(null)}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan Service"}</button></div>
     </form></div>}

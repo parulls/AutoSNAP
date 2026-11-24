@@ -24,6 +24,16 @@ export function isoTimestamp(config:TimestampConfig,at=new Date()){
   return `${y}-${m}-${d}T${hh}:${mm}:${ss}${ms}${sign}${oh}:${om}`;
 }
 
+/** Bank Sumut menolak X-TIMESTAMP yang tidak di depan jam server. Pengujian positif memakai minimal sekarang + 2 menit, sama seperti skrip Postman mereka. */
+export function ensureFutureTimestamp(config:TimestampConfig,requested:string|undefined,testType:"positive"|"negative",at=new Date()){
+  const ahead=isoTimestamp(config,new Date(at.getTime()+2*60_000));
+  if(testType==="negative")return requested?.trim()||isoTimestamp(config,at);
+  if(!requested?.trim())return ahead;
+  const parsed=Date.parse(requested);
+  if(!Number.isFinite(parsed)||parsed<at.getTime()+90_000)return ahead;
+  return requested.trim();
+}
+
 export function shiftTimestamp(iso:string,deltaMinutes:number){
   const match=/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d{1,3})?([+-]\d{2}:\d{2}|Z)$/.exec(iso);
   if(!match)throw {error:"Timestamp ISO 8601 tidak valid.",status:400};

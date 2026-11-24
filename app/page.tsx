@@ -15,7 +15,6 @@ import { can } from "./privileges";
 type Page="Dashboard"|"Dev Site Client"|"Client Simulator"|"Master Data"|"User Management";
 const empty:State={records:[],runs:[],scenarios:[],operators:[]};
 const pages:{label:Page;icon:"dashboard"|"testing"|"simulator"|"data"|"users"}[]=[{label:"Dashboard",icon:"dashboard"},{label:"Dev Site Client",icon:"testing"},{label:"Client Simulator",icon:"simulator"},{label:"Master Data",icon:"data"},{label:"User Management",icon:"users"}];
-const pagePrivilege:Record<Page,string>={Dashboard:"dashboard","Dev Site Client":"dev_site","Client Simulator":"client_simulator","Master Data":"master_data","User Management":"user_management"};
 export default function Home(){
   const [state,setState]=useState<State>(empty),[loading,setLoading]=useState(true),[page,setPage]=useState<Page>("Dashboard");
   const [error,setError]=useState(""),[notice,setNotice]=useState(""),[sidebarOpen,setSidebarOpen]=useState(true),[profileOpen,setProfileOpen]=useState(false);
@@ -25,7 +24,7 @@ export default function Home(){
   if(loading)return <div className="auth-screen"><span className="loading-spinner" role="status" aria-label="Memuat AutoSNAP"/></div>;
   if(!state.user)return <>{error&&<div className="form-error" role="alert">{error}</div>}<AuthScreen key={state.setupRequired?"setup":"login"} state={state} api={api} reload={reload}/></>;
   const moduleOf:Record<Page,"dashboard"|"dev_site"|"client_simulator"|"master_data"|"user_management">={Dashboard:"dashboard","Dev Site Client":"dev_site","Client Simulator":"client_simulator","Master Data":"master_data","User Management":"user_management"};
-  const allowedPages=pages.filter(entry=>can(state.user,moduleOf[entry.label],"view")||(state.user?.privileges??[]).includes(pagePrivilege[entry.label]));
+  const allowedPages=pages.filter(entry=>can(state.user,moduleOf[entry.label]));
   const visiblePage=allowedPages.some(entry=>entry.label===page)?page:allowedPages[0]?.label;
   const common={state,api,reload,setError,setNotice};
   return <div className={`app-shell${sidebarOpen?"":" sidebar-collapsed"}`}>
