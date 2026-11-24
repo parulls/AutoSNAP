@@ -45,6 +45,17 @@ test("a new activity row is used only when its text uniquely contains the Servic
   assert.equal(pickNewClientSimulatorActivity(before, rows, "Update VA - Positive Case"), null);
 });
 
+test("activity match uses the activity id and refuses a repeated service name", async () => {
+  const { matchClientSimulatorActivity } = await load();
+  const rows = [
+    { activityId: "row-a", service: "Create VA - Positive Case", timestamp: "", downloadUrl: "https://apidevportal.aspi-indonesia.or.id/a", text: "Create VA - Positive Case" },
+    { activityId: "row-b", service: "Create VA - Positive Case", timestamp: "", downloadUrl: "https://apidevportal.aspi-indonesia.or.id/b?id=row-b", text: "Create VA - Positive Case" },
+  ];
+  assert.equal(matchClientSimulatorActivity(rows, { activityId: "row-b", serviceName: "Create VA - Positive Case" }).activity.activityId, "row-b");
+  assert.equal(matchClientSimulatorActivity(rows, { serviceName: "Create VA - Positive Case" }).code, "ASPI_ACTIVITY_AMBIGUOUS");
+  assert.equal(matchClientSimulatorActivity(rows, { activityId: "missing", serviceName: "Inquiry VA - Positive Case" }).code, "ASPI_ACTIVITY_NOT_FOUND");
+});
+
 test("pass or fail follows the response shown by ASPI", async () => {
   const { evaluateClientSimulator } = await load();
   assert.deepEqual(evaluateClientSimulator({ testType: "positive", httpStatus: 200, responseCode: "2002400", expectedHttp: null, expectedCode: "2002400" }), { matched: true, status: "PASSED" });

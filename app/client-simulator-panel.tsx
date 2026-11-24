@@ -1,12 +1,15 @@
 "use client";
 
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import type { Api, HistoryFilters, Item, Run, State } from "./model";
 import HistoryFilter from "./history-filter";
 import { rangeForPeriod } from "./history-period";
 import { useHistory } from "./use-history";
 import { can } from "./privileges";
 import TestingProgress, { type TestProgress } from "./testing-progress";
+import PdfPreview from "./pdf-preview";
+import UiIcon from "./ui-icon";
+import { ApiError } from "./api-client";
 
 const value=(row:Item|undefined,key:string)=>String(row?.data[key]??"");
 const object=(entry:unknown):entry is Record<string,unknown>=>!!entry&&typeof entry==="object"&&!Array.isArray(entry);
@@ -42,7 +45,14 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   const [historyRange,setHistoryRange]=useState(()=>rangeForPeriod("today"));
   const [historyFilters,setHistoryFilters]=useState<HistoryFilters>({scope:canViewAll?"all":"mine"});
   const [historyQuery,setHistoryQuery]=useState(""),[offset,setOffset]=useState(0);
-  const [selectedRun,setSelectedRun]=useState<Run|null>(null),[downloadingId,setDownloadingId]=useState("");
+  const [selectedRun,setSelectedRun]=useState<Run|null>(null),[downloadingId,setDownloadingId]=useState(""),[preview,setPreview]=useState<{runId:string;activityId:string;fileName:string}|null>(null),[testingError,setTestingError]=useState<{summary:string;technical:string;suggestion:string}|null>(null),[reprocessingId,setReprocessingId]=useState("");
+  const retryLock=useRef(false);
+  useEffect(()=>{
+    if(!selectedRun&&!testingError)return;
+    function onKey(event:KeyboardEvent){if(event.key==="Escape"&&!running){setSelectedRun(null);setTestingError(null);}}
+    window.addEventListener("keydown",onKey);
+    return ()=>window.removeEventListener("keydown",onKey);
+  },[selectedRun,testingError,running]);
   const historyData=useHistory(api,historyRange,"simulator",historyQuery,offset,20,state.runs,historyFilters);
 
   function loadDefaults(nextProvider?:Item,nextService?:Item){
@@ -125,6 +135,21 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     return `${base}${path}`;
   })();
 
+  function countsOf(run:Run){const counts=object(run.request)&&object(run.request.pdfCounts)?run.request.pdfCounts:{};return {ready:Number(counts.ready??0),required:Number(counts.required??0)};}
+  function canRetry(run:Run){const reprocess=object(run.request)&&object(run.request.reprocess)?run.request.reprocess:null;if(reprocess)return reprocess.retryEvidence===true;const counts=countsOf(run);return run.mode==="client_sim"&&counts.required>0&&counts.ready<counts.required;}
+  async function retryEvidence(run:Run){
+    if(retryLock.current||running)return;
+    retryLock.current=true;setReprocessingId(run.id);setTestingError(null);
+    try{
+      const result=await api("retryAspiEvidence",{id:run.id,confirmCrossUser:run.operator_id!==state.user?.id});
+      const stored=Number(result.stored??0),required=Number(result.required??0);
+      setNotice(result.status==="FAILED"?`PDF ${stored}/${required} tersimpan. Status tetap FAILED karena validasi sebelumnya gagal.`:`Bukti PDF ${stored}/${required}. Status pengujian tetap ${String(result.status??run.status)}. Transaksi tidak dikirim ulang.`);
+      await reload();historyData.refresh();
+    }catch(error){
+      const message=(error as Error).message;
+      setTestingError({summary:"Proses ulang bukti gagal.",technical:message,suggestion:error instanceof ApiError&&error.code==="ASPI_SESSION_EXPIRED"?"Login ulang diperlukan sebelum mengambil bukti. Transaksi tidak dijalankan ulang.":"PDF yang sudah tersimpan tetap aman. Transaksi tidak dijalankan ulang."});
+    }finally{retryLock.current=false;setReprocessingId("");}
+  }
   function pdfsOf(run:Run){
     return object(run.request)&&Array.isArray(run.request.aspiActivities)?run.request.aspiActivities.filter(object).map(item=>({activityId:String(item.activityId??""),service:String(item.service??"ASPI"),fileName:`ASPI-${String(item.service??"Activity").replace(/[^A-Za-z0-9_-]/g,"-")}-${String(item.activityId)}.pdf`,pdfReady:item.pdfReady===true})).filter(item=>item.activityId):[];
   }
@@ -133,7 +158,12 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     try{
       const response=await fetch("/api/autosnap",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"downloadAspiActivityPdf",id:run.id,activityId}),signal:AbortSignal.timeout(1000000)});
       if(!response.ok){const error=await response.json().catch(()=>({error:`HTTP ${response.status}`}));throw Error(String(error.error));}
-      const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");
+      const type=response.headers.get("content-type")??"";
+      if(/json|html/i.test(type))throw Error("File yang diterima bukan PDF resmi ASPI yang valid.");
+      const bytes=new Uint8Array(await response.arrayBuffer());
+      const header=String.fromCharCode(...bytes.slice(0,5));
+      if(bytes.length<5||header!=="%PDF-")throw Error("File yang diterima bukan PDF resmi ASPI yang valid.");
+      const blob=new Blob([bytes],{type:"application/pdf"}),url=URL.createObjectURL(blob),link=document.createElement("a");
       link.href=url;link.download=fileName;document.body.appendChild(link);link.click();link.remove();
       window.setTimeout(()=>URL.revokeObjectURL(url),60000);
     }catch(e){setError((e as Error).message);}finally{setDownloadingId("");}
@@ -191,36 +221,47 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       {!providers.length&&<p className="helper">Belum ada Penyedia. Tambahkan di Master Data → Penyedia Client Simulator.</p>}
     </form>
 
-    {progress&&<TestingProgress progress={progress} running={running} formReady={!running} onCancel={async()=>{await api("cancelRun",{id:progressIdRef.current});}} onClose={()=>setProgress(null)}/>}
+    {progress&&<TestingProgress product="Client Simulator" progress={progress} running={running} formReady={!running} onCancel={async()=>{await api("cancelRun",{id:progressIdRef.current});}} onClose={()=>setProgress(null)} onRetryEvidence={undefined}/>}
 
     <section className="card history-card">
-      <div className="section-header"><div><h2>Activity Simulator</h2><p>{historyData.total} hasil · terpisah dari History Dev Site ASPI.</p></div>
-        <label className="search-box"><input aria-label="Cari activity" value={historyQuery} onChange={e=>{setHistoryQuery(e.target.value);setOffset(0);}} placeholder="Cari penyedia, service, status..."/></label>
+      <div className="section-header"><div><h2>History Testing</h2><p>{historyData.total} hasil Client Simulator pada periode terpilih.</p></div>
+        <label className="search-box"><input aria-label="Cari history" value={historyQuery} onChange={e=>{setHistoryQuery(e.target.value);setOffset(0);}} placeholder="Cari penyedia, service, status..."/></label>
       </div>
       <HistoryFilter value={historyRange} onChange={range=>{setHistoryRange(range);setOffset(0);}} filters={historyFilters} onFiltersChange={next=>{setHistoryFilters(next);setOffset(0);}} isAdmin={canViewAll}/>
-      <div className="table-wrap"><table><thead><tr><th>WAKTU</th>{canViewAll&&<th>PELAKSANA</th>}<th>AKTIVITAS</th><th>STATUS</th><th>HTTP</th><th>AKSI</th></tr></thead>
+      <div className="table-wrap" aria-busy={historyData.loading}><table><thead><tr><th>WAKTU</th>{canViewAll&&<th>PELAKSANA</th>}<th>SERVICE / PENYEDIA</th><th>STATUS</th><th>HTTP / PDF</th><th>DURASI</th><th>AKSI</th></tr></thead>
         <tbody>{historyData.runs.filter(r=>r.mode==="client_sim"||r.mode==="mock").map(run=>{
           const name=object(run.request)?String(run.request.activityName??""):"";
+          const pdf=countsOf(run);
+          const evidence=pdfsOf(run).find(item=>item.pdfReady);
           return <tr key={run.id}>
-            <td>{new Date(run.created_at).toLocaleString("id-ID")}</td>
+            <td>{new Date(run.created_at).toLocaleString("id-ID",{timeZone:"Asia/Jakarta"})}</td>
             {canViewAll&&<td>{run.operator?.name??"—"}</td>}
-            <td><strong>{name||run.notes||run.id}</strong><span className="cell-caption">{run.mode}</span></td>
-            <td><span className={`status-badge ${run.status.toLowerCase()}`}>{run.status}</span></td>
-            <td>{run.http_status??"—"}</td>
+            <td>{name||run.notes||run.id}<span className="cell-caption">{run.mode==="client_sim"?"Client Simulator":"Mock"}</span></td>
+            <td><span className={`status-badge ${run.status.toLowerCase()}`}>{run.status}</span>{pdf.required>0&&pdf.ready<pdf.required&&<span className="cell-caption">Bukti belum lengkap</span>}</td>
+            <td>{run.http_status??"—"} / {pdf.required?`${pdf.ready}/${pdf.required}`:"—"}</td>
+            <td>{run.duration_ms??0} ms</td>
             <td><div className="inline-actions">
-              <button type="button" onClick={()=>setSelectedRun(run)}>View</button>
-              <button type="button" onClick={()=>downloadJson(run)}>Download JSON</button>
-              {pdfsOf(run).filter(item=>item.pdfReady).map(item=><button type="button" key={item.activityId} disabled={downloadingId===`${run.id}:${item.activityId}`} onClick={()=>void downloadPdf(run,item.activityId,item.fileName)}>{downloadingId===`${run.id}:${item.activityId}`?"Mengunduh...":"Download PDF"}</button>)}
+              <button type="button" className="text-button" onClick={()=>setSelectedRun(run)}>Detail</button>
+              <button type="button" className="text-button" onClick={()=>downloadJson(run)}>JSON</button>
+              {evidence&&<button type="button" className="text-button" disabled={!!downloadingId} onClick={()=>setPreview({runId:run.id,activityId:evidence.activityId,fileName:evidence.fileName})}>View PDF</button>}
+              {evidence&&<button type="button" className="text-button" disabled={downloadingId===`${run.id}:${evidence.activityId}`} onClick={()=>void downloadPdf(run,evidence.activityId,evidence.fileName)}>{downloadingId===`${run.id}:${evidence.activityId}`?"Mengunduh...":"Download PDF"}</button>}
+              {canRetry(run)&&<button type="button" className="text-button" disabled={running||reprocessingId===run.id} onClick={()=>void retryEvidence(run)}>{reprocessingId===run.id?"Mengambil bukti...":"Proses Ulang Bukti"}</button>}
             </div></td>
           </tr>;
         })}</tbody>
-      </table>{!historyData.runs.length&&<p className="empty-note">Belum ada Activity Simulator.</p>}</div>
+      </table>{!historyData.runs.length&&<p className="empty-note">{historyData.loading?"Memuat history…":"Belum ada history yang cocok."}</p>}</div>
+      <div className="history-pagination"><button className="secondary-button" disabled={!offset||historyData.loading} onClick={()=>setOffset(Math.max(0,offset-20))}>Sebelumnya</button><span>{historyData.total?`${offset+1}–${Math.min(offset+historyData.runs.length,historyData.total)} dari ${historyData.total}`:"0 hasil"}</span><button className="secondary-button" disabled={offset+20>=historyData.total||historyData.loading} onClick={()=>setOffset(offset+20)}>Berikutnya</button></div>
     </section>
 
-    {selectedRun&&<div className="modal-backdrop"><div className="card edit-modal">
-      <div className="section-header"><div><h2>Detail Activity Simulator</h2><p>{selectedRun.notes||selectedRun.id}</p></div></div>
-      <pre className="code-block">{JSON.stringify({request:selectedRun.request,response:selectedRun.response},null,2)}</pre>
-      <div className="form-actions"><button type="button" className="secondary-button" onClick={()=>setSelectedRun(null)}>Tutup</button><button type="button" className="primary-button" onClick={()=>downloadJson(selectedRun)}>Download JSON</button>{pdfsOf(selectedRun).filter(item=>item.pdfReady).map(item=><button type="button" className="primary-button" key={item.activityId} disabled={!!downloadingId} onClick={()=>void downloadPdf(selectedRun,item.activityId,item.fileName)}>Download PDF</button>)}</div>
+    {preview&&<PdfPreview runId={preview.runId} activityId={preview.activityId} fileName={preview.fileName} onClose={()=>setPreview(null)}/>}
+    {testingError&&<div className="modal-backdrop error-layer"><section className="card error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="sim-error-title"><button type="button" className="close-button" aria-label="Tutup" onClick={()=>setTestingError(null)}><UiIcon name="close"/></button><h2 id="sim-error-title">{testingError.summary}</h2><dl><div><dt>Detail</dt><dd>{testingError.technical}</dd></div><div><dt>Saran</dt><dd>{testingError.suggestion}</dd></div></dl></section></div>}
+    {selectedRun&&<div className="modal-backdrop" onClick={event=>{if(event.target===event.currentTarget)setSelectedRun(null);}}><div className="card edit-modal run-modal" onClick={event=>event.stopPropagation()}>
+      <div className="section-header"><div><h2>Detail Testing</h2><p>{selectedRun.notes||selectedRun.id}</p></div><button type="button" className="close-button" aria-label="Tutup" onClick={()=>setSelectedRun(null)}><UiIcon name="close"/></button></div>
+      <p className="helper">PDF ASPI: {countsOf(selectedRun).ready}/{countsOf(selectedRun).required||0}{countsOf(selectedRun).required>countsOf(selectedRun).ready?" · bukti belum lengkap":""}</p>
+      {(()=>{const request=object(selectedRun.request)?selectedRun.request:null;const errors=request&&Array.isArray(request.evidenceErrors)?request.evidenceErrors:[];if(!errors.length)return null;return <div className="validation-box"><strong>Bukti yang belum tersedia</strong><p>{errors.map(item=>typeof item==="string"?item:object(item)?String(item.error??""):"").filter(Boolean).join(" · ")}</p></div>;})()}
+      <div className="inline-actions">{canRetry(selectedRun)&&<button type="button" className="secondary-button" disabled={running||!!reprocessingId} onClick={()=>void retryEvidence(selectedRun)}>{reprocessingId===selectedRun.id?"Mengambil bukti...":"Proses Ulang Bukti"}</button>}{pdfsOf(selectedRun).filter(item=>item.pdfReady).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={!!downloadingId} onClick={()=>setPreview({runId:selectedRun.id,activityId:item.activityId,fileName:item.fileName})}>View PDF</button>)}</div>
+      <h3>Request</h3><pre className="snippet-code">{JSON.stringify(selectedRun.request,null,2)}</pre><h3>Response</h3><pre className="snippet-code">{JSON.stringify(selectedRun.response,null,2)}</pre>
+      <div className="form-actions"><button type="button" className="secondary-button" onClick={()=>setSelectedRun(null)}>Tutup</button><button type="button" className="primary-button" onClick={()=>downloadJson(selectedRun)}>Download JSON</button></div>
     </div></div>}
   </>;
 }

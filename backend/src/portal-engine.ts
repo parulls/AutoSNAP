@@ -12,7 +12,7 @@ import { AspiFormResolver, normalizedParameterName } from "./aspi-form-resolver"
 import { AspiSessionManager } from "./aspi-session-manager";
 import { AspiAutomationError, type HitOutcome } from "./aspi-types";
 import { ACTIVITY_PAGE, fetchOfficialPdf, readActivities } from "./aspi-evidence";
-import { CLIENT_SIMULATOR_FORM, runClientSimulatorOnPage, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
+import { CLIENT_SIMULATOR_ACTIVITY, CLIENT_SIMULATOR_FORM, ClientSimulatorPortalError, downloadClientSimulatorActivityPdf, matchClientSimulatorActivity, readClientSimulatorActivities, runClientSimulatorOnPage, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
 import { openPdfCaptureBrowser, type PdfCaptureProfile } from "./pdf-browser";
 import { collectActivityPdfs, type PdfEvidence } from "./aspi-pdf-batch";
 import { profileField } from "./header-profile";
@@ -127,6 +127,27 @@ export class PortalEngine{
       }
       if(error&&typeof error==="object"&&"status" in error&&"error" in error)throw error;
       throw {error:error instanceof Error?error.message:"Client Simulator ASPI gagal.",status:502};
+    }finally{
+      await release?.();
+    }
+  }
+  /** Read-only. Opens Client Simulator Activity and clicks Download. Does not press Send. */
+  async redownloadClientSimulatorActivity(user:RecordRow,target:{activityId?:string;serviceName?:string},signal?:AbortSignal){
+    let release:(()=>Promise<void>)|undefined;
+    try{
+      const acquired=await this.sessions.getAuthenticatedContext(user,"apidevportal.aspi-indonesia.or.id",async page=>{
+        await page.goto(CLIENT_SIMULATOR_ACTIVITY,{waitUntil:"domcontentloaded",timeout:60000});
+        const url=new URL(page.url());
+        return url.hostname==="apidevportal.aspi-indonesia.or.id"&&url.pathname==="/client-simulator-activity";
+      },signal);
+      release=acquired.release;
+      const rows=await readClientSimulatorActivities(acquired.page);
+      const matched=matchClientSimulatorActivity(rows,target);
+      if(!matched.ok)throw matched.code==="ASPI_ACTIVITY_AMBIGUOUS"
+        ?new ClientSimulatorPortalError("ASPI_ACTIVITY_AMBIGUOUS","Beberapa baris aktivitas memiliki nama service yang sama. AutoSNAP tidak memilih baris secara acak.")
+        :new ClientSimulatorPortalError("ASPI_ACTIVITY_NOT_FOUND","Pengujian sudah disimpan, tetapi aktivitas belum ditemukan di portal ASPI. Gunakan Proses Ulang Bukti untuk mencoba mengambil PDF tanpa mengirim ulang transaksi.");
+      const pdf=await downloadClientSimulatorActivityPdf(acquired.page,matched.activity);
+      return {activity:matched.activity,pdf};
     }finally{
       await release?.();
     }

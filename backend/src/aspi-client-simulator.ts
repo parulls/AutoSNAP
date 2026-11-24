@@ -45,6 +45,22 @@ export type ClientSimulatorPortalResult = {
 
 const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
+export class ClientSimulatorPortalError extends Error {
+  constructor(readonly code: "ASPI_SESSION_EXPIRED" | "ASPI_LOGIN_REQUIRED" | "ASPI_ACTIVITY_NOT_FOUND" | "ASPI_ACTIVITY_AMBIGUOUS" | "ASPI_DOWNLOAD_TRIGGER_FAILED" | "ASPI_DOWNLOAD_TIMEOUT" | "ASPI_INVALID_PDF" | "ASPI_PDF_STORAGE_FAILED", readonly userMessage: string) {
+    super(userMessage);
+    this.name = "ClientSimulatorPortalError";
+  }
+}
+
+const portalError = {
+  session: () => new ClientSimulatorPortalError("ASPI_SESSION_EXPIRED", "Sesi ASPI telah berakhir. Login ulang diperlukan sebelum mengambil bukti."),
+  missing: () => new ClientSimulatorPortalError("ASPI_ACTIVITY_NOT_FOUND", "Pengujian sudah disimpan, tetapi aktivitas belum ditemukan di portal ASPI. Gunakan Proses Ulang Bukti untuk mencoba mengambil PDF tanpa mengirim ulang transaksi."),
+  ambiguous: () => new ClientSimulatorPortalError("ASPI_ACTIVITY_AMBIGUOUS", "Beberapa baris aktivitas memiliki nama service yang sama. AutoSNAP tidak memilih baris secara acak."),
+  trigger: () => new ClientSimulatorPortalError("ASPI_DOWNLOAD_TRIGGER_FAILED", "Tombol Download tidak ada pada baris aktivitas yang cocok."),
+  timeout: () => new ClientSimulatorPortalError("ASPI_DOWNLOAD_TIMEOUT", "Portal ASPI belum menghasilkan file PDF dalam batas waktu pengambilan. Transaksi tidak akan dijalankan ulang."),
+  invalid: (detail: string) => new ClientSimulatorPortalError("ASPI_INVALID_PDF", detail || "File yang diterima bukan PDF resmi ASPI yang valid."),
+};
+
 export function clientSimulatorServiceName(name: string, testType: "positive" | "negative") {
   const base = name.trim().replace(/\s+/g, " ");
   if (!base) throw Error("Nama service kosong.");
@@ -71,13 +87,25 @@ export function activityIdFromPortalUrl(href: string) {
  * An unseen row with a different name is left unmatched.
  */
 export function pickNewClientSimulatorActivity(before: Set<string>, rows: ClientSimulatorActivity[], serviceName: string) {
-  const needle = normalize(serviceName);
-  if (needle.length < 4) return null;
-  const named = rows.filter(row => {
-    if (!row.activityId || before.has(row.activityId)) return false;
-    return normalize(`${row.service} ${row.text}`).includes(needle);
-  });
-  return named.length === 1 ? named[0] : null;
+  const matched = matchClientSimulatorActivity(rows, { serviceName, before });
+  return matched.ok ? matched.activity : null;
+}
+
+/** One verified row. A repeated service name without a unique Activity ID is ambiguous, not the first row. */
+export function matchClientSimulatorActivity(rows: ClientSimulatorActivity[], target: { activityId?: string; serviceName?: string; before?: Set<string> }): { ok: true; activity: ClientSimulatorActivity } | { ok: false; code: "ASPI_ACTIVITY_NOT_FOUND" | "ASPI_ACTIVITY_AMBIGUOUS" } {
+  const fresh = target.before ? rows.filter(row => row.activityId && !target.before!.has(row.activityId)) : rows.filter(row => row.activityId);
+  const id = target.activityId?.trim().toLowerCase() ?? "";
+  if (id) {
+    const byId = fresh.filter(row => row.activityId.toLowerCase() === id || row.downloadUrl.toLowerCase().includes(id) || row.text.toLowerCase().includes(id));
+    if (byId.length === 1) return { ok: true, activity: byId[0] };
+    if (byId.length > 1) return { ok: false, code: "ASPI_ACTIVITY_AMBIGUOUS" };
+  }
+  const needle = normalize(target.serviceName ?? "");
+  if (needle.length < 4) return { ok: false, code: "ASPI_ACTIVITY_NOT_FOUND" };
+  const named = fresh.filter(row => normalize(`${row.service} ${row.text}`).includes(needle));
+  if (named.length === 1) return { ok: true, activity: named[0] };
+  if (named.length > 1) return { ok: false, code: "ASPI_ACTIVITY_AMBIGUOUS" };
+  return { ok: false, code: "ASPI_ACTIVITY_NOT_FOUND" };
 }
 
 export function evaluateClientSimulator(input: {
@@ -294,8 +322,9 @@ export async function readClientSimulatorActivities(page: Page): Promise<ClientS
     if (!cells.length) return [];
     const anchors = Array.from(row.querySelectorAll("a"));
     const link = anchors.find(anchor => /download|unduh/i.test(clean(anchor.textContent)) || /download/i.test(anchor.getAttribute("href") ?? "")) ?? anchors.at(-1);
+    const markupId = (row.innerHTML.match(uuid) ?? [])[0] ?? "";
     const href = link?.getAttribute("href") ?? "";
-    const fallbackId = clean(`${cells[1] ?? ""}-${cells[2] ?? ""}`).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+    const fallbackId = markupId || clean(`${cells[1] ?? ""}-${cells[2] ?? ""}`).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
     if (!href || /^\s*javascript:/i.test(href)) {
       if (fallbackId.length < 4) return [];
       const service = cells[2] || cells.find(cell => cell && !/download|unduh|detail|view/i.test(cell)) || clean(row.textContent).slice(0, 180);
@@ -336,21 +365,47 @@ async function readPortalDownload(download: Download) {
   return validateAspiDownloadPdf(Buffer.concat(chunks));
 }
 
-/** Click Download on Client Simulator Activity and keep the file that click produces. Never page.pdf(). */
+async function downloadControl(page: Page, activity: ClientSimulatorActivity) {
+  if (!/^[a-z0-9-]{4,40}$/i.test(activity.activityId)) throw portalError.missing();
+  const id = activity.activityId.replace(/[^a-z0-9-]/gi, "");
+  const byId = page.locator(`tbody tr a[href*="${id}"], tbody tr button[onclick*="${id}"], tbody tr a[onclick*="${id}"]`);
+  const idCount = await byId.count();
+  if (idCount > 1) throw portalError.ambiguous();
+  if (idCount === 1) return byId;
+  const rows = page.locator("tbody tr").filter({ hasText: activity.service });
+  const rowCount = await rows.count();
+  if (rowCount > 1) throw portalError.ambiguous();
+  if (rowCount !== 1) throw portalError.missing();
+  const control = rows.locator("a,button,input").filter({ hasText: /download|unduh/i });
+  if (await control.count() !== 1) throw portalError.trigger();
+  return control;
+}
+
+/** Click Download on the matched activity row and keep the file that click produces. Never page.pdf(). */
 export async function downloadClientSimulatorActivityPdf(page: Page, activity: ClientSimulatorActivity) {
   const here = new URL(page.url());
   if (here.origin !== "https://apidevportal.aspi-indonesia.or.id" || here.pathname !== "/client-simulator-activity") {
-    throw Error("PDF Client Simulator hanya diunduh dari halaman Client Simulator Activity.");
+    throw portalError.session();
   }
-  if (!/^[a-z0-9-]{4,40}$/i.test(activity.activityId)) throw Error("Activity ID Client Simulator tidak valid.");
-  const byService = page.locator("tbody tr").filter({ hasText: activity.service });
-  const row = (await byService.count()) ? byService.first() : page.locator("tbody tr").filter({ hasText: activity.activityId }).first();
-  let control = (await row.count()) ? row.locator("a,button,input").filter({ hasText: /download|unduh/i }).first() : page.locator("tbody tr a,tbody tr button").filter({ hasText: /download|unduh/i }).first();
-  if (!(await control.count()) && activity.downloadUrl) control = page.locator(`a[href="${activity.downloadUrl}"], a[href*="${activity.activityId}"]`).first();
-  if (!(await control.count())) throw Error("Tombol Download tidak ada di baris Client Simulator Activity.");
+  const control = await downloadControl(page, activity);
   const downloadPromise = page.context().waitForEvent("download", { timeout: 60000 });
-  await control.click({ timeout: 10000 });
-  return readPortalDownload(await downloadPromise);
+  const popupPromise = page.context().waitForEvent("page", { timeout: 60000 }).catch(() => null);
+  try {
+    await control.click({ timeout: 10000 });
+    if (page.url().includes("/sign-in")) throw portalError.session();
+  } catch (error) {
+    if (error instanceof ClientSimulatorPortalError) throw error;
+    throw portalError.trigger();
+  }
+  const popup = await Promise.race([popupPromise, downloadPromise.then(() => null)]).catch(() => null);
+  if (popup && new URL(popup.url() || "https://apidevportal.aspi-indonesia.or.id/sign-in").pathname === "/sign-in") throw portalError.session();
+  try {
+    return await readPortalDownload(await downloadPromise);
+  } catch (error) {
+    if (error instanceof ClientSimulatorPortalError) throw error;
+    if (error instanceof Error && /timeout/i.test(error.message)) throw portalError.timeout();
+    throw error instanceof Error && /PDF|html2pdf|bukan/i.test(error.message) ? portalError.invalid(error.message) : portalError.timeout();
+  }
 }
 
 export async function runClientSimulatorOnPage(page: Page, form: ClientSimulatorFormInput, beat?: () => void, report?: (stage: string, status: "running" | "completed" | "failed", detail?: string) => Promise<void> | void, signal?: AbortSignal): Promise<ClientSimulatorPortalResult> {
@@ -389,18 +444,20 @@ export async function runClientSimulatorOnPage(page: Page, form: ClientSimulator
     return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: `${message} Hasil tidak masuk ke Client Simulator Activity.`, steps };
   }
   let activity: ClientSimulatorActivity | null = null;
+  let matchError: string | null = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     if (signal?.aborted) throw Error("Pengujian dibatalkan pengguna.");
     const rows = await readClientSimulatorActivities(page);
-    activity = pickNewClientSimulatorActivity(new Set(before.map(row => row.activityId)), rows, form.serviceName);
-    steps.push({ stage: "activity_match", attempt, listed: rows.length, activityId: activity?.activityId ?? null });
-    if (activity) break;
+    const matched = matchClientSimulatorActivity(rows, { serviceName: form.serviceName, before: new Set(before.map(row => row.activityId)) });
+    steps.push({ stage: "activity_match", attempt, listed: rows.length, activityId: matched.ok ? matched.activity.activityId : null, code: matched.ok ? null : matched.code });
+    if (matched.ok) { activity = matched.activity; break; }
+    if (matched.code === "ASPI_ACTIVITY_AMBIGUOUS") { matchError = portalError.ambiguous().userMessage; break; }
     await note("pdf_download", "running", "Hasil tersimpan. Menunggu baris baru di Client Simulator Activity.");
     await page.waitForTimeout(2000);
     await page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined);
   }
   if (!activity) {
-    const message = "Save Result tidak memunculkan satu baris baru di Client Simulator Activity yang memuat Service Name ini.";
+    const message = matchError || portalError.missing().userMessage;
     await note("pdf_download", "failed", message);
     return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: message, steps };
   }

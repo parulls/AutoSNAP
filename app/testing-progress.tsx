@@ -15,9 +15,10 @@ type Props={
   onCancel:()=>Promise<void>;
   onClose:()=>void;
   onRetryEvidence?:()=>Promise<void>|void;
+  product?:string;
 };
 
-export default function TestingProgress({progress,running,formReady,accountBusy=false,onCancel,onClose,onRetryEvidence}:Props){
+export default function TestingProgress({progress,running,formReady,accountBusy=false,onCancel,onClose,onRetryEvidence,product="Dev Site"}:Props){
   const end=useRef<HTMLDivElement>(null),[cancelling,setCancelling]=useState(false),[cancelError,setCancelError]=useState("");
   const ownActive=running||progress.status==="cancel_requested"||cancelling;
   // Tutup hanya setelah proses milik kita selesai. Jika form masih terkunci oleh proses ASPI lain, izinkan Tutup
@@ -31,7 +32,7 @@ export default function TestingProgress({progress,running,formReady,accountBusy=
         ?"Proses selesai — form siap digunakan."
         :accountBusy
           ?"Pengujian selesai, tetapi form masih terkunci karena akun ASPI dipakai proses lain."
-          :"Menunggu form Dev Site siap digunakan kembali…";
+          :`Menunggu form ${product} siap digunakan kembali…`;
   useEffect(()=>{end.current?.scrollIntoView({block:"nearest"});},[progress.steps.length,cancelError,statusText]);
   useEffect(()=>{
     const onKey=(event:KeyboardEvent)=>{
@@ -54,13 +55,13 @@ export default function TestingProgress({progress,running,formReady,accountBusy=
         {!progress.steps.length&&<div className="terminal-pending">Menunggu log backend…</div>}
         {progress.steps.map((step,index)=><div key={`${index}-${step.at??""}`} className={`terminal-line ${step.status}`}><time>{step.at?new Date(step.at).toLocaleTimeString("id-ID",{timeZone:"Asia/Jakarta",hour12:false}):"--:--:--"}</time><span className="terminal-level">[{step.status.toUpperCase()}]</span><span>{labels[step.stage]??step.stage}{step.detail?` — ${step.detail}`:""}</span></div>)}
         {cancelError&&<div className="terminal-line failed">[CANCEL ERROR] {cancelError}</div>}
-        {!ownActive&&accountBusy&&<div className="terminal-line failed">[LOCKED] Form Dev Site masih terkunci: akun ASPI yang sama sedang dipakai proses lain.</div>}
+        {!ownActive&&accountBusy&&<div className="terminal-line failed">[LOCKED] Form {product} masih terkunci: akun ASPI yang sama sedang dipakai proses lain.</div>}
         <div ref={end}/>
       </div>
       <div className="terminal-actions">
         {ownActive
           ?<><span>Request yang sudah terkirim tetap tercatat.</span><button type="button" className="danger-button" disabled={cancelling||progress.status==="cancel_requested"} onClick={()=>void cancel()}>{cancelling||progress.status==="cancel_requested"?"Menghentikan…":"Cancel Testing"}</button></>
-          :<>{onRetryEvidence&&formReady&&<button type="button" className="secondary-button" onClick={()=>void onRetryEvidence()}>Proses Ulang Bukti</button>}{canClose?<button type="button" className="secondary-button" onClick={onClose}>{formReady?"Tutup":"Tutup Log"}</button>:<span>Menunggu form Dev Site siap digunakan kembali…</span>}<span>{formReady?"Log tersimpan pada detail History Testing.":accountBusy?"Form belum siap: akun ASPI dipakai proses lain.":"Menunggu pelepasan sesi ASPI…"}</span></>}
+          :<>{onRetryEvidence&&formReady&&<button type="button" className="secondary-button" onClick={()=>void onRetryEvidence()}>Proses Ulang Bukti</button>}{canClose?<button type="button" className="secondary-button" onClick={onClose}>{formReady?"Tutup":"Tutup Log"}</button>:<span>{`Menunggu form ${product} siap digunakan kembali…`}</span>}<span>{formReady?"Log tersimpan pada detail History Testing.":accountBusy?"Form belum siap: akun ASPI dipakai proses lain.":"Menunggu pelepasan sesi ASPI…"}</span></>}
       </div>
     </section>
   </div>;

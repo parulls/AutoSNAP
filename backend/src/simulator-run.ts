@@ -231,7 +231,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const httpStatus=portal.httpStatus??(typeof responseObj.httpStatus==="number"?responseObj.httpStatus:null);
   const evaluation=evaluateClientSimulator({testType,httpStatus,responseCode,expectedHttp,expectedCode});
   const activity=portal.activity;
-  const status=activity?evaluation.status:"FAILED";
+  const status=evaluation.status;
   const activityName=`${provider.name} - ${service.name} - ${testType==="positive"?"Positif":"Negatif"}`;
   const runId=randomUUID();
   const now=new Date().toISOString();
@@ -264,6 +264,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     aspiActivities,
     evidenceErrors:pdfError?[pdfError]:[] as string[],
     pdfCounts:{ready:0,required:1},
+    reprocess:{retryEvidence:!activity||!!pdfError,resumeTesting:false,requireMutatingConfirm:false},
   };
   const noteFor=(ready:boolean,problem:string|null)=>!activity?`${activityName}. ${problem||"Hasil tidak masuk ke Client Simulator Activity."}`:(problem&&!ready?`${activityName}. ${problem}`:activityName);
   await db.query(
@@ -281,7 +282,11 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
         `INSERT INTO autosnap_evidence_pdfs(
            run_id,activity_id,service,pdf_data,byte_size,content_sha256,content_fingerprint,
            verification_status,pdf_producer,source_url,downloaded_at,created_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,'CAPTURED',$8,$9,$10,$10)`,
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,'CAPTURED',$8,$9,$10,$10)
+         ON CONFLICT (run_id, activity_id) DO UPDATE SET
+           service=EXCLUDED.service, pdf_data=EXCLUDED.pdf_data, byte_size=EXCLUDED.byte_size,
+           content_sha256=EXCLUDED.content_sha256, content_fingerprint=EXCLUDED.content_fingerprint,
+           verification_status='CAPTURED', pdf_producer=EXCLUDED.pdf_producer, source_url=EXCLUDED.source_url, downloaded_at=EXCLUDED.downloaded_at`,
         [runId,activity.activityId,activity.service.slice(0,120),pdf,pdf.length,hash,fingerprint,provenance.producer||null,activity.downloadUrl,now]
       );
       pdfReady=true;
@@ -289,10 +294,12 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
       if(aspiActivities[0]){aspiActivities[0].pdfReady=true;aspiActivities[0].authenticity="aspi-html2pdf-download";}
       requestJson.evidenceErrors=[];
       requestJson.pdfCounts.ready=1;
+      requestJson.reprocess.retryEvidence=false;
       await db.query("UPDATE autosnap_runs SET request_json=$1::jsonb, notes=$2 WHERE id=$3",[JSON.stringify(requestJson),noteFor(true,null),runId]);
     }catch(error){
-      pdfError=error instanceof Error?error.message:"PDF Client Simulator gagal disimpan.";
+      pdfError=error instanceof Error?error.message:"PDF berhasil diterima tetapi gagal disimpan. Status evidence belum lengkap.";
       requestJson.evidenceErrors=[pdfError];
+      requestJson.reprocess.retryEvidence=true;
       await db.query("UPDATE autosnap_runs SET request_json=$1::jsonb, notes=$2 WHERE id=$3",[JSON.stringify(requestJson),noteFor(false,pdfError),runId]);
     }
   }

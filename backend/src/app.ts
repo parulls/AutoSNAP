@@ -21,6 +21,8 @@ import { RunControl } from "./run-control";
 import { canAccessRun, readHistory } from "./history";
 import { writeAudit } from "./audit-log";
 import { runClientSimulator } from "./simulator-run";
+import { ClientSimulatorPortalError } from "./aspi-client-simulator";
+import { AspiAutomationError } from "./aspi-types";
 import { normalizeSignatureMode } from "./simulator-signing";
 import {DocumentationReader} from "./documentation-reader";
 import {validateConfig,configuredChecks,methods} from "./endpoint-config";
@@ -28,7 +30,7 @@ import {prepareBody,resolveRequestPath,managedHeaders} from "./request-builder";
 import {assertOperationIdentity,resolveEndpoint,scenarioExpectation} from "./endpoint-resolver";
 import {authenticationWorkflow} from "./auth-workflow";
 import {evaluateTest,finalOutcome,hasRecordedHttp,type ResultCheck,type RunStatus} from "./test-evaluation";
-import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateOfficialPdf, type AspiActivity } from "./aspi-evidence";
+import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateAspiDownloadPdf, validateOfficialPdf, type AspiActivity } from "./aspi-evidence";
 import {annotateServiceData,resolveCapabilities,savesPrerequisite} from "./service-capabilities";
 import {buildEvidencePlan} from "./evidence-plan";
 import {RunEvidenceService} from "./run-evidence";
@@ -233,7 +235,7 @@ export class AutoSnapController {
       }
       if(action==="retryAspiEvidence"){
         await this.enforceRateLimit(`retry-evidence:${user.id}`,10,10*60_000);
-        if(!can(user,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege Dev Site Client.",403));
+        if(!can(user,"dev_site")&&!can(user,"client_simulator"))return this.fail(res,clientError("Anda tidak memiliki privilege untuk proses ulang bukti.",403));
         return await this.retryAspiEvidence(res,input,user,pdfCaptureProfile(req.headers["user-agent"],input.pdfScreen));
       }
       if(action==="resumeTesting"){
@@ -259,7 +261,7 @@ export class AutoSnapController {
         try{
           await progress("preparing","completed","Konfigurasi Client Simulator tervalidasi. Form ASPI akan diisi, lalu PDF ditunggu dari Client Simulator Activity.");
           const result=await runClientSimulator(this.db,await this.allRecords(),user,input,{submit:(snapUser,form)=>this.portal.submitClientSimulator(snapUser,form,{onProgress:progress,signal:control.signal})},progress,control.signal);
-          const finished=await this.updateProgress(progressId,user.id,"finished",result.status==="FAILED"||!result.pdfReady?"failed":"completed",String(result.notes??result.activityName??""));
+          const finished=await this.updateProgress(progressId,user.id,"finished",result.status==="FAILED"?"failed":"completed",`${String(result.notes??result.activityName??"")}${result.pdfReady?"":" Bukti PDF belum lengkap."}`);
           const stored=await this.db.one<{steps:unknown}>("SELECT steps FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[progressId,user.id]);
           await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2",[JSON.stringify({progressId,progressLog:Array.isArray(stored?.steps)?stored.steps:[]}),result.id]);
           return res.json({...result,progressId,formReady:true,aspiReady:finished!=="cancelled"});
@@ -360,6 +362,8 @@ export class AutoSnapController {
     const ownerId=run.operator_id;
     if(!ownerId)return this.fail(res,clientError("History ini tidak memiliki operator_id; proses ulang ditolak agar kepemilikan tidak berubah.",409));
     const request=object(run.request_json)?run.request_json:{};
+    if(run.mode==="client_sim")return await this.retryClientSimulatorEvidence(res,run,operator);
+    if(!can(operator,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege Dev Site Client.",403));
     const evaluation=object(request.evaluation)?request.evaluation:{};
     const httpMatched=object(evaluation.httpValidation)?evaluation.httpValidation.matches===true:false;
     const plan=object(request.evidence)?request.evidence:{};
@@ -373,6 +377,57 @@ export class AutoSnapController {
     const aspiReady=!(await this.evidenceService.accountBusy(snapUser));
     const busyUserIds=await this.evidenceService.busyUserIds(await this.allRecords());
     return res.json({ok:true,...result,aspiReady,busyUserIds,formReady:aspiReady});
+  }
+  private async retryClientSimulatorEvidence(res:Response,run:RunRow,operator:Operator){
+    if(!can(operator,"client_simulator"))return this.fail(res,clientError("Anda tidak memiliki privilege Client Simulator.",403));
+    if(run.status==="RUNNING")return this.fail(res,clientError("Pengujian masih berjalan.",409));
+    const request=object(run.request_json)?run.request_json:{};
+    const counts=object(request.pdfCounts)?request.pdfCounts:{};
+    const ready=Number(counts.ready??0),required=Math.max(1,Number(counts.required??1));
+    const activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
+    if(ready>=required&&activities.some(item=>item.pdfReady===true)){
+      return res.json({ok:true,status:run.status,notes:run.notes,complete:true,stored:ready,required,missing:[],pdfCounts:{ready,required},reprocess:{retryEvidence:false,resumeTesting:false,requireMutatingConfirm:false},processing:false});
+    }
+    const snapUser=run.user_id?await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='snap_user'",[run.user_id]):null;
+    if(!snapUser)return this.fail(res,clientError("User SNAP pada history tidak ditemukan.",404));
+    if(await this.evidenceService.accountBusy(snapUser))return this.fail(res,clientError("Akun ASPI ini sedang dipakai. PDF yang sudah tersimpan tetap aman. Transaksi tidak dijalankan ulang.",409,"ASPI_SESSION_BUSY"));
+    const activity=activities[0];
+    const activityId=String(activity?.activityId??"");
+    const serviceName=String(activity?.service??request.aspiServiceName??"");
+    try{
+      const captured=await this.portal.redownloadClientSimulatorActivity(snapUser,{activityId,serviceName});
+      const pdf=validateAspiDownloadPdf(captured.pdf);
+      const now=new Date().toISOString();
+      const hash=pdfContentSha256(pdf),fingerprint=pdfEvidenceFingerprint(pdf),provenance=inspectPdfProvenance(pdf);
+      await this.db.query(
+        `INSERT INTO autosnap_evidence_pdfs(
+           run_id,activity_id,service,pdf_data,byte_size,content_sha256,content_fingerprint,
+           verification_status,pdf_producer,source_url,downloaded_at,created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,'CAPTURED',$8,$9,$10,$10)
+         ON CONFLICT (run_id, activity_id) DO UPDATE SET
+           service=EXCLUDED.service, pdf_data=EXCLUDED.pdf_data, byte_size=EXCLUDED.byte_size,
+           content_sha256=EXCLUDED.content_sha256, content_fingerprint=EXCLUDED.content_fingerprint,
+           verification_status='CAPTURED', pdf_producer=EXCLUDED.pdf_producer, source_url=EXCLUDED.source_url, downloaded_at=EXCLUDED.downloaded_at`,
+        [run.id,captured.activity.activityId,captured.activity.service.slice(0,120),pdf,pdf.length,hash,fingerprint,provenance.producer||null,captured.activity.downloadUrl,now]
+      );
+      const storedActivity={...(activity??{}),activityId:captured.activity.activityId,service:captured.activity.service,timestamp:captured.activity.timestamp,downloadUrl:captured.activity.downloadUrl,pdfReady:true,authenticity:"aspi-html2pdf-download"};
+      const aspiActivities=activities.length?[storedActivity,...activities.slice(1)]:[storedActivity];
+      const pdfCounts={ready:1,required};
+      const reprocess={retryEvidence:false,resumeTesting:false,requireMutatingConfirm:false};
+      const audit={at:now,stage:"pdf_reprocessing",result:"COMPLETED",priorStatus:run.status,statusAfter:run.status,note:"PDF Client Simulator diambil ulang dari Client Simulator Activity. Send tidak dijalankan.",actorId:operator.id,actorUsername:operator.username,actorName:operator.name};
+      await this.db.query("UPDATE autosnap_runs SET request_json=jsonb_set(request_json || $1::jsonb,'{reprocessAudit}',COALESCE(request_json->'reprocessAudit','[]'::jsonb)||$2::jsonb,true) WHERE id=$3",[JSON.stringify({aspiActivities,pdfCounts,reprocess,evidenceErrors:[]}),JSON.stringify([audit]),run.id]);
+      return res.json({ok:true,status:run.status,notes:run.notes,complete:true,stored:1,required,missing:[],pdfCounts,reprocess,reprocessAudit:[audit],processing:false});
+    }catch(error){
+      if(error instanceof AspiAutomationError&&error.outcome==="ASPI_SESSION_BUSY")return this.fail(res,clientError("Akun ASPI ini sedang dipakai. PDF yang sudah tersimpan tetap aman. Transaksi tidak dijalankan ulang.",409,"ASPI_SESSION_BUSY"));
+      if(error instanceof AspiAutomationError)return this.fail(res,clientError("Sesi ASPI telah berakhir. Login ulang diperlukan sebelum mengambil bukti.",502,"ASPI_SESSION_EXPIRED"));
+      if(error instanceof ClientSimulatorPortalError){
+        const status=error.code==="ASPI_ACTIVITY_NOT_FOUND"||error.code==="ASPI_ACTIVITY_AMBIGUOUS"?409:502;
+        return this.fail(res,clientError(error.userMessage,status,error.code));
+      }
+      const message=error instanceof Error?error.message:"PDF Client Simulator gagal diambil.";
+      const storage=/disimpan|database|constraint/i.test(message);
+      return this.fail(res,clientError(storage?"PDF berhasil diterima tetapi gagal disimpan. Status evidence belum lengkap.":message,502,storage?"ASPI_PDF_STORAGE_FAILED":"ASPI_DOWNLOAD_TRIGGER_FAILED"));
+    }
   }
   private async resumeTesting(res:Response,input:Input,operator:Operator){
     const runId=String(input.id??"");
