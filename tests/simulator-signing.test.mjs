@@ -58,9 +58,15 @@ test("HIT_API signer URL rejects non-HTTPS and private hosts",async()=>{
   assert.throws(()=>assertSafeSignerUrl("https://127.0.0.1/sign"),(err)=>/tidak diizinkan/i.test(err?.error));
   assert.throws(()=>assertSafeSignerUrl("https://evil.example.com/sign"),(err)=>/allowlist/i.test(err?.error));
   assert.equal(assertSafeSignerUrl("https://signer.example.com/sign").hostname,"signer.example.com");
+  const {joinProviderUrl,normalizeEndpointPath}=await loadSigning();
+  assert.equal(joinProviderUrl("https://dev.banksumut.co.id","/snapgov/api/v1.0/utilities/signature-service"),"https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service");
+  assert.equal(joinProviderUrl("https://dev.banksumut.co.id/snapgov","/api/v1.0/utilities/signature-service"),"https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service");
+  assert.equal(normalizeEndpointPath("https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service","https://dev.banksumut.co.id"),"/snapgov/api/v1.0/utilities/signature-service");
+  assert.equal(normalizeEndpointPath("https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service","https://dev.banksumut.co.id/snapgov"),"/api/v1.0/utilities/signature-service");
+  assert.equal(normalizeEndpointPath("https://token.test/access-token","https://dev.banksumut.co.id"),"https://token.test/access-token");
   assert.equal(resolveSignerUrl("/snapgov/api/v1.0/utilities/signature-service","https://dev.banksumut.co.id"),"https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service");
-  assert.equal(resolveSignerUrl("https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service","https://ignored.example"),"https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service");
-  assert.throws(()=>resolveSignerUrl("/utilities/signature-service",""),(err)=>/Base URL/i.test(err?.error));
+  assert.equal(resolveSignerUrl("https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service","https://dev.banksumut.co.id"),"https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service");
+  assert.throws(()=>joinProviderUrl("","/utilities/signature-service"),(err)=>/Base URL/i.test(err?.error));
   assert.equal(aspiSignatureTarget("https://apidevportal.aspi-indonesia.or.id/api-services/keamanan","auth").path,"/api/v1.0/utilities/signature-auth");
   assert.equal(aspiSignatureTarget("https://apidevportal.aspi-indonesia.or.id/api-services/keamanan","service").path,"/api/v1.0/utilities/signature-service");
   assert.equal(aspiSignatureTarget("https://signer.example.com/sign","auth"),null);

@@ -42,7 +42,28 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
   function open(item:Item|null){
     setEditing(item??"new");setModalError("");setError("");
     if(kind==="sim_provider"){
-      const data=item?{...item.data,clientSecret:"",privateKey:"",signatureAuthPrivateKey:""}:{baseUrl:"",clientKey:"",clientSecret:"",privateKey:"",signatureAuthPrivateKey:"",accessTokenUrl:"/api/v1.0/access-token/b2b",signatureAccessTokenMode:"FUNCTION",signatureServiceMode:"FUNCTION",rsaEncoding:"base64",hmacEncoding:"hex",timestampConfig:{offsetMinutes:420,includeMillis:false},channelId:"",deviceId:"",partnerId:"",origin:"",ipAddress:"",latitude:"",longitude:"",allowPrivateKeyToSigner:false};
+      const toPath=(raw:unknown,base:string)=>{
+        const text=String(raw??"").trim();
+        if(!text||!/^https?:\/\//i.test(text))return text;
+        try{
+          const absolute=new URL(text);
+          const baseUrl=base?new URL(base):null;
+          if(baseUrl&&absolute.origin===baseUrl.origin){
+            const prefix=(baseUrl.pathname.replace(/\/$/,"")||"");
+            const full=absolute.pathname+(absolute.search||"");
+            if(prefix&&prefix!=="/"&&(full===prefix||full.startsWith(`${prefix}/`))){
+              const rest=full.slice(prefix.length)||"/";
+              return rest.startsWith("/")?rest:`/${rest}`;
+            }
+            return full||"/";
+          }
+          return absolute.pathname+(absolute.search||"");
+        }catch{return text;}
+      };
+      const data=item?(()=>{
+        const base=String(item.data.baseUrl??"");
+        return {...item.data,clientSecret:"",privateKey:"",signatureAuthPrivateKey:"",accessTokenUrl:toPath(item.data.accessTokenUrl,base),signatureAccessTokenUrl:toPath(item.data.signatureAccessTokenUrl,base),signatureServiceUrl:toPath(item.data.signatureServiceUrl,base)};
+      })():{baseUrl:"",clientKey:"",clientSecret:"",privateKey:"",signatureAuthPrivateKey:"",accessTokenUrl:"/api/v1.0/access-token/b2b",signatureAccessTokenMode:"FUNCTION",signatureServiceMode:"FUNCTION",rsaEncoding:"base64",hmacEncoding:"base64",timestampConfig:{offsetMinutes:420,includeMillis:false},channelId:"",deviceId:"",partnerId:"",origin:"",ipAddress:"",latitude:"",longitude:"",allowPrivateKeyToSigner:false};
       setDraft({name:item?.name??"",parentId:"",data});
       return;
     }
@@ -97,6 +118,19 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
   const needsSecret=serviceMode==="FUNCTION"||serviceMode==="HIT_API";
   const hitApiSigning=accessMode==="HIT_API"||serviceMode==="HIT_API";
   const newProvider=editing==="new";
+  const basePreview=String(draft.data.baseUrl??"").trim().replace(/\/$/,"");
+  const endpointPreview=(path:string)=>{
+    const endpoint=path.trim();
+    if(!endpoint)return basePreview?`${basePreview}/…`:"Isi Base URL dulu";
+    if(/^https?:\/\//i.test(endpoint))return endpoint;
+    return `${basePreview||"(Base URL)"}${endpoint.startsWith("/")?endpoint:`/${endpoint}`}`;
+  };
+  const endpointField=(key:string,label:string,placeholder:string,hint:string)=>
+    <label className="form-field"><span>{label}</span>
+      <input required={label.includes("*")} spellCheck={false} autoComplete="off" placeholder={placeholder} value={String(draft.data[key]??"")} onChange={e=>patch(key,e.target.value)}/>
+      <small className="helper">{hint}</small>
+      <small className="helper">Dipanggil: {endpointPreview(String(draft.data[key]??""))}</small>
+    </label>;
 
   return <section className="card master-card">
     <div className="section-header"><div><h2>Master Data</h2><p>User SNAP, Dev Site Client, Dev Site Endpoint, Penyedia Client Simulator, dan API Service Client Simulator.</p></div>{canCreate&&<button className="primary-button" disabled={busy||((kind==="dev_site"||kind==="endpoint")&&!users.length)||(kind==="sim_service"&&!providers.length)} onClick={()=>kind==="endpoint"?setImporting({}):kind==="dev_site"?setConnection("new"):kind==="sim_service"?openService():open(null)}>Tambah {labels[kind]}</button>}</div>
@@ -128,26 +162,26 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
         <label className="form-field"><span>Nama *</span><input required maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
         {kind==="snap_user"&&<>{field("displayUsername","Username User SNAP",false,false,"Nama yang tampil di dropdown Client Simulator. Bukan email.")}{field("email","Email SNAP")}{field("password","Password SNAP",false,true)}<p className="helper wide">Email dan password tetap dipakai untuk login portal ASPI. Saat edit, kosongkan password untuk mempertahankan nilai tersimpan.</p></>}
         {kind==="sim_provider"&&<>
-          {field("baseUrl","Base URL (HTTPS) *",false,false,"Alamat dasar API tujuan. Wajib https://.")}
+          {field("baseUrl","Base URL (HTTPS) *",false,false,"Diisi sekali. Endpoint Access Token dan Signature digabung ke alamat ini. Contoh Bank Sumut: https://dev.banksumut.co.id atau https://dev.banksumut.co.id/snapgov.")}
           {field("clientKey","Client Key / Client ID *")}
           {field("clientSecret",newProvider&&needsSecret?"Client Secret *":"Client Secret",false,true,needsSecret?"Wajib untuk FUNCTION dan HIT_API Signature Service. Kosongkan saat edit jika tidak diubah.":"Opsional selama Signature Service bukan FUNCTION atau HIT_API.")}
           {field("privateKey",newProvider&&needsPrivateKey?"Private Key PEM *":"Private Key PEM",true,false,accessMode==="HIT_API"?"Teks PEM lengkap. Saat HIT_API, PEM ini diubah otomatis menjadi base64 satu baris untuk Private_Key signature-auth. Kosongkan saat edit jika tidak diubah.":needsPrivateKey?"Teks PEM lengkap, termasuk BEGIN/END. Dipakai saat Signature Access Token dihitung di AutoSNAP. Kosongkan saat edit jika tidak diubah.":"Tidak dipakai selama Signature Access Token bukan FUNCTION atau HIT_API.")}
           <details className="advanced-settings wide" open={hitApiSigning||undefined}>
             <summary>Pengaturan opsional</summary>
-            <p className="helper">Nilai bawaan sudah cukup untuk pengujian biasa. Buka bagian ini hanya jika kontrak penyedia berbeda.</p>
+            <p className="helper">Isi endpoint saja (path). Base URL tidak perlu diulang. URL lengkap yang disimpan lama otomatis dipotong menjadi path saat Simpan.</p>
             <div className="form-grid">
-              <label className="form-field wide"><span>URL Access Token</span><input value={String(draft.data.accessTokenUrl??"")} onChange={e=>patch("accessTokenUrl",e.target.value)}/><small className="helper">Kosong berarti /api/v1.0/access-token/b2b.</small></label>
+              {endpointField("accessTokenUrl","Endpoint Access Token","/snapgov/api/v1.0/access-token/b2b","Path saja. Kosong berarti /api/v1.0/access-token/b2b.")}
               <div className="signing-pair wide">
                 <label className="form-field"><span>Signature Access Token Mode</span><select value={accessMode} onChange={e=>patch("signatureAccessTokenMode",e.target.value)}><option value="FUNCTION">FUNCTION — dihitung di AutoSNAP</option><option value="HIT_API">HIT_API — layanan signing lain</option><option value="NONE">NONE — tanpa signature</option></select></label>
-                {accessMode==="HIT_API"?field("signatureAccessTokenUrl","URL Signature Authentication *",false,false,"Dipanggil langsung. Untuk dev Bank Sumut, isi URL di host dev.banksumut.co.id. Private Key dikirim sebagai base64 pada header Private_Key."):<span/>}
+                {accessMode==="HIT_API"?endpointField("signatureAccessTokenUrl","Endpoint Signature Authentication *","/snapgov/api/v1.0.0/utilities/signature-auth","Path signature-auth. Private Key dikirim sebagai base64 pada header Private_Key."):<span/>}
                 {accessMode==="HIT_API"&&<label className="form-field"><span>Private Key Signature Authentication</span><input spellCheck={false} autoComplete="off" value={String(draft.data.signatureAuthPrivateKey??"")} onChange={e=>patch("signatureAuthPrivateKey",e.target.value)}/><small className="helper">Opsional. Kosongkan untuk memakai Private Key PEM di atas. PEM diubah otomatis menjadi base64.</small></label>}
               </div>
               <div className="signing-pair wide">
                 <label className="form-field"><span>Signature Service Mode</span><select value={serviceMode} onChange={e=>patch("signatureServiceMode",e.target.value)}><option value="FUNCTION">FUNCTION — dihitung di AutoSNAP</option><option value="HIT_API">HIT_API — layanan signing lain</option><option value="NONE">NONE — tanpa signature</option></select></label>
-                {serviceMode==="HIT_API"?field("signatureServiceUrl","URL Signature Service *",false,false,"HTTPS lengkap atau path relatif ke Base URL. Contoh: https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service"):<span/>}
+                {serviceMode==="HIT_API"?endpointField("signatureServiceUrl","Endpoint Signature Service *","/snapgov/api/v1.0.0/utilities/signature-service","Path signature-service. Request Body API Service ikut dikirim untuk ditandatangani."):<span/>}
               </div>
               <label className="form-field"><span>RSA Encoding</span><select value={String(draft.data.rsaEncoding??"base64")} onChange={e=>patch("rsaEncoding",e.target.value)}><option value="base64">Base64</option><option value="hex">Hex</option></select><small className="helper">Bawaan Base64.</small></label>
-              <label className="form-field"><span>HMAC Encoding</span><select value={String(draft.data.hmacEncoding??"hex")} onChange={e=>patch("hmacEncoding",e.target.value)}><option value="hex">Hex</option><option value="base64">Base64</option></select><small className="helper">Bank Sumut SNAP Batubara memakai Base64. Hex dibalas 401 Unauthorized Signature.</small></label>
+              <label className="form-field"><span>HMAC Encoding</span><select value={String(draft.data.hmacEncoding??"base64")} onChange={e=>patch("hmacEncoding",e.target.value)}><option value="base64">Base64</option><option value="hex">Hex</option></select><small className="helper">Bank Sumut SNAP Batubara memakai Base64. Hex dibalas 401 Unauthorized Signature. Hanya untuk mode FUNCTION.</small></label>
               <label className="form-field"><span>Offset timezone (menit)</span><input type="number" value={Number(ts.offsetMinutes??420)} onChange={e=>patch("timestampConfig",{...ts,offsetMinutes:Number(e.target.value)})}/><small className="helper">420 = WIB (UTC+7).</small></label>
               <label className="form-field"><span>Milidetik timestamp</span><select value={ts.includeMillis?"1":"0"} onChange={e=>patch("timestampConfig",{...ts,includeMillis:e.target.value==="1"})}><option value="0">Tanpa milidetik</option><option value="1">Dengan milidetik</option></select></label>
               {field("partnerId","Default X-PARTNER-ID",false,false,"Kosong berarti memakai Client Key.")}

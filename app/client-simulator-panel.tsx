@@ -114,18 +114,16 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     }finally{polling=false;clearInterval(timer);setRunning(false);setBusy(false);}
   }
 
-  const accessTokenUri=(()=>{
-    if(!provider)return "—";
-    const base=value(provider,"baseUrl").replace(/\/$/,"");
-    const path=value(provider,"accessTokenUrl")||"/api/v1.0/access-token/b2b";
-    return path.startsWith("http")?path:`${base}${path.startsWith("/")?path:`/${path}`}`;
-  })();
-  const serviceUri=(()=>{
-    if(!provider||!service)return "—";
-    const base=value(provider,"baseUrl").replace(/\/$/,"");
-    const path=value(service,"path")||value(service,"serviceUrl");
-    return `${base}${path}`;
-  })();
+  const joinEndpoint=(baseRaw:string,pathRaw:string)=>{
+    const base=baseRaw.trim().replace(/\/$/,"");
+    const path=pathRaw.trim();
+    if(!path)return base||"—";
+    if(/^https?:\/\//i.test(path))return path;
+    if(!base)return path;
+    return `${base}${path.startsWith("/")?path:`/${path}`}`;
+  };
+  const accessTokenUri=provider?joinEndpoint(value(provider,"baseUrl"),value(provider,"accessTokenUrl")||"/api/v1.0/access-token/b2b"):"—";
+  const serviceUri=provider&&service?joinEndpoint(value(provider,"baseUrl"),value(service,"path")||value(service,"serviceUrl")):"—";
 
   function countsOf(run:Run){const counts=object(run.request)&&object(run.request.pdfCounts)?run.request.pdfCounts:{};return {ready:Number(counts.ready??0),required:Number(counts.required??0)};}
   function officialActivity(value:string){return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)||/^\d{4,18}$/.test(value);}

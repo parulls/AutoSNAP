@@ -11,6 +11,8 @@ import {
   getXSignatureAccessTokenFunction,
   getXSignatureServiceFunction,
   hitApiSignature,
+  joinProviderUrl,
+  normalizeEndpointPath,
   resolveSignerUrl,
   snapUtilityKind,
   snapUtilityRequest,
@@ -44,15 +46,17 @@ function encodingOf(raw:unknown,fallback:"base64"|"hex"):"base64"|"hex"{
   return raw==="hex"||raw==="base64"?raw:fallback;
 }
 
-function signatureHitError(raw:string,httpStatus:number|null,response:unknown){
+function signatureHitError(kind:"auth"|"service",raw:string,httpStatus:number|null,response:unknown){
   let target=raw;
   try{const url=new URL(raw);target=`${url.host}${url.pathname}`;}catch{/* keep the raw value */}
   const body=response&&typeof response==="object"?response as Record<string,unknown>:{};
   const code=typeof body.responseCode==="string"?body.responseCode:"";
   const message=typeof body.responseMessage==="string"?body.responseMessage:"";
   const detail=[code,message].filter(Boolean).join(" ");
-  if(httpStatus===401||httpStatus===403)return `Signature Authentication ditolak ${target} (HTTP ${httpStatus}${detail?` ${detail}`:""}). Alamat yang dipanggil sudah sesuai. Server menolak akses.`;
-  return `Signature Authentication tidak mengembalikan signature (HTTP ${httpStatus??"—"} ${target}${detail?` ${detail}`:""}).`;
+  const label=kind==="auth"?"Signature Authentication":"Signature Service";
+  if(httpStatus===401||httpStatus===403)return `${label} ditolak ${target} (HTTP ${httpStatus}${detail?` ${detail}`:""}). Server menolak akses.`;
+  if(httpStatus===400)return `${label} ditolak ${target} (HTTP 400${detail?` ${detail}`:""}). Periksa Client Secret, Access Token, EndpoinUrl (path API Service), dan Request Body yang ditandatangani.`;
+  return `${label} tidak mengembalikan signature (HTTP ${httpStatus??"—"} ${target}${detail?` ${detail}`:""}).`;
 }
 
 function signatureAuthMaterial(provider:RecordRow){
@@ -73,7 +77,7 @@ async function resolveAccessTokenSignature(provider:RecordRow,mode:SignatureMode
     return {signature:getXSignatureAccessTokenFunction(privateKey,clientKey,timestamp,encoding),httpStatus:null,response:null,mode};
   }
   const url=resolveSignerUrl(value(provider,"signatureAccessTokenUrl"),value(provider,"baseUrl"));
-  if(!url)throw {error:"URL Signature Access Token (HIT_API) wajib diisi.",status:400};
+  if(!url)throw {error:"Endpoint Signature Authentication (HIT_API) wajib diisi.",status:400};
   const signaturePrivateKey=signatureAuthMaterial(provider);
   if(aspiSignatureTarget(url,"auth")){
     if(!portal?.user||!portal.gateway?.hitAspiSignature)throw {error:"Signature Authentication ASPI membutuhkan sesi portal. Jalankan dari Client Simulator.",status:400};
@@ -83,12 +87,12 @@ async function resolveAccessTokenSignature(provider:RecordRow,mode:SignatureMode
   if(snapUtilityKind(url)==="auth"){
     const request=snapUtilityRequest("auth",{timestamp,clientKey,privateKey:signaturePrivateKey});
     const hit=await hitApiSignature({url,headers:request.headers,body:request.body});
-    if(!hit.signature)throw {error:signatureHitError(url,hit.httpStatus,hit.response),status:502};
+    if(!hit.signature)throw {error:signatureHitError("auth",url,hit.httpStatus,hit.response),status:502};
     return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
   }
   const body:Record<string,unknown>={clientKey,timestamp,privateKey:signaturePrivateKey,stringToSign:`${clientKey}|${timestamp}`};
   const hit=await hitApiSignature({url,body,headers:{"X-CLIENT-KEY":clientKey}});
-  if(!hit.signature)throw {error:`Layanan signature Access Token tidak mengembalikan signature (HTTP ${hit.httpStatus}).`,status:502};
+  if(!hit.signature)throw {error:signatureHitError("auth",url,hit.httpStatus,hit.response),status:502};
   return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
 }
 
@@ -100,25 +104,22 @@ async function resolveServiceSignature(provider:RecordRow,mode:SignatureMode,inp
     return {signature:getXSignatureServiceFunction(secret,input.method,input.relative,input.token,input.body,input.timestamp,encoding),httpStatus:null,response:null,mode};
   }
   const url=resolveSignerUrl(value(provider,"signatureServiceUrl"),value(provider,"baseUrl"));
-  if(!url)throw {error:"URL Signature Service (HIT_API) wajib diisi. Isi URL lengkap HTTPS atau path relatif ke Base URL penyedia.",status:400};
+  if(!url)throw {error:"Endpoint Signature Service (HIT_API) wajib diisi.",status:400};
+  const secret=decrypt(value(provider,"clientSecret"));
+  if(!secret)throw {error:"Signature Service membutuhkan Client Secret penyedia.",status:400};
   if(aspiSignatureTarget(url,"service")){
-    const secret=decrypt(value(provider,"clientSecret"));
-    if(!secret)throw {error:"Signature Service ASPI membutuhkan Client Secret penyedia.",status:400};
     if(!portal?.user||!portal.gateway?.hitAspiSignature)throw {error:"Signature Service ASPI membutuhkan sesi portal. Jalankan dari Client Simulator.",status:400};
     const hit=await portal.gateway.hitAspiSignature(portal.user,{kind:"service",timestamp:input.timestamp,clientSecret:secret,method:input.method,endpoint:input.relative,accessToken:input.token,bodyText:input.body});
+    if(!hit.signature)throw {error:signatureHitError("service",url,hit.httpStatus,hit.response),status:502};
     return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
   }
   if(snapUtilityKind(url)==="service"){
-    const secret=decrypt(value(provider,"clientSecret"));
-    if(!secret)throw {error:"Signature Service membutuhkan Client Secret penyedia.",status:400};
     const request=snapUtilityRequest("service",{timestamp:input.timestamp,clientSecret:secret,method:input.method,endpoint:input.relative,accessToken:input.token,bodyText:input.body});
     const hit=await hitApiSignature({url,headers:request.headers,body:request.body});
-    if(!hit.signature)throw {error:`Signature Service tidak mengembalikan signature (HTTP ${hit.httpStatus}).`,status:502};
+    if(!hit.signature)throw {error:signatureHitError("service",url,hit.httpStatus,hit.response),status:502};
     return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
   }
-  const hit=await hitApiSignature({url,body:{method:input.method,relativeUrl:input.relative,accessToken:input.token,body:input.body,timestamp:input.timestamp}});
-  if(!hit.signature)throw {error:`Layanan signature Service tidak mengembalikan signature (HTTP ${hit.httpStatus}).`,status:502};
-  return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
+  throw {error:`Endpoint Signature Service tidak dikenali sebagai signature-service SNAP: ${url}. Contoh: /snapgov/api/v1.0.0/utilities/signature-service`,status:400};
 }
 
 function fetchFailure(url:string,error:unknown){
@@ -144,9 +145,7 @@ async function httpJson(url:string,method:string,headers:Record<string,string>,b
 }
 
 function joinUrl(base:string,path:string){
-  const root=base.replace(/\/$/,"");
-  const rel=path.startsWith("/")?path:`/${path}`;
-  return `${root}${rel}`;
+  return joinProviderUrl(base,path);
 }
 
 export type AspiSignatureHit={
@@ -228,8 +227,10 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   if(!value(snapUser,"email")&&!value(snapUser,"username"))throw {error:"User SNAP belum punya email login portal ASPI.",status:400};
   if(!value(snapUser,"password"))throw {error:"User SNAP belum punya password portal ASPI.",status:400};
   const signer={user:snapUser,gateway};
-  const accessViaAspi=accessMode==="HIT_API"&&!!aspiSignatureTarget(resolveSignerUrl(value(provider,"signatureAccessTokenUrl"),value(provider,"baseUrl"))||"","auth");
-  const serviceViaAspi=serviceMode==="HIT_API"&&!!aspiSignatureTarget(resolveSignerUrl(value(provider,"signatureServiceUrl"),value(provider,"baseUrl"))||"","service");
+  const signatureAuthUrl=accessMode==="HIT_API"?resolveSignerUrl(value(provider,"signatureAccessTokenUrl"),baseUrl):"";
+  const signatureServiceUrl=serviceMode==="HIT_API"?resolveSignerUrl(value(provider,"signatureServiceUrl"),baseUrl):"";
+  const accessViaAspi=accessMode==="HIT_API"&&!!aspiSignatureTarget(signatureAuthUrl,"auth");
+  const serviceViaAspi=serviceMode==="HIT_API"&&!!aspiSignatureTarget(signatureServiceUrl,"service");
   const steps:Record<string,unknown>[]=[];
   const runId=randomUUID();
   const activityName=aspiServiceName;
@@ -254,8 +255,8 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   await report("signature_auth","completed",`Signature Access Token ${accessSign.mode}`);
 
   let accessToken="";
-  const tokenPath=value(provider,"accessTokenUrl")||"/api/v1.0/access-token/b2b";
-  const tokenUrl=tokenPath.startsWith("http")?tokenPath:joinUrl(baseUrl,tokenPath);
+  const tokenPath=normalizeEndpointPath(value(provider,"accessTokenUrl")||"/api/v1.0/access-token/b2b",baseUrl);
+  const tokenUrl=joinUrl(baseUrl,tokenPath);
   if(accessMode!=="NONE"||value(provider,"accessTokenUrl")){
     const tokenHeaders:Record<string,string>={"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientKey};
     if(accessSign.signature)tokenHeaders["X-SIGNATURE"]=accessSign.signature;

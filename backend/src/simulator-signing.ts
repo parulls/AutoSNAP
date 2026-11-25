@@ -85,15 +85,63 @@ export function toAspiPrivateKey(value:string){
 export function snapUtilityKind(raw:string):"auth"|"service"|null{
   let url:URL;
   try{url=new URL(raw);}catch{return null;}
-  const path=url.pathname.replace(/\/$/,"");
-  if(/\/utilities\/signature-auth$/.test(path))return "auth";
-  if(/\/utilities\/signature-service$/.test(path))return "service";
+  const path=url.pathname.replace(/\/$/,"").toLowerCase();
+  if(path.endsWith("/utilities/signature-auth")||path.endsWith("/signature-auth"))return "auth";
+  if(path.endsWith("/utilities/signature-service")||path.endsWith("/signature-service"))return "service";
   return null;
 }
 
 export function snapUtilityRequest(kind:"auth"|"service",input:{timestamp:string;clientKey?:string;privateKey?:string;clientSecret?:string;method?:string;endpoint?:string;accessToken?:string;bodyText?:string}):{headers:Record<string,string>;body:string|undefined}{
   if(kind==="auth")return {headers:{"X-TIMESTAMP":input.timestamp,"X-CLIENT-KEY":input.clientKey??"","Private_Key":input.privateKey??""},body:undefined};
-  return {headers:{"Content-Type":"application/json","X-TIMESTAMP":input.timestamp,"X-CLIENT-SECRET":input.clientSecret??"","HttpMethod":input.method??"POST","EndpoinUrl":input.endpoint??"","AccessToken":input.accessToken??""},body:input.bodyText??""};
+  return {headers:{"Content-Type":"application/json","X-TIMESTAMP":input.timestamp,"X-CLIENT-SECRET":input.clientSecret??"","HttpMethod":(input.method??"POST").toUpperCase(),"EndpoinUrl":input.endpoint??"","AccessToken":input.accessToken??""},body:input.bodyText??""};
+}
+
+/** Join Base URL + endpoint path. Absolute https values are kept only when they cannot be reduced to a path. */
+export function joinProviderUrl(baseUrl:string,endpoint:string){
+  const path=String(endpoint??"").trim();
+  if(!path)return "";
+  if(/^https?:\/\//i.test(path))return path;
+  const base=String(baseUrl??"").trim().replace(/\/$/,"");
+  if(!base)throw {error:"Base URL penyedia wajib diisi sebelum memakai endpoint relatif.",status:400};
+  const rel=path.startsWith("/")?path:`/${path}`;
+  return `${base}${rel}`;
+}
+
+/**
+ * Store only the endpoint path. Full URLs that share the provider origin become pathname+search.
+ * If Base URL includes a prefix such as /snapgov and the full URL starts with that prefix, the stored
+ * path is relative to the Base URL so joining does not duplicate /snapgov.
+ */
+export function normalizeEndpointPath(raw:string,baseUrl=""){
+  const trimmed=String(raw??"").trim();
+  if(!trimmed)return "";
+  if(!/^https?:\/\//i.test(trimmed))return trimmed.startsWith("/")?trimmed:`/${trimmed.replace(/^\.\//,"")}`;
+  let absolute:URL;
+  try{absolute=new URL(trimmed);}catch{throw {error:"Endpoint tidak valid.",status:400};}
+  if(absolute.protocol!=="https:")throw {error:"Endpoint wajib HTTPS bila diisi sebagai URL lengkap.",status:400};
+  const baseText=String(baseUrl??"").trim();
+  if(!baseText)return absolute.pathname+(absolute.search||"")||"/";
+  try{
+    const base=new URL(baseText);
+    if(absolute.origin!==base.origin)return absolute.toString();
+    const basePath=(base.pathname.replace(/\/$/,"")||"");
+    const full=absolute.pathname+(absolute.search||"");
+    if(basePath&&basePath!=="/"&&(full===basePath||full.startsWith(`${basePath}/`))){
+      const rest=full.slice(basePath.length)||"/";
+      return rest.startsWith("/")?rest:`/${rest}`;
+    }
+    return full || "/";
+  }catch{
+    return absolute.pathname+(absolute.search||"")||"/";
+  }
+}
+
+/** @deprecated use joinProviderUrl after normalizeEndpointPath */
+export function resolveSignerUrl(raw:string,baseUrl=""){
+  const path=normalizeEndpointPath(raw,baseUrl);
+  if(!path)return "";
+  if(/^https?:\/\//i.test(path))return path;
+  return joinProviderUrl(baseUrl,path);
 }
 
 /** Halaman atau path resmi ASPI. Halaman dokumentasi Keamanan mencakup kedua operasi. */
@@ -110,21 +158,6 @@ export function aspiSignatureTarget(raw:string,kind:"auth"|"service"){
   if(kind==="service"&&path===servicePath)return {page,path:servicePath};
   if(path===authPath||path===servicePath)throw {error:kind==="auth"?"URL Signature Access Token mengarah ke signature-service. Gunakan signature-auth atau halaman Keamanan ASPI.":"URL Signature Service mengarah ke signature-auth. Gunakan signature-service atau halaman Keamanan ASPI.",status:400};
   return null;
-}
-
-/** Join a relative signature URL to the provider Base URL so HIT_API accepts the same path style as Access Token. */
-export function resolveSignerUrl(raw:string,baseUrl=""){
-  const trimmed=String(raw??"").trim();
-  if(!trimmed)return "";
-  try{return new URL(trimmed).toString();}catch{/* relative path or host without scheme */}
-  const base=String(baseUrl??"").trim();
-  if(!base)throw {error:"URL layanan signature harus lengkap (https://...). Isi Base URL penyedia jika memakai path relatif.",status:400};
-  try{
-    const root=base.endsWith("/")?base:`${base}/`;
-    return new URL(trimmed.replace(/^\//,""),root).toString();
-  }catch{
-    throw {error:"URL layanan signature tidak valid. Contoh: https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service",status:400};
-  }
 }
 
 /** HTTPS-only HIT_API URL. Private hosts stay blocked. A saved public URL is allowed unless an allowlist narrows it. */

@@ -23,7 +23,7 @@ import { writeAudit } from "./audit-log";
 import { runClientSimulator } from "./simulator-run";
 import { ASPI_SERVICE_NAME_MAX, ClientSimulatorPortalError, clientSimulatorEvidenceOutcome, clientSimulatorRetryTarget, clientSimulatorServiceLabel, officialActivityId } from "./aspi-client-simulator";
 import { AspiAutomationError } from "./aspi-types";
-import { normalizeSignatureMode } from "./simulator-signing";
+import { normalizeEndpointPath, normalizeSignatureMode } from "./simulator-signing";
 import {DocumentationReader} from "./documentation-reader";
 import {validateConfig,configuredChecks,methods} from "./endpoint-config";
 import {prepareBody,resolveRequestPath,managedHeaders} from "./request-builder";
@@ -561,12 +561,18 @@ export class AutoSnapController {
       try{if(new URL(String(data.baseUrl??"")).protocol!=="https:")return this.fail(res,clientError("Base URL penyedia wajib HTTPS."));}catch{return this.fail(res,clientError("Base URL penyedia wajib HTTPS."));}
       if(!String(data.clientKey??data.clientId??"").trim())return this.fail(res,clientError("Client Key / Client ID penyedia wajib diisi."));
       try{data.signatureAccessTokenMode=normalizeSignatureMode(data.signatureAccessTokenMode??"FUNCTION");data.signatureServiceMode=normalizeSignatureMode(data.signatureServiceMode??"FUNCTION");}catch(error){return this.fail(res,error);}
-      if(data.signatureAccessTokenMode==="HIT_API"&&!String(data.signatureAccessTokenUrl??"").trim())return this.fail(res,clientError("URL Signature Access Token wajib untuk mode HIT_API."));
-      if(data.signatureServiceMode==="HIT_API"&&!String(data.signatureServiceUrl??"").trim())return this.fail(res,clientError("URL Signature Service wajib untuk mode HIT_API."));
+      if(data.signatureAccessTokenMode==="HIT_API"&&!String(data.signatureAccessTokenUrl??"").trim())return this.fail(res,clientError("Endpoint Signature Authentication wajib untuk mode HIT_API."));
+      if(data.signatureServiceMode==="HIT_API"&&!String(data.signatureServiceUrl??"").trim())return this.fail(res,clientError("Endpoint Signature Service wajib untuk mode HIT_API."));
       if((data.signatureAccessTokenMode==="HIT_API"||data.signatureAccessTokenMode==="FUNCTION")&&!data.privateKey&&!data.signatureAuthPrivateKey)return this.fail(res,clientError("Private Key PEM wajib. Mode HIT_API mengubah PEM itu menjadi base64 sebelum signature-auth."));
       if(data.signatureServiceMode==="HIT_API"&&!data.clientSecret)return this.fail(res,clientError("Client Secret wajib untuk HIT_API Signature Service."));
       if(data.rsaEncoding&&!["hex","base64"].includes(String(data.rsaEncoding)))return this.fail(res,clientError("Encoding RSA harus hex atau base64."));
       if(data.hmacEncoding&&!["hex","base64"].includes(String(data.hmacEncoding)))return this.fail(res,clientError("Encoding HMAC harus hex atau base64."));
+      const baseUrl=String(data.baseUrl??"").trim();
+      try{
+        data.accessTokenUrl=normalizeEndpointPath(String(data.accessTokenUrl??"").trim()||"/api/v1.0/access-token/b2b",baseUrl);
+        data.signatureAccessTokenUrl=normalizeEndpointPath(String(data.signatureAccessTokenUrl??""),baseUrl);
+        data.signatureServiceUrl=normalizeEndpointPath(String(data.signatureServiceUrl??""),baseUrl);
+      }catch(error){return this.fail(res,error);}
       const ts=data.timestampConfig&&typeof data.timestampConfig==="object"&&!Array.isArray(data.timestampConfig)?data.timestampConfig as Record<string,unknown>:{offsetMinutes:420,includeMillis:false};
       const offset=Number(ts.offsetMinutes??420);
       if(!Number.isFinite(offset)||Math.abs(offset)>14*60)return this.fail(res,clientError("Offset timezone timestamp tidak valid."));
