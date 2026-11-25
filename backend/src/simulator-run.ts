@@ -5,7 +5,7 @@ import { decrypt, redact } from "./security";
 import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateAspiDownloadPdf } from "./aspi-evidence";
 import { ASPI_SERVICE_NAME_MAX, buildClientSimulatorServiceName, buildSimulatorActivityEvidence, clientSimulatorDispatchOutcome, clientSimulatorServiceLabel, evaluateClientSimulator, normalizeClientSimulatorComponent, officialActivityId, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
 import { finalOutcome, isHttpResponse } from "./test-evaluation";
-import { DUPLICATE_EXTERNAL_ID_SEED_FAILED, bankAcceptedDuplicateSeed, clientSimulatorScenario, corruptSignature, duplicateExternalIdAllowed, mintClientSimulatorExternalId, replacementAccessToken, resolveScenarioExpectation, unknownPartnerId } from "./client-simulator-scenarios";
+import { DUPLICATE_EXTERNAL_ID_ASPI_MISMATCH, DUPLICATE_EXTERNAL_ID_MISSING, DUPLICATE_EXTERNAL_ID_NOT_ENFORCED, DUPLICATE_EXTERNAL_ID_SEED_FAILED, bankAcceptedDuplicateSeed, bankRejectedDuplicateExternalId, clientSimulatorScenario, corruptSignature, duplicateExternalIdAllowed, mintClientSimulatorExternalId, priorExternalIdFromRuns, replacementAccessToken, resolveScenarioExpectation, unknownPartnerId } from "./client-simulator-scenarios";
 import {
   aspiSignatureTarget,
   getXSignatureAccessTokenFunction,
@@ -198,19 +198,22 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const channelId=overrides.channelId?.trim()||value(service,"channelId")||value(provider,"channelId")||"";
   const deviceId=overrides.deviceId?.trim()||value(service,"deviceId")||value(provider,"deviceId")||"";
   let externalId=overrides.externalId?.trim()||value(service,"externalId")||"";
-  const sourceRunId:string|null=null;
+  let sourceRunId:string|null=null;
   const externalDay=timestamp.slice(0,10);
   const duplicateReuse=scenario.mutation==="EXTERNAL_ID_REUSE";
   if(duplicateReuse){
-    if(input.confirmDuplicateExternalId!==true)throw {error:"Konfirmasi diperlukan sebelum mengirim ulang X-EXTERNAL-ID (seed ke bank lalu uji lewat ASPI).",status:400};
+    if(input.confirmDuplicateExternalId!==true)throw {error:"Konfirmasi diperlukan sebelum mengirim ulang X-EXTERNAL-ID dari pengujian sebelumnya.",status:400};
     if(!duplicateExternalIdAllowed(baseUrl,provider.data.allowDuplicateExternalId===true))throw {error:"Skenario X-EXTERNAL-ID duplikat hanya diizinkan pada environment sandbox atau pengujian.",status:400};
-    // Fresh ID for this run: seed locks it at the bank, then ASPI resends the same ID.
-    externalId=mintClientSimulatorExternalId();
-  }else if(!externalId||overrides.regenerateExternalId===true){
-    externalId=mintClientSimulatorExternalId();
+    const previousRows=await db.query<{id:string;request_json:Record<string,unknown>;http_status:number|null;response_code:string|null;created_at:string}>("SELECT id, request_json, http_status, response_code, created_at FROM autosnap_runs WHERE mode='client_sim' AND environment_id=$1 AND service_id=$2 ORDER BY created_at DESC LIMIT 40",[provider.id,service.id]);
+    const previous=priorExternalIdFromRuns(previousRows.map(row=>({id:row.id,request:row.request_json&&typeof row.request_json==="object"?row.request_json:null,httpStatus:row.http_status,responseCode:row.response_code,createdAt:row.created_at})),{serviceId:service.id,partnerId,day:externalDay});
+    if(!previous)throw {error:DUPLICATE_EXTERNAL_ID_MISSING,status:409};
+    externalId=previous.externalId;
+    sourceRunId=previous.sourceRunId;
+  }else{
+    if(!externalId||overrides.regenerateExternalId===true)externalId=mintClientSimulatorExternalId();
+    const claimedExternal=await db.query("INSERT INTO autosnap_external_ids (environment_id,external_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING external_id",[provider.id,externalId,externalDay]);
+    if(!claimedExternal.length)throw {error:"X-EXTERNAL-ID sudah dipakai pada hari ini. Buat pengujian baru agar ID tidak bertabrakan.",status:409};
   }
-  const claimedExternal=await db.query("INSERT INTO autosnap_external_ids (environment_id,external_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING external_id",[provider.id,externalId,externalDay]);
-  if(!claimedExternal.length)throw {error:"X-EXTERNAL-ID sudah dipakai pada hari ini. Buat pengujian baru agar ID tidak bertabrakan.",status:409};
 
   const bodyText=typeof overrides.body==="string"?overrides.body:typeof service.data.defaultBody==="string"?service.data.defaultBody:typeof service.data.requestBody==="string"?String(service.data.requestBody):"{}";
   if(bodyText.includes("replaced_in_prescript"))throw {error:"Request body masih berisi replaced_in_prescript. Di koleksi SNAP Batubara: partnerServiceId dan prefix_real = 9296, additionalInfo.clientid = 51.",status:400};
@@ -308,17 +311,37 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     await report("signature_service","completed",`Signature Service ${seedSign.mode} — seed`);
     const seedHeaders=buildServiceHeaders(timestamp,seedSign.signature,accessToken,partnerId);
     await cancelled();
-    await report("api_request","running",`${serviceUrl} — seed X-EXTERNAL-ID ${externalId} langsung ke bank (bukan ASPI)`);
+    await report("api_request","running",`${serviceUrl} — hit #1 seed X-EXTERNAL-ID ${externalId} (sama dengan run ${sourceRunId})`);
     const seedResult=await httpJson(serviceUrl,method,seedHeaders,method==="GET"||method==="HEAD"?undefined:signedBody);
     const seedBody=seedResult.body&&typeof seedResult.body==="object"&&!Array.isArray(seedResult.body)?seedResult.body as Record<string,unknown>:{};
     const seedCode=String(seedBody.responseCode??"");
     const seedOk=bankAcceptedDuplicateSeed(seedResult.httpStatus,seedCode);
-    steps.push({stage:"duplicate_seed",uri:serviceUrl,httpStatus:seedResult.httpStatus,responseCode:seedCode,responseMessage:String(seedBody.responseMessage??""),externalId,request:{headers:redact(seedHeaders),body:redact(JSON.parse(signedBody||"{}"))},response:redact(seedResult.body),ok:seedOk});
+    const seedAlreadyConflict=bankRejectedDuplicateExternalId(seedResult.httpStatus,seedCode);
+    steps.push({stage:"duplicate_seed",uri:serviceUrl,httpStatus:seedResult.httpStatus,responseCode:seedCode,responseMessage:String(seedBody.responseMessage??""),externalId,sourceRunId,request:{headers:redact(seedHeaders),body:redact(JSON.parse(signedBody||"{}"))},response:redact(seedResult.body),ok:seedOk,alreadyConflict:seedAlreadyConflict});
     if(!seedOk){
       await report("api_request","failed",`Seed External ID gagal HTTP ${seedResult.httpStatus}${seedCode?` ${seedCode}`:""}`);
       throw {error:`${DUPLICATE_EXTERNAL_ID_SEED_FAILED} HTTP ${seedResult.httpStatus}${seedCode?` ${seedCode}`:""}${seedBody.responseMessage?`: ${String(seedBody.responseMessage)}`:""}.`,status:502};
     }
-    await report("api_request","completed",`Seed sukses HTTP ${seedResult.httpStatus}${seedCode?` ${seedCode}`:""}. External ID terkunci di bank.`);
+    if(!seedAlreadyConflict){
+      // Prove the bank actually rejects this same External ID before opening ASPI.
+      const proveTimestamp=ensureFutureTimestamp(tsConfig,undefined,"positive",new Date(Date.now()+30_000));
+      const proveSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:accessToken,body:signedBody,timestamp:proveTimestamp},signer);
+      if(!proveSign.signature)throw {error:"X-SIGNATURE kosong untuk verifikasi duplikat External ID.",status:400};
+      const proveHeaders=buildServiceHeaders(proveTimestamp,proveSign.signature,accessToken,partnerId);
+      await report("api_request","running",`${serviceUrl} — verifikasi hit langsung #2 dengan X-EXTERNAL-ID ${externalId} yang sama`);
+      const proveResult=await httpJson(serviceUrl,method,proveHeaders,method==="GET"||method==="HEAD"?undefined:signedBody);
+      const proveBody=proveResult.body&&typeof proveResult.body==="object"&&!Array.isArray(proveResult.body)?proveResult.body as Record<string,unknown>:{};
+      const proveCode=String(proveBody.responseCode??"");
+      const proved=bankRejectedDuplicateExternalId(proveResult.httpStatus,proveCode);
+      steps.push({stage:"duplicate_prove",uri:serviceUrl,httpStatus:proveResult.httpStatus,responseCode:proveCode,responseMessage:String(proveBody.responseMessage??""),externalId,request:{headers:redact(proveHeaders)},response:redact(proveResult.body),ok:proved});
+      if(!proved){
+        await report("api_request","failed",`Bank masih HTTP ${proveResult.httpStatus}${proveCode?` ${proveCode}`:""} untuk External ID yang sama`);
+        throw {error:`${DUPLICATE_EXTERNAL_ID_NOT_ENFORCED} Seed External ID=${externalId}. Verifikasi langsung External ID=${externalId}. HTTP ${proveResult.httpStatus}${proveCode?` ${proveCode}`:""}.`,status:502};
+      }
+      await report("api_request","completed",`Verifikasi langsung mendapat HTTP ${proveResult.httpStatus}${proveCode?` ${proveCode}`:""}. Bank menolak External ID yang sama.`);
+    }else{
+      await report("api_request","completed",`Seed sudah Conflict HTTP ${seedResult.httpStatus}${seedCode?` ${seedCode}`:""}. External ID ${externalId} sudah terkunci.`);
+    }
     aspiTimestamp=ensureFutureTimestamp(tsConfig,undefined,"positive",new Date(Date.now()+60_000));
   }
 
@@ -369,6 +392,16 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   });
   steps.push({stage:"aspi_client_simulator",form:"https://apidevportal.aspi-indonesia.or.id/client-simulator",activityPage:"https://apidevportal.aspi-indonesia.or.id/client-simulator-activity",externalId,duplicateSeed:duplicateReuse});
   steps.push(...portal.steps.map(step=>redact(step) as Record<string,unknown>));
+  if(duplicateReuse){
+    const aspiSend=portal.steps.find(step=>step&&typeof step==="object"&&(step as {stage?:string}).stage==="aspi_send") as {sentExternalId?:string;formExternalId?:string;expectedExternalId?:string}|undefined;
+    const sent=String(aspiSend?.sentExternalId??aspiSend?.formExternalId??"").trim();
+    if(sent&&sent!==externalId){
+      throw {error:`${DUPLICATE_EXTERNAL_ID_ASPI_MISMATCH} Seed/sumber=${externalId}. Form/ASPI=${sent}.`,status:502};
+    }
+    if(!sent){
+      steps.push({stage:"duplicate_aspi_warning",externalId,detail:"Playwright tidak menangkap header X-EXTERNAL-ID outbound; nilai form tetap diverifikasi saat pengisian."});
+    }
+  }
 
   const responseObj=portal.response&&typeof portal.response==="object"&&!Array.isArray(portal.response)?portal.response as Record<string,unknown>:{};
   const responseCode=String(responseObj.responseCode??"");

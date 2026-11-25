@@ -18,18 +18,29 @@ export const CLIENT_SIMULATOR_SCENARIOS: ScenarioDefinition[] = [
   { id: "INVALID_ACCESS_TOKEN", label: "Access Token Invalid", expectedHttp: 401, codePrefix: "401", codeSuffix: "01", expectedMessage: "Access Token Invalid", mutation: "ACCESS_TOKEN", summary: "Signature Service tetap memakai Access Token valid. Token invalid hanya dipakai pada request API Service lewat Client Simulator ASPI." },
   { id: "INVALID_SIGNATURE", label: "Unauthorized . Signature", expectedHttp: 401, codePrefix: "401", codeSuffix: "00", expectedMessage: "Unauthorized Signature", mutation: "SIGNATURE", summary: "X-SIGNATURE pada request API Service berbeda dari signature yang valid. Access Token dan Partner ID tetap valid." },
   { id: "UNKNOWN_CLIENT", label: "Unauthorized . Unknown Client", expectedHttp: 401, codePrefix: "401", codeSuffix: "00", expectedMessage: "Unauthorized Client", mutation: "PARTNER_ID", summary: "X-PARTNER-ID pada request API Service diganti identitas yang tidak dikenal. Access Token dan signature tetap valid." },
-  { id: "DUPLICATE_EXTERNAL_ID", label: "Cannot use the same X-EXTERNAL-ID", expectedHttp: 409, codePrefix: "409", codeSuffix: "01", expectedMessage: "Cannot use the same X-EXTERNAL-ID", mutation: "EXTERNAL_ID_REUSE", summary: "AutoSNAP mengunci X-EXTERNAL-ID baru dengan satu request sukses langsung ke bank, lalu mengirim ID yang sama lewat Client Simulator ASPI. Hanya respons error ASPI yang dievaluasi dan dijadikan bukti." },
+  { id: "DUPLICATE_EXTERNAL_ID", label: "Cannot use the same X-EXTERNAL-ID", expectedHttp: 409, codePrefix: "409", codeSuffix: "00", expectedMessage: "Conflict", mutation: "EXTERNAL_ID_REUSE", summary: "X-EXTERNAL-ID diambil dari pengujian sebelumnya yang sudah sukses hari ini. AutoSNAP mengirim ID yang sama dua kali (seed ke bank, lalu ASPI). Hanya respons error ASPI yang dievaluasi." },
 ];
 
-export const DUPLICATE_EXTERNAL_ID_SEED_FAILED = "Gagal mengunci X-EXTERNAL-ID di bank sebelum uji duplikat. Request seed harus sukses (HTTP 2xx) agar pengiriman kedua lewat ASPI bisa menguji konflik External ID.";
+export const DUPLICATE_EXTERNAL_ID_MISSING = "Belum tersedia X-EXTERNAL-ID dari pengujian sebelumnya yang dapat digunakan. Jalankan skenario Positif sampai bank menjawab sukses pada hari yang sama, lalu ulangi skenario ini.";
+export const DUPLICATE_EXTERNAL_ID_SEED_FAILED = "Gagal memakai ulang X-EXTERNAL-ID di bank sebelum uji ASPI. Seed harus HTTP 2xx (mengunci ID) atau HTTP 409 (ID sudah terkunci).";
+export const DUPLICATE_EXTERNAL_ID_NOT_ENFORCED = "Bank menerima X-EXTERNAL-ID yang sama dua kali (HTTP 2xx). Endpoint ini belum menolak duplikat External ID, jadi ASPI tidak bisa mendapat 4092700 Conflict.";
+export const DUPLICATE_EXTERNAL_ID_ASPI_MISMATCH = "Form/ASPI tidak mengirim X-EXTERNAL-ID yang sama dengan seed. AutoSNAP membatalkan evaluasi agar tidak menganggap bank salah.";
 export const UNKNOWN_PARTNER_SENTINEL = "AUTOSNAP-UNKNOWN-CLIENT";
 
-/** True when the bank accepted the request enough to remember X-EXTERNAL-ID for the day. */
+/** Seed is ready when the bank accepted the ID (2xx) or already rejects it as duplicate (409). */
 export function bankAcceptedDuplicateSeed(httpStatus: number | null | undefined, responseCode?: string | null) {
   const http = Number(httpStatus);
   if (Number.isInteger(http) && http >= 200 && http < 300) return true;
   const code = String(responseCode ?? "").trim();
-  return /^2\d{6}$/.test(code);
+  if (/^2\d{6}$/.test(code)) return true;
+  if (Number.isInteger(http) && http === 409) return true;
+  return /^409\d{4}$/.test(code);
+}
+
+export function bankRejectedDuplicateExternalId(httpStatus: number | null | undefined, responseCode?: string | null) {
+  const http = Number(httpStatus);
+  const code = String(responseCode ?? "").trim();
+  return (Number.isInteger(http) && http === 409) || /^409\d{4}$/.test(code);
 }
 
 /** Numeric X-EXTERNAL-ID. Bank Sumut SNAP dedup typically keys on digit IDs, not UUID. */
@@ -103,7 +114,11 @@ export function resolveScenarioExpectation(scenario: ScenarioDefinition, service
     const expectedCode = configured && configured.startsWith("200") ? configured : null;
     return { expectedHttp: 200, expectedCode, expectedMessage: configuredMessage || null, ready: true };
   }
-  const expectedCode = configured && configured.startsWith(scenario.codePrefix) && configured.endsWith(scenario.codeSuffix) ? configured : null;
+  let expectedCode = configured && configured.startsWith(scenario.codePrefix) && configured.endsWith(scenario.codeSuffix) ? configured : null;
+  if (!expectedCode && scenario.id === "DUPLICATE_EXTERNAL_ID") {
+    const serviceCode = String(serviceData.serviceCode ?? "").trim();
+    if (/^\d{2}$/.test(serviceCode)) expectedCode = `409${serviceCode}00`;
+  }
   return { expectedHttp: scenario.expectedHttp, expectedCode, expectedMessage: scenario.expectedMessage, ready: true };
 }
 

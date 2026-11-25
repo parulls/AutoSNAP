@@ -619,25 +619,59 @@ export async function runClientSimulatorOnPage(page: Page, form: ClientSimulator
   }
   if (response && !response.ok()) throw Error(`Form Client Simulator ASPI mengembalikan HTTP ${response.status()}.`);
   const filledOptional = await fillClientSimulatorForm(page, form);
-  steps.push({ stage: "form_filled", serviceName: form.serviceName, uri: form.uri, method: form.method, optional: filledOptional });
+  let formExternalId = form.externalId;
+  if (await page.locator("#externalId").count()) {
+    formExternalId = String(await page.locator("#externalId").inputValue().catch(() => form.externalId) || form.externalId).trim();
+  }
+  steps.push({ stage: "form_filled", serviceName: form.serviceName, uri: form.uri, method: form.method, optional: filledOptional, externalId: formExternalId, expectedExternalId: form.externalId });
+  if (formExternalId && form.externalId && formExternalId !== form.externalId) {
+    throw Error(`Field X-EXTERNAL-ID di form ASPI berisi ${formExternalId}, bukan ${form.externalId}.`);
+  }
   await beat?.();
   if (signal?.aborted) throw Error("Pengujian dibatalkan pengguna.");
   await note("api_request", "running", `${form.serviceName} — Send di form ASPI. Menunggu response.`);
   const observed: { url: string; status: number }[] = [];
+  const observedRequests: { url: string; externalId: string; partnerId: string }[] = [];
   const onResponse = (response: { url: () => string; status: () => number }) => { observed.push({ url: response.url(), status: response.status() }); };
+  const onRequest = (request: { url: () => string; headers: () => Record<string, string> }) => {
+    try {
+      const target = new URL(request.url());
+      const service = new URL(form.uri);
+      if (target.origin !== service.origin || target.pathname !== service.pathname) return;
+      const headers = request.headers();
+      observedRequests.push({
+        url: request.url(),
+        externalId: String(headers["x-external-id"] ?? headers["X-EXTERNAL-ID"] ?? "").trim(),
+        partnerId: String(headers["x-partner-id"] ?? headers["X-PARTNER-ID"] ?? "").trim(),
+      });
+    } catch { /* ignore malformed URLs */ }
+  };
   page.on("response", onResponse);
+  page.on("request", onRequest);
   let displayed: Awaited<ReturnType<typeof waitForAspiSimulatorResult>>;
   try {
     await pressSend(page);
     displayed = await waitForAspiSimulatorResult(page, signal);
   } finally {
     page.off("response", onResponse);
+    page.off("request", onRequest);
   }
   const targetHttp = classifyTargetHttp({ observed, serviceUri: form.uri });
   displayed = { ...displayed, httpStatus: targetHttp.httpStatus };
   const httpSource = targetHttp.httpSource;
-  steps.push({ stage: "aspi_send", httpStatus: displayed.httpStatus, httpSource, responseCode: displayed.responseCode });
-  await note("api_request", "completed", `${form.serviceName} — response ${displayed.responseCode || "diterima"}.`);
+  const bankRequest = observedRequests.at(-1) ?? null;
+  steps.push({
+    stage: "aspi_send",
+    httpStatus: displayed.httpStatus,
+    httpSource,
+    responseCode: displayed.responseCode,
+    expectedExternalId: form.externalId,
+    formExternalId,
+    sentExternalId: bankRequest?.externalId || null,
+    sentPartnerId: bankRequest?.partnerId || null,
+    bankRequestUrl: bankRequest?.url || null,
+  });
+  await note("api_request", "completed", `${form.serviceName} — response ${displayed.responseCode || "diterima"}${bankRequest?.externalId ? ` · X-EXTERNAL-ID terkirim ${bankRequest.externalId}` : ""}.`);
   await beat?.();
   await note("save_result", "running", "Save Result pada form ASPI. Send tidak diulang.");
   let saved: SaveResultOutcome;
