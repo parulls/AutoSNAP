@@ -28,7 +28,10 @@ test("five scenarios use optional SNAP codes and isolate one request field", asy
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_SIGNATURE"), {}).expectedMessage, "Unauthorized Signature");
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("UNKNOWN_CLIENT"), {}).expectedMessage, "Unauthorized Client");
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("DUPLICATE_EXTERNAL_ID"), {}).expectedHttp, 409);
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("DUPLICATE_EXTERNAL_ID"), {}).expectedMessage, "Cannot use the same X-EXTERNAL-ID");
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("DUPLICATE_EXTERNAL_ID"), { expectedCode: "4092701" }).expectedCode, "4092701");
+  assert.equal(scenarios.bankAcceptedDuplicateSeed(200, "2002700"), true);
+  assert.equal(scenarios.bankAcceptedDuplicateSeed(409, "4092701"), false);
   const httpOnlyPositive = evaluateTest({ httpStatus: 200, expectedHttpStatus: 200, httpSource: "target_api" });
   assert.equal(httpOnlyPositive.status, "COMPLETED");
   assert.equal(finalOutcome(httpOnlyPositive.evaluation, true), "PASSED");
@@ -68,7 +71,7 @@ test("five scenarios use optional SNAP codes and isolate one request field", asy
   const unverified = evaluateTest({ httpStatus: null, expectedHttpStatus: 401, actualCode: "4012701", expectedCode: "4012701", expectedMessage: "Access Token Invalid" });
   assert.equal(unverified.status, "AUTOMATION_ERROR");
   assert.equal(unverified.evaluation.cause, "HTTP_UNVERIFIED");
-  const conflict = evaluateTest({ httpStatus: 409, expectedHttpStatus: 409, actualCode: "4092701", expectedCode: "4092701", actualMessage: "Conflict", expectedMessage: "Conflict", httpSource: "target_api" });
+  const conflict = evaluateTest({ httpStatus: 409, expectedHttpStatus: 409, actualCode: "4092701", expectedCode: "4092701", actualMessage: "Cannot use the same X-EXTERNAL-ID", expectedMessage: "Cannot use the same X-EXTERNAL-ID", httpSource: "target_api" });
   assert.equal(finalOutcome(conflict.evaluation, true), "PASSED");
 });
 
@@ -77,27 +80,58 @@ test("negative scenarios change only the intended service-request field and do n
   const { encrypt } = await load("security.js");
   const { runClientSimulator } = await load("simulator-run.js");
   const { getXSignatureServiceFunction } = await load("simulator-signing.js");
-  const { corruptSignature, DUPLICATE_EXTERNAL_ID_MISSING } = await load("client-simulator-scenarios.js");
+  const { corruptSignature, DUPLICATE_EXTERNAL_ID_SEED_FAILED } = await load("client-simulator-scenarios.js");
   const now = new Date().toISOString();
   const provider = { id: "prov", kind: "sim_provider", name: "Bank SUMUT", parent_id: null, partner_id: null, created_at: now, updated_at: now, data: { baseUrl: "https://dev.banksumut.co.id", clientKey: "client-key", partnerId: "9296", clientSecret: encrypt("secret"), signatureAccessTokenMode: "NONE", signatureServiceMode: "FUNCTION", hmacEncoding: "base64", channelId: "0001", deviceId: "device-1", timestampConfig: { offsetMinutes: 420, includeMillis: false } } };
   const service = { id: "svc", kind: "sim_service", name: "Create VA", parent_id: "prov", partner_id: null, created_at: now, updated_at: now, data: { method: "POST", path: "/api/v1.0/transfer-va/create-va", defaultBody: "{}", serviceCode: "27" } };
   const user = { id: "snap", kind: "snap_user", name: "QA", parent_id: null, partner_id: null, created_at: now, updated_at: now, data: { email: "qa@example.test", password: encrypt("secret") } };
   const operator = { id: "op", username: "qa", email: "qa@example.test", name: "QA", role: "admin", active: true, privileges: [], created_at: now };
-  const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-  const previous = { id: "old-run", request_json: { dispatch: "SENT", actual: { httpStatus: 200, responseCode: "2002700", responseMessage: "Successful" }, headers: { "X-EXTERNAL-ID": "used-external" }, idempotency: { externalId: "used-external", serviceId: "svc", partnerId: "9296", timestamp: `${day}T12:00:00+07:00` } } };
-  const calls = [];
-  const db = { query: async (sql, params) => { calls.push(sql); if (sql.includes("autosnap_external_ids")) return [{ external_id: params[1] }]; if (sql.includes("FROM autosnap_runs")) return [previous]; return []; } };
+  const db = { query: async (sql, params) => { if (sql.includes("autosnap_external_ids")) return [{ external_id: params[1] }]; return []; } };
   const submitted = [];
   const gatewayFor = response => ({ submit: async (_user, form) => { submitted.push(form); return { httpStatus: response.httpStatus, httpSource: "target_api", response, responseText: "", activity: null, pdf: null, pdfError: null, steps: [] }; } });
-  const conflictGateway = gatewayFor({ httpStatus: 409, responseCode: "4092701", responseMessage: "Conflict" });
+  const conflictGateway = gatewayFor({ httpStatus: 409, responseCode: "4092701", responseMessage: "Cannot use the same X-EXTERNAL-ID" });
   await assert.rejects(runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "DUPLICATE_EXTERNAL_ID" }, conflictGateway), error => message(error).includes("Konfirmasi"));
   assert.equal(submitted.length, 0);
-  const emptyDb = { query: async () => [] };
-  await assert.rejects(runClientSimulator(emptyDb, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "DUPLICATE_EXTERNAL_ID", confirmDuplicateExternalId: true }, conflictGateway), error => message(error) === DUPLICATE_EXTERNAL_ID_MISSING);
-  assert.equal(submitted.length, 0);
-  const reused = await runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "DUPLICATE_EXTERNAL_ID", confirmDuplicateExternalId: true }, conflictGateway);
-  assert.equal(submitted.at(-1).externalId, "used-external");
+
+  const seedCalls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.includes("/transfer-va/create-va")) {
+      const headers = init.headers || {};
+      seedCalls.push({ url: target, externalId: headers["X-EXTERNAL-ID"], body: init.body });
+      return new Response(JSON.stringify({ responseCode: "2002700", responseMessage: "Successful" }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    throw new Error(`unexpected fetch ${target}`);
+  };
+  let reused;
+  try {
+    reused = await runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "DUPLICATE_EXTERNAL_ID", confirmDuplicateExternalId: true }, conflictGateway);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(seedCalls.length, 1);
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].externalId, seedCalls[0].externalId);
+  assert.match(String(submitted[0].externalId), /^\d{1,36}$/);
+  assert.notEqual(submitted[0].externalId, "used-external");
   assert.equal(reused.status, "COMPLETED");
+  assert.equal(reused.httpStatus, 409);
+  assert.ok(reused.request.steps.some(step => step.stage === "duplicate_seed" && step.ok === true));
+
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/transfer-va/create-va")) {
+      return new Response(JSON.stringify({ responseCode: "4002700", responseMessage: "Bad Request" }), { status: 400, headers: { "content-type": "application/json" } });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    await assert.rejects(runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "DUPLICATE_EXTERNAL_ID", confirmDuplicateExternalId: true }, conflictGateway), error => message(error).startsWith(DUPLICATE_EXTERNAL_ID_SEED_FAILED));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(submitted.length, 1, "failed seed must not open ASPI");
+
   const signatureGateway = gatewayFor({ httpStatus: 401, responseCode: "4012700", responseMessage: "Unauthorized Signature" });
   const signatureRun = await runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "INVALID_SIGNATURE" }, signatureGateway);
   const sent = submitted.at(-1);
@@ -124,7 +158,6 @@ test("negative scenarios change only the intended service-request field and do n
   assert.notEqual(positiveForm.externalId, "used-external");
   assert.equal(positive.matched, true);
   const tokenProvider = { ...provider, data: { ...provider.data, accessTokenUrl: "https://token.test/access-token" } };
-  const originalFetch = globalThis.fetch;
   globalThis.fetch = async url => {
     assert.equal(String(url), "https://token.test/access-token");
     return new Response(JSON.stringify({ responseCode: "2007300", accessToken: "real-token" }), { status: 200, headers: { "content-type": "application/json" } });

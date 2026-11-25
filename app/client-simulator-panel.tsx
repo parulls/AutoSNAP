@@ -87,7 +87,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     if(!snapUserId){setError("Pilih User SNAP untuk login ke form Client Simulator ASPI.");return;}
     const chosen=clientSimulatorScenario(scenarioId);
     if(!chosen){setError("Pilih skenario pengujian terlebih dahulu.");return;}
-    if(chosen.id==="DUPLICATE_EXTERNAL_ID"&&!confirmDuplicate){setError("Konfirmasi diperlukan sebelum mengirim ulang X-EXTERNAL-ID yang sudah pernah dikirim.");return;}
+    if(chosen.id==="DUPLICATE_EXTERNAL_ID"&&!confirmDuplicate){setError("Konfirmasi diperlukan sebelum seed External ID ke bank dan uji duplikat lewat ASPI.");return;}
     try{buildClientSimulatorServiceName(provider.name,service.name,chosen.label);}catch(error){setError(thrownMessage(error));return;}
     if(!channelId.trim()){setError("CHANNEL-ID wajib diisi. Form ASPI mengirim header ini.");return;}
     const progressId=crypto.randomUUID();
@@ -207,12 +207,12 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
             <small className="helper">Bank Sumut menolak jam yang tidak di depan servernya. Timestamp yang terlalu dekat dengan waktu sekarang dikirim sebagai sekarang + 2 menit.</small>
           </div>
           <label className="form-field"><span>X-PARTNER-ID</span><input disabled={running} value={partnerId} onChange={e=>setPartnerId(e.target.value)}/></label>
-          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={running||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Diambil dari pengujian sebelumnya":externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis"/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">ID sumber dipilih dari pengujian sebelumnya yang respons bank-nya sudah sukses (HTTP 2xx) pada hari yang sama, penyedia/service/partner yang sama. Jalankan Positif dulu jika belum ada.</small>}</label>
+          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={running||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Otomatis: seed bank lalu kirim ulang ke ASPI":externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis"/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">AutoSNAP membuat ID baru, mengunci ke bank dengan request sukses (bukan lewat ASPI), lalu mengirim ID yang sama lewat Client Simulator. Hanya respons error ASPI yang dievaluasi dan dijadikan bukti.</small>}</label>
           <label className="form-field"><span>X-DEVICE-ID</span><input disabled={running} value={deviceId} onChange={e=>setDeviceId(e.target.value)}/></label>
           <label className="form-field"><span>CHANNEL-ID</span><input disabled={running} value={channelId} onChange={e=>setChannelId(e.target.value)}/></label>
           <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={10} spellCheck={false} disabled={running} value={body} onChange={e=>setBody(e.target.value)}/><small className="helper">Diisi dari Request Body API Service {service.name}. Perubahan di sini hanya untuk pengujian kali ini. URI yang diisi: {serviceUri}.</small></label>
         </div>
-        {scenarioId==="DUPLICATE_EXTERNAL_ID"&&<label className="check-row wide"><input type="checkbox" checked={confirmDuplicate} disabled={running} onChange={e=>setConfirmDuplicate(e.target.checked)}/><span>Konfirmasi<small className="helper">Request ini memakai kembali X-EXTERNAL-ID yang sudah dikirim pada pengujian sebelumnya.</small></span></label>}
+        {scenarioId==="DUPLICATE_EXTERNAL_ID"&&<label className="check-row wide"><input type="checkbox" checked={confirmDuplicate} disabled={running} onChange={e=>setConfirmDuplicate(e.target.checked)}/><span>Konfirmasi<small className="helper">Skenario ini mengirim 2 request nyata: seed sukses ke bank, lalu uji duplikat lewat ASPI dengan External ID yang sama.</small></span></label>}
         {(scenarioId==="INVALID_ACCESS_TOKEN"||scenarioId==="INVALID_SIGNATURE"||scenarioId==="UNKNOWN_CLIENT")&&<p className="helper">Perubahan hanya terjadi pada request API Service. Kredensial Master Data dan token asli tidak ditampilkan.</p>}
         <div className="form-actions"><button type="button" className="secondary-button" disabled={running} onClick={resetRequest}>Reset Form</button><button className="primary-button" disabled={busy}>{busy?"Menjalankan...":"Jalankan Client Simulator"}</button></div>
       </>}

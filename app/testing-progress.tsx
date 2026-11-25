@@ -5,7 +5,7 @@ import UiIcon from "./ui-icon";
 
 export type ProgressStep={stage:string;status:string;detail?:string;at?:string};
 export type TestProgress={status:string;stage:string;steps:ProgressStep[]};
-const labels:Record<string,string>={preparing:"Persiapan",signature_auth:"Signature Authentication",access_token:"Access Token",customer_token:"Customer Token B2B2C",signature_service:"Signature Service",api_request:"Request API",registration:"Registrasi",evaluation:"Validasi",finalizing:"Finalisasi",save_result:"Save Result",save_redirect:"Verifikasi Redirect",activity_id:"Identifikasi Activity ID",pdf_download:"Download PDF ASPI",pdf_store:"Simpan PDF",pdf_reprocessing:"Proses Ulang Bukti",evidence:"Bukti PDF ASPI",cancelling:"Pembatalan",finished:"Selesai"};
+const labels:Record<string,string>={preparing:"Persiapan",signature_auth:"Signature Authentication",access_token:"Access Token",customer_token:"Customer Token B2B2C",signature_service:"Signature Service",api_request:"Request API",duplicate_seed:"Seed External ID",registration:"Registrasi",evaluation:"Validasi",finalizing:"Finalisasi",save_result:"Save Result",save_redirect:"Verifikasi Redirect",activity_id:"Identifikasi Activity ID",pdf_download:"Download PDF ASPI",pdf_store:"Simpan PDF",pdf_reprocessing:"Proses Ulang Bukti",evidence:"Bukti PDF ASPI",cancelling:"Pembatalan",finished:"Selesai"};
 
 type Props={
   progress:TestProgress;

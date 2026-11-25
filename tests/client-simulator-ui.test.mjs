@@ -117,7 +117,7 @@ test("client simulator uses a scenario name and API services live in master data
     await page.getByRole("region", { name: "Expected Result" }).getByText("Access Token Invalid", { exact: true }).waitFor();
     await page.screenshot({ path: join(tmpdir(), "autosnap-client-sim-desktop.png"), fullPage: true });
     await page.getByLabel("Skenario Pengujian").selectOption("DUPLICATE_EXTERNAL_ID");
-    await page.getByText("Request ini memakai kembali X-EXTERNAL-ID yang sudah dikirim pada pengujian sebelumnya.").waitFor();
+    await page.getByText("Skenario ini mengirim 2 request nyata: seed sukses ke bank, lalu uji duplikat lewat ASPI dengan External ID yang sama.").waitFor();
     await page.getByRole("button", { name: "Reset Form", exact: true }).click();
     assert.equal(await page.getByLabel("Skenario Pengujian").inputValue(), "");
     assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "");

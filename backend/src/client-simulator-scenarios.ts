@@ -18,11 +18,19 @@ export const CLIENT_SIMULATOR_SCENARIOS: ScenarioDefinition[] = [
   { id: "INVALID_ACCESS_TOKEN", label: "Access Token Invalid", expectedHttp: 401, codePrefix: "401", codeSuffix: "01", expectedMessage: "Access Token Invalid", mutation: "ACCESS_TOKEN", summary: "Signature Service tetap memakai Access Token valid. Token invalid hanya dipakai pada request API Service lewat Client Simulator ASPI." },
   { id: "INVALID_SIGNATURE", label: "Unauthorized . Signature", expectedHttp: 401, codePrefix: "401", codeSuffix: "00", expectedMessage: "Unauthorized Signature", mutation: "SIGNATURE", summary: "X-SIGNATURE pada request API Service berbeda dari signature yang valid. Access Token dan Partner ID tetap valid." },
   { id: "UNKNOWN_CLIENT", label: "Unauthorized . Unknown Client", expectedHttp: 401, codePrefix: "401", codeSuffix: "00", expectedMessage: "Unauthorized Client", mutation: "PARTNER_ID", summary: "X-PARTNER-ID pada request API Service diganti identitas yang tidak dikenal. Access Token dan signature tetap valid." },
-  { id: "DUPLICATE_EXTERNAL_ID", label: "Cannot use the same X-EXTERNAL-ID", expectedHttp: 409, codePrefix: "409", codeSuffix: "01", expectedMessage: "Conflict", mutation: "EXTERNAL_ID_REUSE", summary: "X-EXTERNAL-ID diambil dari pengujian sebelumnya yang respons bank-nya sudah sukses (HTTP 2xx). Access Token dan signature tetap valid." },
+  { id: "DUPLICATE_EXTERNAL_ID", label: "Cannot use the same X-EXTERNAL-ID", expectedHttp: 409, codePrefix: "409", codeSuffix: "01", expectedMessage: "Cannot use the same X-EXTERNAL-ID", mutation: "EXTERNAL_ID_REUSE", summary: "AutoSNAP mengunci X-EXTERNAL-ID baru dengan satu request sukses langsung ke bank, lalu mengirim ID yang sama lewat Client Simulator ASPI. Hanya respons error ASPI yang dievaluasi dan dijadikan bukti." },
 ];
 
-export const DUPLICATE_EXTERNAL_ID_MISSING = "Belum tersedia X-EXTERNAL-ID dari pengujian sebelumnya yang dapat digunakan untuk skenario ini. Jalankan skenario Positif sampai bank menjawab sukses pada hari yang sama, lalu ulangi skenario ini.";
+export const DUPLICATE_EXTERNAL_ID_SEED_FAILED = "Gagal mengunci X-EXTERNAL-ID di bank sebelum uji duplikat. Request seed harus sukses (HTTP 2xx) agar pengiriman kedua lewat ASPI bisa menguji konflik External ID.";
 export const UNKNOWN_PARTNER_SENTINEL = "AUTOSNAP-UNKNOWN-CLIENT";
+
+/** True when the bank accepted the request enough to remember X-EXTERNAL-ID for the day. */
+export function bankAcceptedDuplicateSeed(httpStatus: number | null | undefined, responseCode?: string | null) {
+  const http = Number(httpStatus);
+  if (Number.isInteger(http) && http >= 200 && http < 300) return true;
+  const code = String(responseCode ?? "").trim();
+  return /^2\d{6}$/.test(code);
+}
 
 /** Numeric X-EXTERNAL-ID. Bank Sumut SNAP dedup typically keys on digit IDs, not UUID. */
 export function mintClientSimulatorExternalId(at = Date.now()) {
