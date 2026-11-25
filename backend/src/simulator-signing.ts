@@ -93,7 +93,9 @@ export function snapUtilityKind(raw:string):"auth"|"service"|null{
 
 export function snapUtilityRequest(kind:"auth"|"service",input:{timestamp:string;clientKey?:string;privateKey?:string;clientSecret?:string;method?:string;endpoint?:string;accessToken?:string;bodyText?:string}):{headers:Record<string,string>;body:string|undefined}{
   if(kind==="auth")return {headers:{"X-TIMESTAMP":input.timestamp,"X-CLIENT-KEY":input.clientKey??"","Private_Key":input.privateKey??""},body:undefined};
-  return {headers:{"Content-Type":"application/json","X-TIMESTAMP":input.timestamp,"X-CLIENT-SECRET":input.clientSecret??"","HttpMethod":(input.method??"POST").toUpperCase(),"EndpoinUrl":input.endpoint??"","AccessToken":input.accessToken??""},body:input.bodyText??""};
+  // ASPI docs use the typo EndpoinUrl. Bank Sumut validates EndpointUrl / ENDPOINTURL and rejects when that header is empty.
+  const endpoint=String(input.endpoint??"").trim();
+  return {headers:{"Content-Type":"application/json","X-TIMESTAMP":input.timestamp,"X-CLIENT-SECRET":input.clientSecret??"","HttpMethod":(input.method??"POST").toUpperCase(),"EndpoinUrl":endpoint,"EndpointUrl":endpoint,"AccessToken":input.accessToken??""},body:input.bodyText??""};
 }
 
 /** Join Base URL + endpoint path. Absolute https values are kept only when they cannot be reduced to a path. */

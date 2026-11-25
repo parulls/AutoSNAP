@@ -80,6 +80,7 @@ test("HIT_API signer URL rejects non-HTTPS and private hosts",async()=>{
   assert.equal("privateKey" in auth.headers,false);
   const service=snapUtilityRequest("service",{timestamp:"2026-11-25T10:41:00+07:00",clientSecret:"secret",method:"POST",endpoint:"/api/v1.0.0/transfer-va/create-vagov",accessToken:"token",bodyText:"{}"});
   assert.equal(service.headers.EndpoinUrl,"/api/v1.0.0/transfer-va/create-vagov");
+  assert.equal(service.headers.EndpointUrl,"/api/v1.0.0/transfer-va/create-vagov");
   assert.equal(service.body,"{}");
   const {privateKey}=generateKeyPairSync("rsa",{modulusLength:2048});
   const pem=privateKey.export({type:"pkcs8",format:"pem"}).toString();

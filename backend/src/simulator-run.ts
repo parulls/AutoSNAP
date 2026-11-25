@@ -55,7 +55,7 @@ function signatureHitError(kind:"auth"|"service",raw:string,httpStatus:number|nu
   const detail=[code,message].filter(Boolean).join(" ");
   const label=kind==="auth"?"Signature Authentication":"Signature Service";
   if(httpStatus===401||httpStatus===403)return `${label} ditolak ${target} (HTTP ${httpStatus}${detail?` ${detail}`:""}). Server menolak akses.`;
-  if(httpStatus===400)return `${label} ditolak ${target} (HTTP 400${detail?` ${detail}`:""}). Periksa Client Secret, Access Token, EndpoinUrl (path API Service), dan Request Body yang ditandatangani.`;
+  if(httpStatus===400)return `${label} ditolak ${target} (HTTP 400${detail?` ${detail}`:""}). Periksa Client Secret, Access Token, EndpointUrl (path API Service), dan Request Body yang ditandatangani.`;
   return `${label} tidak mengembalikan signature (HTTP ${httpStatus??"—"} ${target}${detail?` ${detail}`:""}).`;
 }
 
