@@ -136,18 +136,20 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   })();
 
   function countsOf(run:Run){const counts=object(run.request)&&object(run.request.pdfCounts)?run.request.pdfCounts:{};return {ready:Number(counts.ready??0),required:Number(counts.required??0)};}
-  function canRetry(run:Run){const reprocess=object(run.request)&&object(run.request.reprocess)?run.request.reprocess:null;if(reprocess)return reprocess.retryEvidence===true;const counts=countsOf(run);return run.mode==="client_sim"&&counts.required>0&&counts.ready<counts.required;}
-  async function retryEvidence(run:Run){
-    if(retryLock.current||running)return;
-    retryLock.current=true;setReprocessingId(run.id);setTestingError(null);
+  function officialActivity(value:string){return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)||/^\d{4,18}$/.test(value);}
+  function pendingEvidence(run:Run){return pdfsOf(run).filter(item=>officialActivity(item.activityId)&&!item.pdfReady);}
+  async function retryEvidence(run:Run,activityId:string){
+    if(retryLock.current||running||!officialActivity(activityId))return;
+    retryLock.current=true;setReprocessingId(`${run.id}:${activityId}`);setTestingError(null);
     try{
-      const result=await api("retryAspiEvidence",{id:run.id,confirmCrossUser:run.operator_id!==state.user?.id});
+      const result=await api("retryAspiEvidence",{id:run.id,activityId,confirmCrossUser:run.operator_id!==state.user?.id});
       const stored=Number(result.stored??0),required=Number(result.required??0);
       setNotice(result.status==="FAILED"?`PDF ${stored}/${required} tersimpan. Status tetap FAILED karena validasi sebelumnya gagal.`:`Bukti PDF ${stored}/${required}. Status pengujian tetap ${String(result.status??run.status)}. Transaksi tidak dikirim ulang.`);
       await reload();historyData.refresh();
     }catch(error){
       const message=(error as Error).message;
-      setTestingError({summary:"Proses ulang bukti gagal.",technical:message,suggestion:error instanceof ApiError&&error.code==="ASPI_SESSION_EXPIRED"?"Login ulang diperlukan sebelum mengambil bukti. Transaksi tidak dijalankan ulang.":"PDF yang sudah tersimpan tetap aman. Transaksi tidak dijalankan ulang."});
+      const unresolved=error instanceof ApiError&&(error.code==="ACTIVITY_ID_UNRESOLVED"||error.code==="ASPI_ACTIVITY_NOT_FOUND");
+      setTestingError({summary:unresolved?"Activity ID belum dapat diverifikasi.":"Proses ulang bukti gagal.",technical:message,suggestion:error instanceof ApiError&&error.code==="ASPI_SESSION_EXPIRED"?"Login ulang diperlukan sebelum mengambil bukti. Transaksi tidak dijalankan ulang.":"PDF yang sudah tersimpan tetap aman. Transaksi tidak dijalankan ulang."});
     }finally{retryLock.current=false;setReprocessingId("");}
   }
   function pdfsOf(run:Run){
@@ -232,11 +234,11 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
         <tbody>{historyData.runs.filter(r=>r.mode==="client_sim"||r.mode==="mock").map(run=>{
           const name=object(run.request)?String(run.request.activityName??""):"";
           const pdf=countsOf(run);
-          const evidence=pdfsOf(run).find(item=>item.pdfReady);
+          const evidence=pdfsOf(run).find(item=>item.pdfReady&&officialActivity(item.activityId));
           return <tr key={run.id}>
             <td>{new Date(run.created_at).toLocaleString("id-ID",{timeZone:"Asia/Jakarta"})}</td>
             {canViewAll&&<td>{run.operator?.name??"—"}</td>}
-            <td>{name||run.notes||run.id}<span className="cell-caption">{run.mode==="client_sim"?"Client Simulator":"Mock"}</span></td>
+            <td>{name||run.notes||run.id}<span className="cell-caption">{pdfsOf(run).filter(item=>officialActivity(item.activityId)).map(item=>item.activityId).join(", ")||(run.mode==="client_sim"?"Activity ID belum tersedia":run.mode)}</span></td>
             <td><span className={`status-badge ${run.status.toLowerCase()}`}>{run.status}</span>{pdf.required>0&&pdf.ready<pdf.required&&<span className="cell-caption">Bukti belum lengkap</span>}</td>
             <td>{run.http_status??"—"} / {pdf.required?`${pdf.ready}/${pdf.required}`:"—"}</td>
             <td>{run.duration_ms??0} ms</td>
@@ -245,7 +247,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
               <button type="button" className="text-button" onClick={()=>downloadJson(run)}>JSON</button>
               {evidence&&<button type="button" className="text-button" disabled={!!downloadingId} onClick={()=>setPreview({runId:run.id,activityId:evidence.activityId,fileName:evidence.fileName})}>View PDF</button>}
               {evidence&&<button type="button" className="text-button" disabled={downloadingId===`${run.id}:${evidence.activityId}`} onClick={()=>void downloadPdf(run,evidence.activityId,evidence.fileName)}>{downloadingId===`${run.id}:${evidence.activityId}`?"Mengunduh...":"Download PDF"}</button>}
-              {canRetry(run)&&<button type="button" className="text-button" disabled={running||reprocessingId===run.id} onClick={()=>void retryEvidence(run)}>{reprocessingId===run.id?"Mengambil bukti...":"Proses Ulang Bukti"}</button>}
+              {pendingEvidence(run).map(item=><button type="button" className="text-button" key={item.activityId} disabled={running||reprocessingId===`${run.id}:${item.activityId}`} onClick={()=>void retryEvidence(run,item.activityId)}>{reprocessingId===`${run.id}:${item.activityId}`?"Mengambil bukti...":"Proses Ulang Bukti"}</button>)}
             </div></td>
           </tr>;
         })}</tbody>
@@ -259,7 +261,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       <div className="section-header"><div><h2>Detail Testing</h2><p>{selectedRun.notes||selectedRun.id}</p></div><button type="button" className="close-button" aria-label="Tutup" onClick={()=>setSelectedRun(null)}><UiIcon name="close"/></button></div>
       <p className="helper">PDF ASPI: {countsOf(selectedRun).ready}/{countsOf(selectedRun).required||0}{countsOf(selectedRun).required>countsOf(selectedRun).ready?" · bukti belum lengkap":""}</p>
       {(()=>{const request=object(selectedRun.request)?selectedRun.request:null;const errors=request&&Array.isArray(request.evidenceErrors)?request.evidenceErrors:[];if(!errors.length)return null;return <div className="validation-box"><strong>Bukti yang belum tersedia</strong><p>{errors.map(item=>typeof item==="string"?item:object(item)?String(item.error??""):"").filter(Boolean).join(" · ")}</p></div>;})()}
-      <div className="inline-actions">{canRetry(selectedRun)&&<button type="button" className="secondary-button" disabled={running||!!reprocessingId} onClick={()=>void retryEvidence(selectedRun)}>{reprocessingId===selectedRun.id?"Mengambil bukti...":"Proses Ulang Bukti"}</button>}{pdfsOf(selectedRun).filter(item=>item.pdfReady).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={!!downloadingId} onClick={()=>setPreview({runId:selectedRun.id,activityId:item.activityId,fileName:item.fileName})}>View PDF</button>)}</div>
+      <div className="inline-actions">{pendingEvidence(selectedRun).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={running||!!reprocessingId} onClick={()=>void retryEvidence(selectedRun,item.activityId)}>{reprocessingId===`${selectedRun.id}:${item.activityId}`?"Mengambil bukti...":`Proses Ulang Bukti ${item.activityId.slice(0,8)}`}</button>)}{pdfsOf(selectedRun).filter(item=>item.pdfReady&&officialActivity(item.activityId)).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={!!downloadingId} onClick={()=>setPreview({runId:selectedRun.id,activityId:item.activityId,fileName:item.fileName})}>View PDF</button>)}</div>
       <h3>Request</h3><pre className="snippet-code">{JSON.stringify(selectedRun.request,null,2)}</pre><h3>Response</h3><pre className="snippet-code">{JSON.stringify(selectedRun.response,null,2)}</pre>
       <div className="form-actions"><button type="button" className="secondary-button" onClick={()=>setSelectedRun(null)}>Tutup</button><button type="button" className="primary-button" onClick={()=>downloadJson(selectedRun)}>Download JSON</button></div>
     </div></div>}

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, type KeyObject } from "node:crypto";
 import { hmacSignature, redact, rsaSignature } from "./security";
 
 export type SignatureMode="FUNCTION"|"HIT_API"|"NONE";
@@ -61,7 +61,58 @@ export function signerAllowlist(){
   return String(process.env.AUTOSNAP_SIGNER_ALLOWLIST??"").split(",").map(v=>v.trim().toLowerCase()).filter(Boolean);
 }
 
-/** HTTPS-only HIT_API URL with host allowlist and private-network rejection (SSRF guard). */
+/** One-line PKCS#1 base64 for the ASPI Private_Key field. PEM text is converted; an existing DER base64 key is kept in that form. */
+export function toAspiPrivateKey(value:string){
+  const trimmed=value.trim();
+  if(!trimmed)throw {error:"Private Key untuk Signature Authentication kosong.",status:400};
+  let parsed:KeyObject|undefined;
+  if(trimmed.includes("BEGIN")||trimmed.includes("PRIVATE KEY")){
+    try{parsed=createPrivateKey(trimmed);}catch{throw {error:"Private Key PEM tidak bisa diubah menjadi base64. Periksa teksnya, termasuk BEGIN dan END.",status:400};}
+  }else{
+    const compact=trimmed.replace(/\s+/g,"");
+    if(!/^[A-Za-z0-9+/=]+$/.test(compact))throw {error:"Private Key Signature Authentication harus PEM atau base64.",status:400};
+    const der=Buffer.from(compact,"base64");
+    for(const type of ["pkcs1","pkcs8"] as const){
+      try{parsed=createPrivateKey({key:der,format:"der",type});break;}catch{/* try the other container */}
+    }
+    if(!parsed)throw {error:"Private Key Signature Authentication belum berupa kunci yang utuh, jadi tidak bisa diubah menjadi base64.",status:400};
+  }
+  if(!parsed)throw {error:"Private Key untuk Signature Authentication kosong.",status:400};
+  return parsed.export({type:"pkcs1",format:"der"}).toString("base64");
+}
+
+/** Direct SNAP utility path on any host, including v1.0 and v1.0.0. The ASPI documentation page is not this path. */
+export function snapUtilityKind(raw:string):"auth"|"service"|null{
+  let url:URL;
+  try{url=new URL(raw);}catch{return null;}
+  const path=url.pathname.replace(/\/$/,"");
+  if(/\/utilities\/signature-auth$/.test(path))return "auth";
+  if(/\/utilities\/signature-service$/.test(path))return "service";
+  return null;
+}
+
+export function snapUtilityRequest(kind:"auth"|"service",input:{timestamp:string;clientKey?:string;privateKey?:string;clientSecret?:string;method?:string;endpoint?:string;accessToken?:string;bodyText?:string}):{headers:Record<string,string>;body:string|undefined}{
+  if(kind==="auth")return {headers:{"X-TIMESTAMP":input.timestamp,"X-CLIENT-KEY":input.clientKey??"","Private_Key":input.privateKey??""},body:undefined};
+  return {headers:{"Content-Type":"application/json","X-TIMESTAMP":input.timestamp,"X-CLIENT-SECRET":input.clientSecret??"","HttpMethod":input.method??"POST","EndpoinUrl":input.endpoint??"","AccessToken":input.accessToken??""},body:input.bodyText??""};
+}
+
+/** Halaman atau path resmi ASPI. Halaman dokumentasi Keamanan mencakup kedua operasi. */
+export function aspiSignatureTarget(raw:string,kind:"auth"|"service"){
+  let url:URL;
+  try{url=new URL(raw);}catch{return null;}
+  if(url.protocol!=="https:"||url.hostname!=="apidevportal.aspi-indonesia.or.id")return null;
+  const page="https://apidevportal.aspi-indonesia.or.id/api-services/keamanan";
+  const authPath="/api/v1.0/utilities/signature-auth";
+  const servicePath="/api/v1.0/utilities/signature-service";
+  const path=url.pathname.replace(/\/$/,"");
+  if(path==="/api-services/keamanan"||path.startsWith("/api-services/keamanan/"))return {page:`${page}#/Keamanan/post_api_v1_0_utilities_${kind==="auth"?"signature_auth":"signature_service"}`,path:kind==="auth"?authPath:servicePath};
+  if(kind==="auth"&&path===authPath)return {page,path:authPath};
+  if(kind==="service"&&path===servicePath)return {page,path:servicePath};
+  if(path===authPath||path===servicePath)throw {error:kind==="auth"?"URL Signature Access Token mengarah ke signature-service. Gunakan signature-auth atau halaman Keamanan ASPI.":"URL Signature Service mengarah ke signature-auth. Gunakan signature-service atau halaman Keamanan ASPI.",status:400};
+  return null;
+}
+
+/** HTTPS-only HIT_API URL. Private hosts stay blocked. A saved public URL is allowed unless an allowlist narrows it. */
 export function assertSafeSignerUrl(raw:string){
   let url:URL;
   try{url=new URL(raw);}catch{throw {error:"URL layanan signature tidak valid.",status:400};}
@@ -70,26 +121,27 @@ export function assertSafeSignerUrl(raw:string){
   const host=url.hostname.toLowerCase();
   if(PRIVATE_HOST.test(host)||host==="0.0.0.0")throw {error:"Host layanan signature tidak diizinkan.",status:400};
   const allow=signerAllowlist();
-  if(!allow.length)throw {error:"AUTOSNAP_SIGNER_ALLOWLIST belum dikonfigurasi untuk mode HIT_API.",status:503};
-  if(!allow.includes(host))throw {error:`Host signature ${host} tidak ada di allowlist.`,status:403};
+  if(allow.length&&!allow.includes(host))throw {error:`Host signature ${host} tidak ada di allowlist.`,status:403};
   return url;
 }
 
 export async function hitApiSignature(input:{url:string;method?:string;headers?:Record<string,string>;body?:unknown;timeoutMs?:number;extractPath?:string}){
   const url=assertSafeSignerUrl(input.url);
   const method=(input.method??"POST").toUpperCase();
-  const headers:Record<string,string>={"Content-Type":"application/json",...(input.headers??{})};
+  const headers:Record<string,string>={...(input.body===undefined?{}:{"Content-Type":"application/json"}),...(input.headers??{})};
   for(const [k,v] of Object.entries(headers))if(/[\r\n]/.test(k)||/[\r\n]/.test(v))throw {error:"Header signing tidak valid.",status:400};
-  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),Math.min(input.timeoutMs??8000,15000));
+  const timeoutMs=Math.min(input.timeoutMs??15000,20000);
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
   let status=0;let responseBody:unknown=null;
+  const payload=input.body===undefined||method==="GET"||method==="HEAD"?undefined:typeof input.body==="string"?input.body:JSON.stringify(input.body);
   try{
-    const response=await fetch(url.toString(),{method,headers,body:method==="GET"||method==="HEAD"?undefined:JSON.stringify(input.body??{}),signal:controller.signal,redirect:"error"});
+    const response=await fetch(url.toString(),{method,headers,body:payload,signal:controller.signal,redirect:"error"});
     status=response.status;
     const text=await response.text();
     try{responseBody=JSON.parse(text);}catch{responseBody=text.slice(0,2000);}
   }catch(error){
-    if((error as Error)?.name==="AbortError")throw {error:"Layanan signature timeout.",status:504};
-    throw {error:"Layanan signature tidak dapat dihubungi.",status:502};
+    if((error as Error)?.name==="AbortError")throw {error:`Layanan signature tidak menjawab dalam ${Math.round(timeoutMs/1000)} detik (${method} ${url.pathname}).`,status:504};
+    throw {error:`Layanan signature tidak dapat dihubungi (${method} ${url.pathname}).`,status:502};
   }finally{clearTimeout(timer);}
   const signature=extractSignature(responseBody,input.extractPath);
   return {httpStatus:status,signature,response:redact(responseBody)};

@@ -31,35 +31,67 @@ test("activity id is read only from the ASPI portal download link", async () => 
   assert.equal(activityIdFromPortalUrl("javascript:download(1)"), null);
 });
 
-test("a new activity row is used only when its text uniquely contains the Service Name", async () => {
-  const { pickNewClientSimulatorActivity } = await load();
-  const before = new Set(["old"]);
-  const rows = [
-    { activityId: "old", service: "Create VA - Positive Case", timestamp: "", downloadUrl: "https://apidevportal.aspi-indonesia.or.id/a", text: "Create VA - Positive Case" },
-    { activityId: "new-1", service: "Create VA - Positive Case", timestamp: "", downloadUrl: "https://apidevportal.aspi-indonesia.or.id/b", text: "Create VA - Positive Case" },
-    { activityId: "new-2", service: "Inquiry VA - Negative Case", timestamp: "", downloadUrl: "https://apidevportal.aspi-indonesia.or.id/c", text: "Inquiry VA - Negative Case" },
-  ];
-  assert.equal(pickNewClientSimulatorActivity(before, rows, "Create VA - Positive Case")?.activityId, "new-1");
-  const ambiguous = [...rows, { ...rows[1], activityId: "new-3" }];
-  assert.equal(pickNewClientSimulatorActivity(before, ambiguous, "Create VA - Positive Case"), null);
-  assert.equal(pickNewClientSimulatorActivity(before, rows, "Update VA - Positive Case"), null);
+const idA = "196f2867-1431-413b-a488-5de643800730";
+const idB = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const row = (activityId, service) => ({ activityId, service, timestamp: "", downloadUrl: `https://apidevportal.aspi-indonesia.or.id/client-simulator-activity?activityId=${activityId}`, text: service });
+
+test("a new official activity id is kept only when it is the single id absent from the baseline", async () => {
+  const { pickNewClientSimulatorActivity, officialActivityId } = await load();
+  assert.equal(officialActivityId("Create VA - Positive Case"), null);
+  assert.equal(officialActivityId("2026-11-24-create-va"), null);
+  const before = new Set([idA]);
+  const rows = [row(idA, "Create VA - Positive Case"), row(idB, "Create VA - Positive Case")];
+  assert.equal(pickNewClientSimulatorActivity(before, rows, "Create VA - Positive Case").activityId, idB);
+  assert.equal(pickNewClientSimulatorActivity(before, [...rows, row("bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee", "Create VA - Positive Case")], "Create VA - Positive Case"), null);
+  assert.equal(pickNewClientSimulatorActivity(before, [row(idA, "Create VA - Positive Case")], "Create VA - Positive Case"), null);
 });
 
-test("activity match uses the activity id and refuses a repeated service name", async () => {
-  const { matchClientSimulatorActivity } = await load();
-  const rows = [
-    { activityId: "row-a", service: "Create VA - Positive Case", timestamp: "", downloadUrl: "https://apidevportal.aspi-indonesia.or.id/a", text: "Create VA - Positive Case" },
-    { activityId: "row-b", service: "Create VA - Positive Case", timestamp: "", downloadUrl: "https://apidevportal.aspi-indonesia.or.id/b?id=row-b", text: "Create VA - Positive Case" },
-  ];
-  assert.equal(matchClientSimulatorActivity(rows, { activityId: "row-b", serviceName: "Create VA - Positive Case" }).activity.activityId, "row-b");
-  assert.equal(matchClientSimulatorActivity(rows, { serviceName: "Create VA - Positive Case" }).code, "ASPI_ACTIVITY_AMBIGUOUS");
-  assert.equal(matchClientSimulatorActivity(rows, { activityId: "missing", serviceName: "Inquiry VA - Positive Case" }).code, "ASPI_ACTIVITY_NOT_FOUND");
+test("activity match is an exact activity id and ignores a repeated service name", async () => {
+  const { findActivityById, matchClientSimulatorActivity, clientSimulatorRetryTarget, ACTIVITY_ID_UNAVAILABLE } = await load();
+  const rows = [row(idA, "Create VA - Positive Case"), row(idB, "Create VA - Positive Case")];
+  assert.equal(findActivityById(rows, idB).activity.activityId, idB);
+  assert.equal(findActivityById(rows, "missing").code, "ASPI_ACTIVITY_NOT_FOUND");
+  assert.equal(matchClientSimulatorActivity(rows, { serviceName: "Create VA - Positive Case" }).code, "ASPI_ACTIVITY_NOT_FOUND");
+  assert.equal(clientSimulatorRetryTarget([], "").message, ACTIVITY_ID_UNAVAILABLE);
+  assert.equal(clientSimulatorRetryTarget([{ activityId: idA, service: "Create VA - Positive Case" }, { activityId: idB, service: "Create VA - Positive Case" }], idA).activityId, idA);
+  assert.equal(clientSimulatorRetryTarget([{ activityId: idA }], idB).code, "ASPI_ACTIVITY_NOT_FOUND");
+  assert.equal(clientSimulatorRetryTarget([{ service: "Create VA - Positive Case" }, { service: "Create VA - Positive Case" }]).code, "ACTIVITY_ID_UNRESOLVED");
+});
+
+test("save result http status is classified by redirect path and is not saved until an activity id is proven", async () => {
+  const { classifySaveHttp, proveSavedActivity } = await load();
+  const ok = classifySaveHttp(200, null);
+  assert.equal(ok.state, "UNKNOWN");
+  assert.equal(ok.verified, false);
+  assert.equal(proveSavedActivity(ok, row(idA, "Create VA - Positive Case")).state, "SAVED");
+  const activityRedirect = classifySaveHttp(302, "https://apidevportal.aspi-indonesia.or.id/client-simulator-activity?activityId=" + idA + "&session=secret");
+  assert.equal(activityRedirect.state, "REDIRECTED");
+  assert.equal(activityRedirect.redirectPath, "/client-simulator-activity");
+  assert.equal(activityRedirect.activityId, idA);
+  assert.equal(activityRedirect.verified, false);
+  assert.equal(JSON.stringify(activityRedirect).includes("session=secret"), false);
+  assert.equal(classifySaveHttp(302, "https://apidevportal.aspi-indonesia.or.id/sign-in?returnUrl=/client-simulator").state, "AUTH_EXPIRED");
+  assert.equal(classifySaveHttp(302, null).state, "UNKNOWN");
+  assert.equal(classifySaveHttp(500, "/client-simulator").state, "REJECTED");
+});
+
+test("evidence keeps the official activity id when the pdf is not stored", async () => {
+  const { buildSimulatorActivityEvidence } = await load();
+  const pending = buildSimulatorActivityEvidence({ runId: "run-1", activityId: idA, serviceId: "svc", serviceName: "Create VA - Positive Case", testType: "positive", pdfReady: false, evidenceStatus: "FAILED" });
+  assert.equal(pending.activityId, idA);
+  assert.equal(pending.pdfReady, false);
+  assert.equal(pending.evidenceStatus, "FAILED");
+  assert.equal(buildSimulatorActivityEvidence({ runId: "run-1", activityId: "Create VA - Positive Case", serviceId: "svc", serviceName: "Create VA", testType: "positive" }), null);
 });
 
 test("pass or fail follows the response shown by ASPI", async () => {
   const { evaluateClientSimulator } = await load();
-  assert.deepEqual(evaluateClientSimulator({ testType: "positive", httpStatus: 200, responseCode: "2002400", expectedHttp: null, expectedCode: "2002400" }), { matched: true, status: "PASSED" });
+  assert.equal(evaluateClientSimulator({ testType: "positive", httpStatus: 200, responseCode: "2002400", expectedHttp: null, expectedCode: "2002400" }).status, "PASSED");
   assert.equal(evaluateClientSimulator({ testType: "negative", httpStatus: 200, responseCode: "2002400", expectedHttp: null, expectedCode: null }).status, "FAILED");
   assert.equal(evaluateClientSimulator({ testType: "positive", httpStatus: null, responseCode: "", expectedHttp: null, expectedCode: null }).status, "COMPLETED");
-  assert.equal(evaluateClientSimulator({ testType: "positive", httpStatus: null, responseCode: "2002700", expectedHttp: 200, expectedCode: null }).status, "PASSED");
+  const unverified = evaluateClientSimulator({ testType: "positive", httpStatus: null, responseCode: "2002700", expectedHttp: 200, expectedCode: null });
+  assert.equal(unverified.status, "COMPLETED");
+  assert.equal(unverified.matched, false);
+  assert.equal(unverified.httpVerified, false);
+  assert.equal(unverified.snapVerified, true);
 });

@@ -33,7 +33,7 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
   function open(item:Item|null){
     setEditing(item??"new");setModalError("");setError("");
     if(kind==="sim_provider"){
-      const data=item?{...item.data,clientSecret:"",privateKey:""}:{baseUrl:"",clientKey:"",clientSecret:"",privateKey:"",accessTokenUrl:"/api/v1.0/access-token/b2b",signatureAccessTokenMode:"FUNCTION",signatureServiceMode:"FUNCTION",rsaEncoding:"base64",hmacEncoding:"hex",timestampConfig:{offsetMinutes:420,includeMillis:false},channelId:"",deviceId:"",partnerId:"",origin:"",ipAddress:"",latitude:"",longitude:"",allowPrivateKeyToSigner:false};
+      const data=item?{...item.data,clientSecret:"",privateKey:"",signatureAuthPrivateKey:""}:{baseUrl:"",clientKey:"",clientSecret:"",privateKey:"",signatureAuthPrivateKey:"",accessTokenUrl:"/api/v1.0/access-token/b2b",signatureAccessTokenMode:"FUNCTION",signatureServiceMode:"FUNCTION",rsaEncoding:"base64",hmacEncoding:"hex",timestampConfig:{offsetMinutes:420,includeMillis:false},channelId:"",deviceId:"",partnerId:"",origin:"",ipAddress:"",latitude:"",longitude:"",allowPrivateKeyToSigner:false};
       setDraft({name:item?.name??"",parentId:"",data});
       return;
     }
@@ -73,9 +73,10 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
   const ts=asObject(draft.data.timestampConfig)?draft.data.timestampConfig as {offsetMinutes?:number;includeMillis?:boolean}:{offsetMinutes:420,includeMillis:false};
   const accessMode=String(draft.data.signatureAccessTokenMode??"FUNCTION");
   const serviceMode=String(draft.data.signatureServiceMode??"FUNCTION");
-  const accessModeNeedsKey=accessMode==="FUNCTION";
-  const accessModeNeedsSecret=serviceMode==="FUNCTION";
+  const needsPrivateKey=accessMode==="FUNCTION"||accessMode==="HIT_API";
+  const needsSecret=serviceMode==="FUNCTION"||serviceMode==="HIT_API";
   const hitApiSigning=accessMode==="HIT_API"||serviceMode==="HIT_API";
+  const newProvider=editing==="new";
 
   return <section className="card master-card">
     <div className="section-header"><div><h2>Master Data</h2><p>User SNAP, Dev Site Client, Dev Site Endpoint, dan Penyedia Client Simulator.</p></div>{canCreate&&<button className="primary-button" disabled={busy||(kind==="dev_site"||kind==="endpoint")&&!users.length} onClick={()=>kind==="endpoint"?setImporting({}):kind==="dev_site"?setConnection("new"):open(null)}>Tambah {labels[kind]}</button>}</div>
@@ -93,7 +94,7 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
     {kind==="snap_user"&&<p className="helper">Password SNAP disimpan terenkripsi.</p>}
     {kind==="sim_provider"&&<p className="helper">Client Secret dan Private Key disimpan terenkripsi. Signature memakai fungsi backend terdaftar (bukan eval/skrip DB).</p>}
     {editing&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save}>
-      <div className="section-header"><div><h2>{editing==="new"?"Tambah":"Edit"} {labels[kind]}</h2><p>{kind==="sim_provider"?"Isian bertanda * wajib. Client Secret dan Private Key wajib saat mode FUNCTION. Pengaturan lain ada di dropdown.":"Perbaiki isian yang ditandai sebelum menyimpan."}</p></div></div>
+      <div className="section-header"><div><h2>{editing==="new"?"Tambah":"Edit"} {labels[kind]}</h2><p>{kind==="sim_provider"?"Isian bertanda * wajib. HIT_API mengubah Private Key PEM menjadi base64 secara otomatis.":"Perbaiki isian yang ditandai sebelum menyimpan."}</p></div></div>
       {modalError&&<div className="form-error" role="alert">{modalError}</div>}
       <div className="form-grid">
         <label className="form-field"><span>Nama *</span><input required maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
@@ -101,17 +102,22 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
         {kind==="sim_provider"&&<>
           {field("baseUrl","Base URL (HTTPS) *",false,false,"Alamat dasar API tujuan. Wajib https://.")}
           {field("clientKey","Client Key / Client ID *")}
-          {field("clientSecret","Client Secret",false,true,accessModeNeedsSecret?"Wajib selama Signature Service Mode = FUNCTION. Kosongkan saat edit jika tidak diubah.":"Opsional selama Signature Service Mode bukan FUNCTION. Kosongkan saat edit jika tidak diubah.")}
-          {field("privateKey","Private Key PEM",true,false,accessModeNeedsKey?"Wajib selama Signature Access Token Mode = FUNCTION. Kosongkan saat edit jika tidak diubah.":"Opsional selama Signature Access Token Mode bukan FUNCTION. Kosongkan saat edit jika tidak diubah.")}
+          {field("clientSecret",newProvider&&needsSecret?"Client Secret *":"Client Secret",false,true,needsSecret?"Wajib untuk FUNCTION dan HIT_API Signature Service. Kosongkan saat edit jika tidak diubah.":"Opsional selama Signature Service bukan FUNCTION atau HIT_API.")}
+          {field("privateKey",newProvider&&needsPrivateKey?"Private Key PEM *":"Private Key PEM",true,false,accessMode==="HIT_API"?"Teks PEM lengkap. Saat HIT_API, PEM ini diubah otomatis menjadi base64 satu baris untuk Private_Key signature-auth. Kosongkan saat edit jika tidak diubah.":needsPrivateKey?"Teks PEM lengkap, termasuk BEGIN/END. Dipakai saat Signature Access Token dihitung di AutoSNAP. Kosongkan saat edit jika tidak diubah.":"Tidak dipakai selama Signature Access Token bukan FUNCTION atau HIT_API.")}
           <details className="advanced-settings wide" open={hitApiSigning||undefined}>
             <summary>Pengaturan opsional</summary>
             <p className="helper">Nilai bawaan sudah cukup untuk pengujian biasa. Buka bagian ini hanya jika kontrak penyedia berbeda.</p>
             <div className="form-grid">
-              {field("accessTokenUrl","URL Access Token",false,false,"Kosong berarti /api/v1.0/access-token/b2b.")}
-              <label className="form-field"><span>Signature Access Token Mode</span><select value={accessMode} onChange={e=>patch("signatureAccessTokenMode",e.target.value)}><option value="FUNCTION">FUNCTION — dihitung di AutoSNAP</option><option value="HIT_API">HIT_API — layanan signing lain</option><option value="NONE">NONE — tanpa signature</option></select></label>
-              <label className="form-field"><span>Signature Service Mode</span><select value={serviceMode} onChange={e=>patch("signatureServiceMode",e.target.value)}><option value="FUNCTION">FUNCTION — dihitung di AutoSNAP</option><option value="HIT_API">HIT_API — layanan signing lain</option><option value="NONE">NONE — tanpa signature</option></select></label>
-              {accessMode==="HIT_API"&&field("signatureAccessTokenUrl","URL Signature Access Token *",false,false,"Wajib karena mode access token adalah HIT_API.")}
-              {serviceMode==="HIT_API"&&field("signatureServiceUrl","URL Signature Service *",false,false,"Wajib karena mode service adalah HIT_API.")}
+              <label className="form-field wide"><span>URL Access Token</span><input value={String(draft.data.accessTokenUrl??"")} onChange={e=>patch("accessTokenUrl",e.target.value)}/><small className="helper">Kosong berarti /api/v1.0/access-token/b2b.</small></label>
+              <div className="signing-pair wide">
+                <label className="form-field"><span>Signature Access Token Mode</span><select value={accessMode} onChange={e=>patch("signatureAccessTokenMode",e.target.value)}><option value="FUNCTION">FUNCTION — dihitung di AutoSNAP</option><option value="HIT_API">HIT_API — layanan signing lain</option><option value="NONE">NONE — tanpa signature</option></select></label>
+                {accessMode==="HIT_API"?field("signatureAccessTokenUrl","URL Signature Authentication *",false,false,"Dipanggil langsung. Untuk dev Bank Sumut, isi URL di host dev.banksumut.co.id. Private Key dikirim sebagai base64 pada header Private_Key."):<span/>}
+                {accessMode==="HIT_API"&&<label className="form-field"><span>Private Key Signature Authentication</span><input spellCheck={false} autoComplete="off" value={String(draft.data.signatureAuthPrivateKey??"")} onChange={e=>patch("signatureAuthPrivateKey",e.target.value)}/><small className="helper">Opsional. Kosongkan untuk memakai Private Key PEM di atas. PEM diubah otomatis menjadi base64.</small></label>}
+              </div>
+              <div className="signing-pair wide">
+                <label className="form-field"><span>Signature Service Mode</span><select value={serviceMode} onChange={e=>patch("signatureServiceMode",e.target.value)}><option value="FUNCTION">FUNCTION — dihitung di AutoSNAP</option><option value="HIT_API">HIT_API — layanan signing lain</option><option value="NONE">NONE — tanpa signature</option></select></label>
+                {serviceMode==="HIT_API"?field("signatureServiceUrl","URL Signature Service *",false,false,"Hasilnya menjadi X-SIGNATURE request service."):<span/>}
+              </div>
               <label className="form-field"><span>RSA Encoding</span><select value={String(draft.data.rsaEncoding??"base64")} onChange={e=>patch("rsaEncoding",e.target.value)}><option value="base64">Base64</option><option value="hex">Hex</option></select><small className="helper">Bawaan Base64.</small></label>
               <label className="form-field"><span>HMAC Encoding</span><select value={String(draft.data.hmacEncoding??"hex")} onChange={e=>patch("hmacEncoding",e.target.value)}><option value="hex">Hex</option><option value="base64">Base64</option></select><small className="helper">Bank Sumut SNAP Batubara memakai Base64. Hex dibalas 401 Unauthorized Signature.</small></label>
               <label className="form-field"><span>Offset timezone (menit)</span><input type="number" value={Number(ts.offsetMinutes??420)} onChange={e=>patch("timestampConfig",{...ts,offsetMinutes:Number(e.target.value)})}/><small className="helper">420 = WIB (UTC+7).</small></label>
@@ -123,7 +129,6 @@ export default function MasterData({state,api,reload,setError,setNotice}:{state:
               {field("ipAddress","X-IP-ADDRESS")}
               {field("latitude","X-LATITUDE")}
               {field("longitude","X-LONGITUDE")}
-              <label className="check-row wide"><input type="checkbox" checked={draft.data.allowPrivateKeyToSigner===true} onChange={e=>patch("allowPrivateKeyToSigner",e.target.checked)}/><span>Izinkan kirim Private Key ke layanan signing HIT_API<small className="helper">Centang hanya jika kontrak layanan signing mewajibkan private key. Berlaku saat Signature Access Token Mode = HIT_API.</small></span></label>
             </div>
           </details>
         </>}

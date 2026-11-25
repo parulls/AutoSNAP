@@ -21,7 +21,7 @@ import { RunControl } from "./run-control";
 import { canAccessRun, readHistory } from "./history";
 import { writeAudit } from "./audit-log";
 import { runClientSimulator } from "./simulator-run";
-import { ClientSimulatorPortalError } from "./aspi-client-simulator";
+import { ClientSimulatorPortalError, clientSimulatorRetryTarget, officialActivityId } from "./aspi-client-simulator";
 import { AspiAutomationError } from "./aspi-types";
 import { normalizeSignatureMode } from "./simulator-signing";
 import {DocumentationReader} from "./documentation-reader";
@@ -260,7 +260,7 @@ export class AutoSnapController {
         await control.start();
         try{
           await progress("preparing","completed","Konfigurasi Client Simulator tervalidasi. Form ASPI akan diisi, lalu PDF ditunggu dari Client Simulator Activity.");
-          const result=await runClientSimulator(this.db,await this.allRecords(),user,input,{submit:(snapUser,form)=>this.portal.submitClientSimulator(snapUser,form,{onProgress:progress,signal:control.signal})},progress,control.signal);
+          const result=await runClientSimulator(this.db,await this.allRecords(),user,input,{submit:(snapUser,form)=>this.portal.submitClientSimulator(snapUser,form,{onProgress:progress,signal:control.signal}),hitAspiSignature:(snapUser,request)=>this.portal.hitAspiSignatureUtility(snapUser,request,control.signal)},progress,control.signal);
           const finished=await this.updateProgress(progressId,user.id,"finished",result.status==="FAILED"?"failed":"completed",`${String(result.notes??result.activityName??"")}${result.pdfReady?"":" Bukti PDF belum lengkap."}`);
           const stored=await this.db.one<{steps:unknown}>("SELECT steps FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[progressId,user.id]);
           await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2",[JSON.stringify({progressId,progressLog:Array.isArray(stored?.steps)?stored.steps:[]}),result.id]);
@@ -362,7 +362,7 @@ export class AutoSnapController {
     const ownerId=run.operator_id;
     if(!ownerId)return this.fail(res,clientError("History ini tidak memiliki operator_id; proses ulang ditolak agar kepemilikan tidak berubah.",409));
     const request=object(run.request_json)?run.request_json:{};
-    if(run.mode==="client_sim")return await this.retryClientSimulatorEvidence(res,run,operator);
+    if(run.mode==="client_sim")return await this.retryClientSimulatorEvidence(res,run,operator,input);
     if(!can(operator,"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege Dev Site Client.",403));
     const evaluation=object(request.evaluation)?request.evaluation:{};
     const httpMatched=object(evaluation.httpValidation)?evaluation.httpValidation.matches===true:false;
@@ -378,24 +378,26 @@ export class AutoSnapController {
     const busyUserIds=await this.evidenceService.busyUserIds(await this.allRecords());
     return res.json({ok:true,...result,aspiReady,busyUserIds,formReady:aspiReady});
   }
-  private async retryClientSimulatorEvidence(res:Response,run:RunRow,operator:Operator){
+  private async retryClientSimulatorEvidence(res:Response,run:RunRow,operator:Operator,input:Input){
     if(!can(operator,"client_simulator"))return this.fail(res,clientError("Anda tidak memiliki privilege Client Simulator.",403));
     if(run.status==="RUNNING")return this.fail(res,clientError("Pengujian masih berjalan.",409));
     const request=object(run.request_json)?run.request_json:{};
     const counts=object(request.pdfCounts)?request.pdfCounts:{};
     const ready=Number(counts.ready??0),required=Math.max(1,Number(counts.required??1));
     const activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
-    if(ready>=required&&activities.some(item=>item.pdfReady===true)){
+    const target=clientSimulatorRetryTarget(activities.map(item=>({activityId:String(item.activityId??"")})),String(input.activityId??""));
+    if(!target.ok)return this.fail(res,clientError(target.message,409,target.code));
+    const activity=activities.find(item=>officialActivityId(String(item.activityId??""))===target.activityId);
+    if(activity?.pdfReady===true){
       return res.json({ok:true,status:run.status,notes:run.notes,complete:true,stored:ready,required,missing:[],pdfCounts:{ready,required},reprocess:{retryEvidence:false,resumeTesting:false,requireMutatingConfirm:false},processing:false});
     }
     const snapUser=run.user_id?await this.db.one<RecordRow>("SELECT * FROM autosnap_records WHERE id=$1 AND kind='snap_user'",[run.user_id]):null;
     if(!snapUser)return this.fail(res,clientError("User SNAP pada history tidak ditemukan.",404));
     if(await this.evidenceService.accountBusy(snapUser))return this.fail(res,clientError("Akun ASPI ini sedang dipakai. PDF yang sudah tersimpan tetap aman. Transaksi tidak dijalankan ulang.",409,"ASPI_SESSION_BUSY"));
-    const activity=activities[0];
-    const activityId=String(activity?.activityId??"");
-    const serviceName=String(activity?.service??request.aspiServiceName??"");
+    const activityId=target.activityId;
     try{
-      const captured=await this.portal.redownloadClientSimulatorActivity(snapUser,{activityId,serviceName});
+      const captured=await this.portal.redownloadClientSimulatorActivity(snapUser,activityId);
+      if(officialActivityId(captured.activity.activityId)!==activityId)return this.fail(res,clientError("Activity ID yang diunduh tidak sama dengan Activity ID pada history.",409,"ASPI_ACTIVITY_AMBIGUOUS"));
       const pdf=validateAspiDownloadPdf(captured.pdf);
       const now=new Date().toISOString();
       const hash=pdfContentSha256(pdf),fingerprint=pdfEvidenceFingerprint(pdf),provenance=inspectPdfProvenance(pdf);
@@ -410,8 +412,8 @@ export class AutoSnapController {
            verification_status='CAPTURED', pdf_producer=EXCLUDED.pdf_producer, source_url=EXCLUDED.source_url, downloaded_at=EXCLUDED.downloaded_at`,
         [run.id,captured.activity.activityId,captured.activity.service.slice(0,120),pdf,pdf.length,hash,fingerprint,provenance.producer||null,captured.activity.downloadUrl,now]
       );
-      const storedActivity={...(activity??{}),activityId:captured.activity.activityId,service:captured.activity.service,timestamp:captured.activity.timestamp,downloadUrl:captured.activity.downloadUrl,pdfReady:true,authenticity:"aspi-html2pdf-download"};
-      const aspiActivities=activities.length?[storedActivity,...activities.slice(1)]:[storedActivity];
+      const storedActivity={...(activity??{}),activityId,service:captured.activity.service,serviceName:captured.activity.service,timestamp:captured.activity.timestamp,downloadUrl:captured.activity.downloadUrl,pdfReady:true,evidenceStatus:"CAPTURED",authenticity:"aspi-html2pdf-download"};
+      const aspiActivities=activities.map(item=>officialActivityId(String(item.activityId??""))===activityId?storedActivity:item);
       const pdfCounts={ready:1,required};
       const reprocess={retryEvidence:false,resumeTesting:false,requireMutatingConfirm:false};
       const audit={at:now,stage:"pdf_reprocessing",result:"COMPLETED",priorStatus:run.status,statusAfter:run.status,note:"PDF Client Simulator diambil ulang dari Client Simulator Activity. Send tidak dijalankan.",actorId:operator.id,actorUsername:operator.username,actorName:operator.name};
@@ -546,6 +548,8 @@ export class AutoSnapController {
       try{data.signatureAccessTokenMode=normalizeSignatureMode(data.signatureAccessTokenMode??"FUNCTION");data.signatureServiceMode=normalizeSignatureMode(data.signatureServiceMode??"FUNCTION");}catch(error){return this.fail(res,error);}
       if(data.signatureAccessTokenMode==="HIT_API"&&!String(data.signatureAccessTokenUrl??"").trim())return this.fail(res,clientError("URL Signature Access Token wajib untuk mode HIT_API."));
       if(data.signatureServiceMode==="HIT_API"&&!String(data.signatureServiceUrl??"").trim())return this.fail(res,clientError("URL Signature Service wajib untuk mode HIT_API."));
+      if((data.signatureAccessTokenMode==="HIT_API"||data.signatureAccessTokenMode==="FUNCTION")&&!data.privateKey&&!data.signatureAuthPrivateKey)return this.fail(res,clientError("Private Key PEM wajib. Mode HIT_API mengubah PEM itu menjadi base64 sebelum signature-auth."));
+      if(data.signatureServiceMode==="HIT_API"&&!data.clientSecret)return this.fail(res,clientError("Client Secret wajib untuk HIT_API Signature Service."));
       if(data.rsaEncoding&&!["hex","base64"].includes(String(data.rsaEncoding)))return this.fail(res,clientError("Encoding RSA harus hex atau base64."));
       if(data.hmacEncoding&&!["hex","base64"].includes(String(data.hmacEncoding)))return this.fail(res,clientError("Encoding HMAC harus hex atau base64."));
       const ts=data.timestampConfig&&typeof data.timestampConfig==="object"&&!Array.isArray(data.timestampConfig)?data.timestampConfig as Record<string,unknown>:{offsetMinutes:420,includeMillis:false};

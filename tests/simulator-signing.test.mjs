@@ -49,10 +49,37 @@ test("RSA-SHA256 access token and HMAC-SHA512 service signatures match encodings
 });
 
 test("HIT_API signer URL rejects non-HTTPS and private hosts",async()=>{
-  const {assertSafeSignerUrl}=await loadSigning();
+  const {assertSafeSignerUrl,aspiSignatureTarget}=await loadSigning();
+  const previous=process.env.AUTOSNAP_SIGNER_ALLOWLIST;
+  delete process.env.AUTOSNAP_SIGNER_ALLOWLIST;
+  assert.equal(assertSafeSignerUrl("https://signer.example.com/sign").hostname,"signer.example.com");
   process.env.AUTOSNAP_SIGNER_ALLOWLIST="signer.example.com";
   assert.throws(()=>assertSafeSignerUrl("http://signer.example.com/sign"),(err)=>/HTTPS/i.test(err?.error));
   assert.throws(()=>assertSafeSignerUrl("https://127.0.0.1/sign"),(err)=>/tidak diizinkan/i.test(err?.error));
   assert.throws(()=>assertSafeSignerUrl("https://evil.example.com/sign"),(err)=>/allowlist/i.test(err?.error));
   assert.equal(assertSafeSignerUrl("https://signer.example.com/sign").hostname,"signer.example.com");
+  assert.equal(aspiSignatureTarget("https://apidevportal.aspi-indonesia.or.id/api-services/keamanan","auth").path,"/api/v1.0/utilities/signature-auth");
+  assert.equal(aspiSignatureTarget("https://apidevportal.aspi-indonesia.or.id/api-services/keamanan","service").path,"/api/v1.0/utilities/signature-service");
+  assert.equal(aspiSignatureTarget("https://signer.example.com/sign","auth"),null);
+  const {snapUtilityKind,snapUtilityRequest,toAspiPrivateKey}=await loadSigning();
+  assert.equal(snapUtilityKind("https://dev.banksumut.co.id/snapgov/api/v1.0.0/utilities/signature-auth"),"auth");
+  assert.equal(snapUtilityKind("https://apidevportal.aspi-indonesia.or.id/api-services/keamanan"),null);
+  assert.equal(snapUtilityKind("https://signer.example.com/api/v1.0/utilities/signature-service"),"service");
+  const auth=snapUtilityRequest("auth",{timestamp:"2026-11-25T10:41:00+07:00",clientKey:"client",privateKey:"AAAA"});
+  assert.equal(auth.body,undefined);
+  assert.equal(auth.headers.Private_Key,"AAAA");
+  assert.equal("privateKey" in auth.headers,false);
+  const service=snapUtilityRequest("service",{timestamp:"2026-11-25T10:41:00+07:00",clientSecret:"secret",method:"POST",endpoint:"/api/v1.0.0/transfer-va/create-vagov",accessToken:"token",bodyText:"{}"});
+  assert.equal(service.headers.EndpoinUrl,"/api/v1.0.0/transfer-va/create-vagov");
+  assert.equal(service.body,"{}");
+  const {privateKey}=generateKeyPairSync("rsa",{modulusLength:2048});
+  const pem=privateKey.export({type:"pkcs8",format:"pem"}).toString();
+  const pkcs1=privateKey.export({type:"pkcs1",format:"der"}).toString("base64");
+  assert.equal(toAspiPrivateKey(pem),pkcs1);
+  assert.equal(toAspiPrivateKey(pkcs1),pkcs1);
+  assert.equal(pem.includes("BEGIN"),true);
+  assert.equal(pkcs1.includes("BEGIN"),false);
+  assert.equal(aspiSignatureTarget("https://apidevportal.aspi-indonesia.or.id/api-services/keamanan#/Keamanan/post_api_v1_0_utilities_signature_auth","auth").path,"/api/v1.0/utilities/signature-auth");
+  assert.throws(()=>toAspiPrivateKey("A".repeat(50)),(err)=>/belum berupa kunci/i.test(err?.error));
+  if(previous===undefined)delete process.env.AUTOSNAP_SIGNER_ALLOWLIST;else process.env.AUTOSNAP_SIGNER_ALLOWLIST=previous;
 });

@@ -12,7 +12,7 @@ import { AspiFormResolver, normalizedParameterName } from "./aspi-form-resolver"
 import { AspiSessionManager } from "./aspi-session-manager";
 import { AspiAutomationError, type HitOutcome } from "./aspi-types";
 import { ACTIVITY_PAGE, fetchOfficialPdf, readActivities } from "./aspi-evidence";
-import { CLIENT_SIMULATOR_ACTIVITY, CLIENT_SIMULATOR_FORM, ClientSimulatorPortalError, downloadClientSimulatorActivityPdf, matchClientSimulatorActivity, readClientSimulatorActivities, runClientSimulatorOnPage, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
+import { CLIENT_SIMULATOR_ACTIVITY, CLIENT_SIMULATOR_FORM, ClientSimulatorPortalError, downloadClientSimulatorActivityPdf, findActivityById, officialActivityId, readClientSimulatorActivities, runClientSimulatorOnPage, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
 import { openPdfCaptureBrowser, type PdfCaptureProfile } from "./pdf-browser";
 import { collectActivityPdfs, type PdfEvidence } from "./aspi-pdf-batch";
 import { profileField } from "./header-profile";
@@ -22,7 +22,7 @@ export {resolveRequestPath};
 type RegistrationStep={portalUrl:string;path:string;body:Record<string,unknown>;externalId:string};
 type ProgressReporter=(stage:string,status:"running"|"completed"|"failed",detail?:string)=>Promise<void>;
 type PortalInput={authFlow?:"unknown"|"b2b"|"b2b2c"|"none";workflow?:AuthWorkflow;omitBody?:boolean;serviceName?:string;parameters?:Record<string,unknown>;parameterDefinitions?:Parameter[];portalUrl:string;path:string;method:string;body:Record<string,unknown>;client:RecordRow;user:RecordRow;externalId:string;extraHeaders:Record<string,string>;registration?:RegistrationStep|null;negativeAccessToken?:boolean;signal?:AbortSignal;onProgress?:ProgressReporter};
-type ExecutePolicy={bodyText?:string;omitBody?:boolean;expectedRelative?:string};
+type ExecutePolicy={bodyText?:string;omitBody?:boolean;expectedRelative?:string;optionalHeaders?:string[]};
 const value=(row:RecordRow,key:string)=>String(row.data[key]??"");
 export function aspiActivityDownloadUrl(activityId:string){
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(activityId))throw new Error("Activity ID ASPI tidak valid.");
@@ -108,6 +108,37 @@ export class PortalEngine{
   private readonly pdfCache=new Map<string,{pdf:Buffer;expiresAt:number}>();
   private readonly pendingPdfs=new Map<string,Promise<Buffer>>();
   constructor(private readonly sessions:AspiSessionManager,private readonly forms:AspiFormResolver){}
+  /** Official ASPI signature-auth or signature-service through the logged-in Keamanan page. Does not press Client Simulator Send. */
+  async hitAspiSignatureUtility(user:RecordRow,input:{kind:"auth"|"service";timestamp:string;clientKey?:string;privateKey?:string;clientSecret?:string;method?:string;endpoint?:string;accessToken?:string;bodyText?:string},signal?:AbortSignal){
+    const target=input.kind==="auth"
+      ?{page:PORTAL_URLS.signatureAuth,path:"/api/v1.0/utilities/signature-auth"}
+      :{page:PORTAL_URLS.signatureService,path:"/api/v1.0/utilities/signature-service"};
+    let release:(()=>Promise<void>)|undefined;
+    try{
+      const acquired=await this.sessions.getAuthenticatedContext(user,"apidevportal.aspi-indonesia.or.id",async page=>{
+        await page.goto(target.page,{waitUntil:"domcontentloaded",timeout:60000});
+        await this.activateTestingPanel(page);
+        return this.hasSwagger(page);
+      },signal);
+      release=acquired.release;
+      const headers:Record<string,string>=input.kind==="auth"
+        ?{"X-TIMESTAMP":input.timestamp,"X-CLIENT-KEY":input.clientKey??"","Private_Key":input.privateKey??""}
+        :{"Content-Type":"application/json","X-TIMESTAMP":input.timestamp,"X-CLIENT-SECRET":input.clientSecret??"","HttpMethod":input.method??"POST","EndpoinUrl":input.endpoint??"","AccessToken":input.accessToken??""};
+      const result=await this.execute(acquired.page,target.page,target.path,"POST",headers,{},undefined,input.kind==="service"?{bodyText:input.bodyText??""}:{});
+      const checks=(result.request as {automationChecks?:{label?:string;passed?:boolean}[]}).automationChecks??[];
+      if(input.kind==="service"&&checks.some(item=>item.label==="Request body"&&item.passed===false))throw {error:"Signature Service ASPI menandatangani body yang berbeda dari body Client Simulator. Signature tidak dipakai.",status:502};
+      const body=this.object(result.body);
+      const signature=typeof body.signature==="string"?body.signature:"";
+      if(!this.ok(result.status)||!signature)throw {error:input.kind==="auth"?"Signature Authentication ASPI tidak mengembalikan signature.":"Signature Service ASPI tidak mengembalikan signature.",status:502};
+      return {signature,httpStatus:result.status,response:redact(body)};
+    }catch(error){
+      if(error&&typeof error==="object"&&"status" in error&&"error" in error)throw error;
+      if(error instanceof AspiAutomationError)throw {error:error.message,status:error.outcome==="ASPI_SESSION_BUSY"?409:502,code:error.outcome};
+      throw {error:error instanceof Error?error.message:"Signature ASPI gagal dijalankan.",status:502};
+    }finally{
+      await release?.();
+    }
+  }
   /** Login to ASPI, fill Client Simulator, Save Result, then capture the activity Download blob. */
   async submitClientSimulator(user:RecordRow,form:ClientSimulatorFormInput,hooks?:{onProgress?:ProgressReporter;signal?:AbortSignal}):Promise<ClientSimulatorPortalResult>{
     let release:(()=>Promise<void>)|undefined;
@@ -131,8 +162,10 @@ export class PortalEngine{
       await release?.();
     }
   }
-  /** Read-only. Opens Client Simulator Activity and clicks Download. Does not press Send. */
-  async redownloadClientSimulatorActivity(user:RecordRow,target:{activityId?:string;serviceName?:string},signal?:AbortSignal){
+  /** Read-only. Opens Client Simulator Activity and downloads the official Activity ID. Does not press Send. */
+  async redownloadClientSimulatorActivity(user:RecordRow,activityId:string,signal?:AbortSignal){
+    const id=officialActivityId(activityId);
+    if(!id)throw new ClientSimulatorPortalError("ASPI_ACTIVITY_NOT_FOUND","Activity ID belum tersedia pada history ini. Bukti tidak dapat diproses ulang secara otomatis karena aktivitas ASPI tidak dapat diidentifikasi secara unik.");
     let release:(()=>Promise<void>)|undefined;
     try{
       const acquired=await this.sessions.getAuthenticatedContext(user,"apidevportal.aspi-indonesia.or.id",async page=>{
@@ -142,10 +175,11 @@ export class PortalEngine{
       },signal);
       release=acquired.release;
       const rows=await readClientSimulatorActivities(acquired.page);
-      const matched=matchClientSimulatorActivity(rows,target);
+      const matched=findActivityById(rows,id);
       if(!matched.ok)throw matched.code==="ASPI_ACTIVITY_AMBIGUOUS"
-        ?new ClientSimulatorPortalError("ASPI_ACTIVITY_AMBIGUOUS","Beberapa baris aktivitas memiliki nama service yang sama. AutoSNAP tidak memilih baris secara acak.")
-        :new ClientSimulatorPortalError("ASPI_ACTIVITY_NOT_FOUND","Pengujian sudah disimpan, tetapi aktivitas belum ditemukan di portal ASPI. Gunakan Proses Ulang Bukti untuk mencoba mengambil PDF tanpa mengirim ulang transaksi.");
+        ?new ClientSimulatorPortalError("ASPI_ACTIVITY_AMBIGUOUS","Activity ID muncul lebih dari satu kali. AutoSNAP tidak memilih baris secara acak.")
+        :new ClientSimulatorPortalError("ASPI_ACTIVITY_NOT_FOUND","Activity ID tersimpan, tetapi barisnya belum ditemukan di Client Simulator Activity. Transaksi tidak dijalankan ulang.");
+      if(officialActivityId(matched.activity.activityId)!==id)throw new ClientSimulatorPortalError("ASPI_ACTIVITY_AMBIGUOUS","Activity ID yang diunduh tidak sama dengan Activity ID pada history.");
       const pdf=await downloadClientSimulatorActivityPdf(acquired.page,matched.activity);
       return {activity:matched.activity,pdf};
     }finally{
@@ -316,7 +350,13 @@ export class PortalEngine{
       }
     }
     for(const [name,entry] of Object.entries(parameters??{}))await this.forms.fillParameter(operation,name,typeof entry==="object"?JSON.stringify(entry):String(entry));
-    for(const [name,entry] of Object.entries(headers))await this.forms.fillParameter(operation,name,entry);
+    for(const [name,entry] of Object.entries(headers)){
+      try{await this.forms.fillParameter(operation,name,entry);}
+      catch(error){
+        const optional=policy.optionalHeaders?.some(item=>item.toLowerCase()===name.toLowerCase());
+        if(!(optional&&error instanceof AspiAutomationError&&error.outcome==="FORM_FIELD_NOT_FOUND"))throw error;
+      }
+    }
     // Beberapa utility ASPI (contohnya Signature Auth) hanya menerima header
     // dan memang tidak mempunyai editor request body. Jangan mencari textarea
     // untuk payload kosong; endpoint dengan payload tetap wajib mengisi body.

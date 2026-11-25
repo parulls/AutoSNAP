@@ -3,11 +3,15 @@ import type { DatabaseService, RecordRow } from "./database.service";
 import type { Operator } from "./accounts";
 import { decrypt, redact } from "./security";
 import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateAspiDownloadPdf } from "./aspi-evidence";
-import { clientSimulatorServiceName, evaluateClientSimulator, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
+import { buildSimulatorActivityEvidence, clientSimulatorServiceName, evaluateClientSimulator, officialActivityId, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
 import {
+  aspiSignatureTarget,
   getXSignatureAccessTokenFunction,
   getXSignatureServiceFunction,
   hitApiSignature,
+  snapUtilityKind,
+  snapUtilityRequest,
+  toAspiPrivateKey,
   ensureFutureTimestamp,
   minifyJsonBody,
   normalizeSignatureMode,
@@ -37,7 +41,28 @@ function encodingOf(raw:unknown,fallback:"base64"|"hex"):"base64"|"hex"{
   return raw==="hex"||raw==="base64"?raw:fallback;
 }
 
-async function resolveAccessTokenSignature(provider:RecordRow,mode:SignatureMode,clientKey:string,timestamp:string){
+function signatureHitError(raw:string,httpStatus:number|null,response:unknown){
+  let target=raw;
+  try{const url=new URL(raw);target=`${url.host}${url.pathname}`;}catch{/* keep the raw value */}
+  const body=response&&typeof response==="object"?response as Record<string,unknown>:{};
+  const code=typeof body.responseCode==="string"?body.responseCode:"";
+  const message=typeof body.responseMessage==="string"?body.responseMessage:"";
+  const detail=[code,message].filter(Boolean).join(" ");
+  if(httpStatus===401||httpStatus===403)return `Signature Authentication ditolak ${target} (HTTP ${httpStatus}${detail?` ${detail}`:""}). Alamat yang dipanggil sudah sesuai. Server menolak akses.`;
+  return `Signature Authentication tidak mengembalikan signature (HTTP ${httpStatus??"—"} ${target}${detail?` ${detail}`:""}).`;
+}
+
+function signatureAuthMaterial(provider:RecordRow){
+  const dedicated=decrypt(value(provider,"signatureAuthPrivateKey")).trim();
+  const pem=decrypt(value(provider,"privateKey")).trim();
+  for(const candidate of [dedicated,pem]){
+    if(!candidate)continue;
+    try{return toAspiPrivateKey(candidate);}catch{/* try the PEM stored for local signing */}
+  }
+  throw {error:"Private Key PEM tidak bisa diubah menjadi base64 untuk Signature Authentication. Isi Private Key PEM yang utuh.",status:400};
+}
+
+async function resolveAccessTokenSignature(provider:RecordRow,mode:SignatureMode,clientKey:string,timestamp:string,portal?:{user:RecordRow;gateway?:ClientSimulatorGateway}){
   if(mode==="NONE")return {signature:"",httpStatus:null as number|null,response:null as unknown,mode};
   if(mode==="FUNCTION"){
     const privateKey=decrypt(value(provider,"privateKey"));
@@ -46,15 +71,25 @@ async function resolveAccessTokenSignature(provider:RecordRow,mode:SignatureMode
   }
   const url=value(provider,"signatureAccessTokenUrl");
   if(!url)throw {error:"URL Signature Access Token (HIT_API) wajib diisi.",status:400};
-  const allowPrivate=provider.data.allowPrivateKeyToSigner===true;
-  const body:Record<string,unknown>={clientKey,timestamp,stringToSign:`${clientKey}|${timestamp}`};
-  if(allowPrivate&&value(provider,"privateKey"))body.privateKey=decrypt(value(provider,"privateKey"));
-  const hit=await hitApiSignature({url,body,headers:value(provider,"clientKey")?{"X-CLIENT-KEY":clientKey}:{}});
+  const signaturePrivateKey=signatureAuthMaterial(provider);
+  if(aspiSignatureTarget(url,"auth")){
+    if(!portal?.user||!portal.gateway?.hitAspiSignature)throw {error:"Signature Authentication ASPI membutuhkan sesi portal. Jalankan dari Client Simulator.",status:400};
+    const hit=await portal.gateway.hitAspiSignature(portal.user,{kind:"auth",timestamp,clientKey,privateKey:signaturePrivateKey});
+    return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
+  }
+  if(snapUtilityKind(url)==="auth"){
+    const request=snapUtilityRequest("auth",{timestamp,clientKey,privateKey:signaturePrivateKey});
+    const hit=await hitApiSignature({url,headers:request.headers,body:request.body});
+    if(!hit.signature)throw {error:signatureHitError(url,hit.httpStatus,hit.response),status:502};
+    return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
+  }
+  const body:Record<string,unknown>={clientKey,timestamp,privateKey:signaturePrivateKey,stringToSign:`${clientKey}|${timestamp}`};
+  const hit=await hitApiSignature({url,body,headers:{"X-CLIENT-KEY":clientKey}});
   if(!hit.signature)throw {error:`Layanan signature Access Token tidak mengembalikan signature (HTTP ${hit.httpStatus}).`,status:502};
   return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
 }
 
-async function resolveServiceSignature(provider:RecordRow,mode:SignatureMode,input:{method:string;relative:string;token:string;body:string;timestamp:string}){
+async function resolveServiceSignature(provider:RecordRow,mode:SignatureMode,input:{method:string;relative:string;token:string;body:string;timestamp:string},portal?:{user:RecordRow;gateway?:ClientSimulatorGateway}){
   if(mode==="NONE")return {signature:"",httpStatus:null as number|null,response:null as unknown,mode};
   if(mode==="FUNCTION"){
     const secret=decrypt(value(provider,"clientSecret"));
@@ -63,6 +98,21 @@ async function resolveServiceSignature(provider:RecordRow,mode:SignatureMode,inp
   }
   const url=value(provider,"signatureServiceUrl");
   if(!url)throw {error:"URL Signature Service (HIT_API) wajib diisi.",status:400};
+  if(aspiSignatureTarget(url,"service")){
+    const secret=decrypt(value(provider,"clientSecret"));
+    if(!secret)throw {error:"Signature Service ASPI membutuhkan Client Secret penyedia.",status:400};
+    if(!portal?.user||!portal.gateway?.hitAspiSignature)throw {error:"Signature Service ASPI membutuhkan sesi portal. Jalankan dari Client Simulator.",status:400};
+    const hit=await portal.gateway.hitAspiSignature(portal.user,{kind:"service",timestamp:input.timestamp,clientSecret:secret,method:input.method,endpoint:input.relative,accessToken:input.token,bodyText:input.body});
+    return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
+  }
+  if(snapUtilityKind(url)==="service"){
+    const secret=decrypt(value(provider,"clientSecret"));
+    if(!secret)throw {error:"Signature Service membutuhkan Client Secret penyedia.",status:400};
+    const request=snapUtilityRequest("service",{timestamp:input.timestamp,clientSecret:secret,method:input.method,endpoint:input.relative,accessToken:input.token,bodyText:input.body});
+    const hit=await hitApiSignature({url,headers:request.headers,body:request.body});
+    if(!hit.signature)throw {error:`Signature Service tidak mengembalikan signature (HTTP ${hit.httpStatus}).`,status:502};
+    return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
+  }
   const hit=await hitApiSignature({url,body:{method:input.method,relativeUrl:input.relative,accessToken:input.token,body:input.body,timestamp:input.timestamp}});
   if(!hit.signature)throw {error:`Layanan signature Service tidak mengembalikan signature (HTTP ${hit.httpStatus}).`,status:502};
   return {signature:hit.signature,httpStatus:hit.httpStatus,response:hit.response,mode};
@@ -96,8 +146,20 @@ function joinUrl(base:string,path:string){
   return `${root}${rel}`;
 }
 
+export type AspiSignatureHit={
+  kind:"auth"|"service";
+  timestamp:string;
+  clientKey?:string;
+  privateKey?:string;
+  clientSecret?:string;
+  method?:string;
+  endpoint?:string;
+  accessToken?:string;
+  bodyText?:string;
+};
 export type ClientSimulatorGateway={
   submit(user:RecordRow,form:ClientSimulatorFormInput):Promise<ClientSimulatorPortalResult>;
+  hitAspiSignature?(user:RecordRow,input:AspiSignatureHit):Promise<{signature:string;httpStatus:number|null;response:unknown}>;
 };
 
 export async function runClientSimulator(db:DatabaseService,records:RecordRow[],operator:Operator,input:Record<string,unknown>,gateway?:ClientSimulatorGateway,onProgress?:(stage:string,status:"running"|"completed"|"failed",detail?:string)=>Promise<void>,signal?:AbortSignal){
@@ -136,12 +198,19 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
 
   const accessMode=normalizeSignatureMode(provider.data.signatureAccessTokenMode??"FUNCTION");
   const serviceMode=normalizeSignatureMode(provider.data.signatureServiceMode??"FUNCTION");
+  const snapUser=records.find(row=>row.id===input.snapUserId&&row.kind==="snap_user");
+  if(!snapUser)throw {error:"Pilih User SNAP untuk login ke portal ASPI.",status:400};
+  if(!value(snapUser,"email")&&!value(snapUser,"username"))throw {error:"User SNAP belum punya email login portal ASPI.",status:400};
+  if(!value(snapUser,"password"))throw {error:"User SNAP belum punya password portal ASPI.",status:400};
+  const signer={user:snapUser,gateway};
+  const accessViaAspi=accessMode==="HIT_API"&&!!aspiSignatureTarget(value(provider,"signatureAccessTokenUrl"),"auth");
+  const serviceViaAspi=serviceMode==="HIT_API"&&!!aspiSignatureTarget(value(provider,"signatureServiceUrl"),"service");
   const steps:Record<string,unknown>[]=[];
   try{
 
   await cancelled();
-  await report("signature_auth","running",`${service.name} — Signature Access Token ${accessMode}`);
-  const accessSign=await resolveAccessTokenSignature(provider,accessMode,clientKey,timestamp);
+  await report("signature_auth","running",accessViaAspi?`${service.name} — Signature Authentication lewat halaman Keamanan ASPI`:`${service.name} — Signature Access Token ${accessMode}`);
+  const accessSign=await resolveAccessTokenSignature(provider,accessMode,clientKey,timestamp,signer);
   steps.push({stage:"signature_access_token",mode:accessSign.mode,httpStatus:accessSign.httpStatus,response:accessSign.response,ok:true});
   await report("signature_auth","completed",`Signature Access Token ${accessSign.mode}`);
 
@@ -153,7 +222,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     if(accessSign.signature)tokenHeaders["X-SIGNATURE"]=accessSign.signature;
     const tokenPayload={grantType:"client_credentials",additionalInfo:{}};
     const tokenBody=JSON.stringify(tokenPayload);
-    await report("access_token","running",tokenUrl);
+    await report("access_token","running",accessSign.signature?`${tokenUrl} — X-SIGNATURE dari Signature Authentication`:`${tokenUrl}`);
     const tokenResult=await httpJson(tokenUrl,"POST",tokenHeaders,tokenBody);
     steps.push({stage:"access_token",uri:tokenUrl,httpStatus:tokenResult.httpStatus,request:{headers:redact(tokenHeaders),body:tokenPayload},response:redact(tokenResult.body)});
     const tokenBodyObj=tokenResult.body&&typeof tokenResult.body==="object"?tokenResult.body as Record<string,unknown>:{};
@@ -170,15 +239,11 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   }
 
   const signedBody=minified||"{}";
-  await report("signature_service","running",`${method} ${relative}`);
-  const serviceSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:accessToken,body:signedBody,timestamp});
+  await report("signature_service","running",serviceViaAspi?`${method} ${relative} — Signature Service lewat halaman Keamanan ASPI`:`${method} ${relative}`);
+  const serviceSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:accessToken,body:signedBody,timestamp},signer);
   steps.push({stage:"signature_service",mode:serviceSign.mode,httpStatus:serviceSign.httpStatus,response:serviceSign.response,ok:true});
   await report("signature_service","completed",`Signature Service ${serviceSign.mode}`);
   if(!serviceSign.signature)throw {error:"X-SIGNATURE kosong. Isi Client Secret dengan mode FUNCTION, atau URL signature HIT_API.",status:400};
-  const snapUser=records.find(row=>row.id===input.snapUserId&&row.kind==="snap_user");
-  if(!snapUser)throw {error:"Pilih User SNAP untuk login ke portal ASPI.",status:400};
-  if(!value(snapUser,"email")&&!value(snapUser,"username"))throw {error:"User SNAP belum punya email login portal ASPI.",status:400};
-  if(!value(snapUser,"password"))throw {error:"User SNAP belum punya password portal ASPI.",status:400};
   if(!gateway)throw {error:"Sesi portal ASPI tidak tersedia pada server ini.",status:500};
 
   const serviceHeaders:Record<string,string>={
@@ -237,14 +302,9 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const now=new Date().toISOString();
   let pdfReady=false;
   let pdfError=portal.pdfError;
-  const aspiActivities=activity?[{
-    activityId:activity.activityId,
-    service:activity.service,
-    timestamp:activity.timestamp,
-    downloadUrl:activity.downloadUrl,
-    pdfReady:false,
-    authenticity:undefined as string|undefined,
-  }]:[];
+  const officialId=officialActivityId(activity?.activityId);
+  const evidence=officialId?buildSimulatorActivityEvidence({runId,activityId:officialId,serviceId:service.id,serviceName:activity?.service||aspiServiceName,testType,savedAt:activity?.timestamp||null,downloadUrl:activity?.downloadUrl||null,pdfReady:false,evidenceStatus:portal.pdf?"DOWNLOADING":pdfError?"FAILED":"PENDING"}):null;
+  const aspiActivities=evidence?[{...evidence,service:evidence.serviceName,timestamp:activity?.timestamp??"",authenticity:undefined as string|undefined}]:[];
   const requestJson={
     mode:"client_sim",
     activityName,
@@ -260,11 +320,11 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     steps,
     overrides:redact(overrides),
     operator:{id:operator.id,name:operator.name,username:operator.username,role:operator.role},
-    evaluation:{matched:evaluation.matched,expectedHttp,expectedCode,httpStatus,responseCode,testType},
+    evaluation:{matched:evaluation.matched,expectedHttp,expectedCode,httpStatus,responseCode,testType,httpVerified:evaluation.httpVerified,snapVerified:evaluation.snapVerified},
     aspiActivities,
     evidenceErrors:pdfError?[pdfError]:[] as string[],
     pdfCounts:{ready:0,required:1},
-    reprocess:{retryEvidence:!activity||!!pdfError,resumeTesting:false,requireMutatingConfirm:false},
+    reprocess:{retryEvidence:Boolean(officialId)&&!portal.pdf,resumeTesting:false,requireMutatingConfirm:false},
   };
   const noteFor=(ready:boolean,problem:string|null)=>!activity?`${activityName}. ${problem||"Hasil tidak masuk ke Client Simulator Activity."}`:(problem&&!ready?`${activityName}. ${problem}`:activityName);
   await db.query(
@@ -291,7 +351,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
       );
       pdfReady=true;
       pdfError=null;
-      if(aspiActivities[0]){aspiActivities[0].pdfReady=true;aspiActivities[0].authenticity="aspi-html2pdf-download";}
+      if(aspiActivities[0]){aspiActivities[0].pdfReady=true;aspiActivities[0].evidenceStatus="CAPTURED";aspiActivities[0].authenticity="aspi-html2pdf-download";}
       requestJson.evidenceErrors=[];
       requestJson.pdfCounts.ready=1;
       requestJson.reprocess.retryEvidence=false;
@@ -299,11 +359,12 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     }catch(error){
       pdfError=error instanceof Error?error.message:"PDF berhasil diterima tetapi gagal disimpan. Status evidence belum lengkap.";
       requestJson.evidenceErrors=[pdfError];
-      requestJson.reprocess.retryEvidence=true;
+      requestJson.reprocess.retryEvidence=Boolean(officialId);
+      if(aspiActivities[0])aspiActivities[0].evidenceStatus="FAILED";
       await db.query("UPDATE autosnap_runs SET request_json=$1::jsonb, notes=$2 WHERE id=$3",[JSON.stringify(requestJson),noteFor(false,pdfError),runId]);
     }
   }
-  await report("evaluation",status==="FAILED"?"failed":"completed",`${activityName}. HTTP ${httpStatus??"—"}. Response ${responseCode||"—"}.`);
+  await report("evaluation",status==="FAILED"?"failed":"completed",`${activityName}. HTTP ${evaluation.httpVerified?httpStatus:"belum terverifikasi"}. Response ${responseCode||"—"}.`);
   if(pdfReady)await report("pdf_store","completed","PDF resmi ASPI tersimpan.");
   else if(pdfError)await report("pdf_store","failed",pdfError);
   return {ok:true,id:runId,status,httpStatus,responseCode,matched:evaluation.matched,activityName,pdfReady,pdfError,aspiActivities,steps:requestJson.steps,request:redact(requestJson),response:redact(portal.response),notes:noteFor(pdfReady,pdfError)};

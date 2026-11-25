@@ -54,11 +54,34 @@ export class ClientSimulatorPortalError extends Error {
 
 const portalError = {
   session: () => new ClientSimulatorPortalError("ASPI_SESSION_EXPIRED", "Sesi ASPI telah berakhir. Login ulang diperlukan sebelum mengambil bukti."),
-  missing: () => new ClientSimulatorPortalError("ASPI_ACTIVITY_NOT_FOUND", "Pengujian sudah disimpan, tetapi aktivitas belum ditemukan di portal ASPI. Gunakan Proses Ulang Bukti untuk mencoba mengambil PDF tanpa mengirim ulang transaksi."),
-  ambiguous: () => new ClientSimulatorPortalError("ASPI_ACTIVITY_AMBIGUOUS", "Beberapa baris aktivitas memiliki nama service yang sama. AutoSNAP tidak memilih baris secara acak."),
-  trigger: () => new ClientSimulatorPortalError("ASPI_DOWNLOAD_TRIGGER_FAILED", "Tombol Download tidak ada pada baris aktivitas yang cocok."),
+  missing: () => new ClientSimulatorPortalError("ASPI_ACTIVITY_NOT_FOUND", "Activity ID tersimpan, tetapi barisnya belum ditemukan di Client Simulator Activity. Transaksi tidak dijalankan ulang."),
+  ambiguous: () => new ClientSimulatorPortalError("ASPI_ACTIVITY_AMBIGUOUS", "Activity ID muncul lebih dari satu kali. AutoSNAP tidak memilih baris secara acak."),
+  trigger: () => new ClientSimulatorPortalError("ASPI_DOWNLOAD_TRIGGER_FAILED", "Tombol Download tidak ada pada baris Activity ID yang dipilih."),
   timeout: () => new ClientSimulatorPortalError("ASPI_DOWNLOAD_TIMEOUT", "Portal ASPI belum menghasilkan file PDF dalam batas waktu pengambilan. Transaksi tidak akan dijalankan ulang."),
   invalid: (detail: string) => new ClientSimulatorPortalError("ASPI_INVALID_PDF", detail || "File yang diterima bukan PDF resmi ASPI yang valid."),
+};
+
+export const ACTIVITY_ID_UNAVAILABLE = "Activity ID belum tersedia pada history ini. Bukti tidak dapat diproses ulang secara otomatis karena aktivitas ASPI tidak dapat diidentifikasi secara unik.";
+
+export type SaveResultOutcome = {
+  state: "SAVED" | "REDIRECTED" | "AUTH_EXPIRED" | "REJECTED" | "UNKNOWN";
+  httpStatus: number | null;
+  redirectPath?: string;
+  activityId?: string;
+  verified: boolean;
+  error?: string;
+};
+
+export type SimulatorActivityEvidence = {
+  runId: string;
+  activityId: string;
+  serviceId: string;
+  serviceName: string;
+  testType: "positive" | "negative";
+  savedAt: string | null;
+  downloadUrl: string | null;
+  pdfReady: boolean;
+  evidenceStatus: "PENDING" | "DOWNLOADING" | "CAPTURED" | "FAILED";
 };
 
 export function clientSimulatorServiceName(name: string, testType: "positive" | "negative") {
@@ -67,8 +90,6 @@ export function clientSimulatorServiceName(name: string, testType: "positive" | 
   if (/positive case|negative case/i.test(base)) return base;
   return `${base} - ${testType === "positive" ? "Positive Case" : "Negative Case"}`;
 }
-
-const normalize = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /** Activity id printed on an ASPI Client Simulator download link. Other origins are rejected. */
 export function activityIdFromPortalUrl(href: string) {
@@ -82,30 +103,91 @@ export function activityIdFromPortalUrl(href: string) {
   return pathId ? pathId.toLowerCase() : null;
 }
 
-/**
- * A new Client Simulator Activity row must be the only one whose text contains the Service Name we typed.
- * An unseen row with a different name is left unmatched.
- */
-export function pickNewClientSimulatorActivity(before: Set<string>, rows: ClientSimulatorActivity[], serviceName: string) {
-  const matched = matchClientSimulatorActivity(rows, { serviceName, before });
+/** Official ASPI activity identity: UUID or numeric id. Names, timestamps, and row numbers are not ids. */
+export function officialActivityId(value: string | null | undefined) {
+  const id = String(value ?? "").trim().toLowerCase();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) return id;
+  if (/^\d{4,18}$/.test(id)) return id;
+  return null;
+}
+
+export function safeRedirectPath(location: string | null | undefined) {
+  if (!location) return undefined;
+  try { return new URL(location, CLIENT_SIMULATOR_FORM).pathname || undefined; }
+  catch { return undefined; }
+}
+
+/** HTTP status alone never proves SAVED. A redirect is classified by its path, without the query string. */
+export function classifySaveHttp(status: number | null, location?: string | null): SaveResultOutcome {
+  const redirectPath = safeRedirectPath(location);
+  const activityId = officialActivityId(activityIdFromPortalUrl(location || "")) ?? undefined;
+  if (status == null) return { state: "UNKNOWN", httpStatus: null, redirectPath, activityId, verified: false, error: "Status Save Result tidak terbaca." };
+  if (status >= 400) return { state: "REJECTED", httpStatus: status, redirectPath, activityId, verified: false, error: `ASPI menolak Save Result (HTTP ${status}).` };
+  if (status >= 300) {
+    if (redirectPath && /\/sign-in|\/login|\/account\/login/i.test(redirectPath)) {
+      return { state: "AUTH_EXPIRED", httpStatus: status, redirectPath, verified: false, error: "Sesi ASPI telah berakhir. Login ulang diperlukan sebelum mengambil bukti." };
+    }
+    if (!redirectPath) return { state: "UNKNOWN", httpStatus: status, verified: false, error: `Save Result mengembalikan HTTP ${status} tanpa tujuan redirect yang dapat diperiksa.` };
+    return { state: "REDIRECTED", httpStatus: status, redirectPath, activityId, verified: false };
+  }
+  return { state: "UNKNOWN", httpStatus: status, redirectPath, activityId, verified: false };
+}
+
+export function proveSavedActivity(outcome: SaveResultOutcome, activity: ClientSimulatorActivity | null): SaveResultOutcome {
+  const activityId = officialActivityId(activity?.activityId);
+  if (!activityId) return outcome;
+  return { state: "SAVED", httpStatus: outcome.httpStatus, redirectPath: outcome.redirectPath, activityId, verified: true };
+}
+
+export function findActivityById(rows: ClientSimulatorActivity[], activityId: string) {
+  const id = officialActivityId(activityId);
+  if (!id) return { ok: false as const, code: "ASPI_ACTIVITY_NOT_FOUND" as const };
+  const matches = rows.filter(row => officialActivityId(row.activityId) === id);
+  if (matches.length === 1) return { ok: true as const, activity: { ...matches[0], activityId: id } };
+  return { ok: false as const, code: matches.length === 0 ? "ASPI_ACTIVITY_NOT_FOUND" as const : "ASPI_ACTIVITY_AMBIGUOUS" as const };
+}
+
+/** The only post-save association: exactly one official id that was not in the baseline. Service name is not a key. */
+export function findNewOfficialActivity(before: Set<string>, rows: ClientSimulatorActivity[]) {
+  const known = new Set([...before].map(item => officialActivityId(item) ?? item));
+  const fresh = new Map<string, ClientSimulatorActivity>();
+  for (const row of rows) {
+    const id = officialActivityId(row.activityId);
+    if (!id || known.has(id) || fresh.has(id)) continue;
+    fresh.set(id, { ...row, activityId: id });
+  }
+  if (fresh.size === 1) return { ok: true as const, activity: [...fresh.values()][0] };
+  if (fresh.size === 0) return { ok: false as const, code: "ACTIVITY_ID_PENDING" as const };
+  return { ok: false as const, code: "ACTIVITY_ID_UNRESOLVED" as const };
+}
+
+export function pickNewClientSimulatorActivity(before: Set<string>, rows: ClientSimulatorActivity[]) {
+  const matched = findNewOfficialActivity(before, rows);
   return matched.ok ? matched.activity : null;
 }
 
-/** One verified row. A repeated service name without a unique Activity ID is ambiguous, not the first row. */
+/** Exact Activity ID only. A service name never selects a row. */
 export function matchClientSimulatorActivity(rows: ClientSimulatorActivity[], target: { activityId?: string; serviceName?: string; before?: Set<string> }): { ok: true; activity: ClientSimulatorActivity } | { ok: false; code: "ASPI_ACTIVITY_NOT_FOUND" | "ASPI_ACTIVITY_AMBIGUOUS" } {
-  const fresh = target.before ? rows.filter(row => row.activityId && !target.before!.has(row.activityId)) : rows.filter(row => row.activityId);
-  const id = target.activityId?.trim().toLowerCase() ?? "";
-  if (id) {
-    const byId = fresh.filter(row => row.activityId.toLowerCase() === id || row.downloadUrl.toLowerCase().includes(id) || row.text.toLowerCase().includes(id));
-    if (byId.length === 1) return { ok: true, activity: byId[0] };
-    if (byId.length > 1) return { ok: false, code: "ASPI_ACTIVITY_AMBIGUOUS" };
+  if (!officialActivityId(target.activityId)) return { ok: false, code: "ASPI_ACTIVITY_NOT_FOUND" };
+  return findActivityById(rows, target.activityId ?? "");
+}
+
+export function clientSimulatorRetryTarget(activities: { activityId?: string }[], requestedId?: string) {
+  const stored = [...new Set(activities.map(item => officialActivityId(item.activityId)).filter((id): id is string => !!id))];
+  const requested = officialActivityId(requestedId);
+  if (requested) {
+    if (!stored.includes(requested)) return { ok: false as const, code: "ASPI_ACTIVITY_NOT_FOUND" as const, message: "Activity ID tidak terdaftar pada history ini." };
+    return { ok: true as const, activityId: requested };
   }
-  const needle = normalize(target.serviceName ?? "");
-  if (needle.length < 4) return { ok: false, code: "ASPI_ACTIVITY_NOT_FOUND" };
-  const named = fresh.filter(row => normalize(`${row.service} ${row.text}`).includes(needle));
-  if (named.length === 1) return { ok: true, activity: named[0] };
-  if (named.length > 1) return { ok: false, code: "ASPI_ACTIVITY_AMBIGUOUS" };
-  return { ok: false, code: "ASPI_ACTIVITY_NOT_FOUND" };
+  if (stored.length === 0) return { ok: false as const, code: "ACTIVITY_ID_UNRESOLVED" as const, message: ACTIVITY_ID_UNAVAILABLE };
+  if (stored.length > 1) return { ok: false as const, code: "ASPI_ACTIVITY_AMBIGUOUS" as const, message: "History ini memiliki lebih dari satu Activity ID. Pilih aktivitas yang akan diambil buktinya." };
+  return { ok: true as const, activityId: stored[0] };
+}
+
+export function buildSimulatorActivityEvidence(input: { runId: string; activityId: string; serviceId: string; serviceName: string; testType: "positive" | "negative"; savedAt?: string | null; downloadUrl?: string | null; pdfReady?: boolean; evidenceStatus?: SimulatorActivityEvidence["evidenceStatus"] }): SimulatorActivityEvidence | null {
+  const activityId = officialActivityId(input.activityId);
+  if (!activityId) return null;
+  return { runId: input.runId, activityId, serviceId: input.serviceId, serviceName: input.serviceName, testType: input.testType, savedAt: input.savedAt || null, downloadUrl: input.downloadUrl || null, pdfReady: input.pdfReady === true, evidenceStatus: input.evidenceStatus ?? (input.pdfReady ? "CAPTURED" : "PENDING") };
 }
 
 export function evaluateClientSimulator(input: {
@@ -114,18 +196,21 @@ export function evaluateClientSimulator(input: {
   responseCode: string;
   expectedHttp: number | null;
   expectedCode: string | null;
-}): { matched: boolean; status: "PASSED" | "FAILED" | "COMPLETED" } {
+}): { matched: boolean; status: "PASSED" | "FAILED" | "COMPLETED"; httpVerified: boolean; snapVerified: boolean } {
   const { testType, httpStatus, responseCode, expectedHttp, expectedCode } = input;
-  if (httpStatus == null && !responseCode) return { matched: false, status: "COMPLETED" };
+  const snapVerified = expectedCode ? responseCode === expectedCode : testType === "positive" ? /^200\d{2}/.test(responseCode) : responseCode.length > 0 && !/^200/.test(responseCode);
+  const httpVerified = httpStatus != null && (expectedHttp == null || httpStatus === expectedHttp);
+  if (httpStatus == null && !responseCode) return { matched: false, status: "COMPLETED", httpVerified: false, snapVerified: false };
+  if (expectedHttp != null && httpStatus == null) return { matched: false, status: "COMPLETED", httpVerified: false, snapVerified };
   let matched = false;
   if (testType === "positive") {
-    if (expectedCode) matched = responseCode === expectedCode && (expectedHttp ? httpStatus === expectedHttp || httpStatus == null : true);
-    else if (expectedHttp) matched = httpStatus === expectedHttp || (httpStatus == null && expectedHttp >= 200 && expectedHttp < 300 && /^200\d{2}/.test(responseCode));
-    else matched = (httpStatus !== null && httpStatus >= 200 && httpStatus < 300) || /^200\d{2}/.test(responseCode);
+    if (expectedCode) matched = snapVerified && httpVerified;
+    else if (expectedHttp != null) matched = httpVerified;
+    else matched = httpStatus != null ? httpStatus >= 200 && httpStatus < 300 : snapVerified;
   } else {
-    matched = expectedHttp ? httpStatus === expectedHttp : httpStatus !== null ? httpStatus >= 400 : !/^200/.test(responseCode);
+    matched = expectedHttp != null ? httpStatus === expectedHttp : httpStatus != null ? httpStatus >= 400 : snapVerified;
   }
-  return { matched, status: matched ? "PASSED" : "FAILED" };
+  return { matched, status: matched ? "PASSED" : "FAILED", httpVerified, snapVerified };
 }
 
 const mandatoryFields: { label: string; pattern: RegExp; key: keyof ClientSimulatorFormInput }[] = [
@@ -288,12 +373,27 @@ async function saveDisplayedResult(page: Page) {
     });
     const response = await posted;
     await page.waitForTimeout(800);
-    if (!response.ok()) throw Error(`ASPI menolak Save Result (HTTP ${response.status()}).`);
-    if (dialogMessage && !/save/i.test(dialogMessage)) throw Error(dialogMessage);
-    return dialogMessage || `HTTP ${response.status()}`;
+    const location = response.headers()["location"] ?? null;
+    let hinted: string | null = null;
+    try {
+      const parsed = JSON.parse(await response.text()) as { activityId?: unknown; activity_id?: unknown };
+      const value = parsed?.activityId ?? parsed?.activity_id;
+      hinted = officialActivityId(typeof value === "string" || typeof value === "number" ? String(value) : "");
+    } catch { hinted = null; }
+    const outcome = classifySaveHttp(response.status(), location);
+    if (!outcome.activityId && hinted) outcome.activityId = hinted;
+    if (outcome.state === "REJECTED" && dialogMessage) outcome.error = dialogMessage.slice(0, 240);
+    return outcome;
   } finally {
     page.off("dialog", onDialog);
   }
+}
+
+function saveDiagnosis(outcome: SaveResultOutcome) {
+  if (outcome.error) return outcome.error;
+  if (outcome.state === "REDIRECTED") return `Save Result HTTP ${outcome.httpStatus} menuju ${outcome.redirectPath}. Penyimpanan belum dibuktikan dengan Activity ID resmi.`;
+  if (outcome.httpStatus != null && outcome.httpStatus < 300) return `Save Result HTTP ${outcome.httpStatus}. Activity ID resmi belum ditemukan di Client Simulator Activity.`;
+  return "Activity ID resmi belum dapat diverifikasi. Transaksi tidak dijalankan ulang.";
 }
 
 export async function readClientSimulatorActivities(page: Page): Promise<ClientSimulatorActivity[]> {
@@ -301,10 +401,11 @@ export async function readClientSimulatorActivities(page: Page): Promise<ClientS
   if (!location || location.origin !== "https://apidevportal.aspi-indonesia.or.id" || location.pathname !== "/client-simulator-activity") {
     const response = await page.goto(CLIENT_SIMULATOR_ACTIVITY, { waitUntil: "domcontentloaded", timeout: 20000 });
     const here = new URL(page.url());
+    if (here.pathname === "/sign-in" || /\/login/i.test(here.pathname)) throw portalError.session();
     if (here.origin !== "https://apidevportal.aspi-indonesia.or.id" || here.pathname !== "/client-simulator-activity") {
-      throw Error("Halaman Client Simulator Activity dialihkan. Periksa login ASPI.");
+      throw portalError.session();
     }
-    if (response && !response.ok()) throw Error(`Client Simulator Activity mengembalikan HTTP ${response.status()}.`);
+    void response;
   }
   const lengthSelect = page.locator('select[name$="_length"], .dataTables_length select').first();
   if (await lengthSelect.count()) {
@@ -322,22 +423,21 @@ export async function readClientSimulatorActivities(page: Page): Promise<ClientS
     if (!cells.length) return [];
     const anchors = Array.from(row.querySelectorAll("a"));
     const link = anchors.find(anchor => /download|unduh/i.test(clean(anchor.textContent)) || /download/i.test(anchor.getAttribute("href") ?? "")) ?? anchors.at(-1);
-    const markupId = (row.innerHTML.match(uuid) ?? [])[0] ?? "";
+    const markupId = ((row.innerHTML.match(uuid) ?? [])[0] ?? "").toLowerCase();
     const href = link?.getAttribute("href") ?? "";
-    const fallbackId = markupId || clean(`${cells[1] ?? ""}-${cells[2] ?? ""}`).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+    const official = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value) || /^\d{4,18}$/.test(value);
     if (!href || /^\s*javascript:/i.test(href)) {
-      if (fallbackId.length < 4) return [];
+      if (!official(markupId)) return [];
       const service = cells[2] || cells.find(cell => cell && !/download|unduh|detail|view/i.test(cell)) || clean(row.textContent).slice(0, 180);
-      return [{ activityId: fallbackId, service, timestamp: cells[1] ?? "", downloadUrl: "", text: clean(row.textContent) }];
+      return [{ activityId: markupId, service, timestamp: cells[1] ?? "", downloadUrl: "", text: clean(row.textContent) }];
     }
     let url: URL;
     try { url = new URL(href, origin); } catch { return []; }
     if (url.origin !== origin) return [];
-    const query = url.searchParams.get("activityId") || url.searchParams.get("activity_id") || url.searchParams.get("id") || "";
-    const pathId = url.pathname.split("/").find(part => (uuid.test(part) && part.length === 36) || /^\d{4,18}$/.test(part)) ?? "";
-    const rowId = (clean(row.textContent).match(uuid) ?? [])[0] ?? "";
-    const activityId = ((uuid.test(query) && query.length === 36) || /^\d{1,18}$/.test(query) ? query : pathId || rowId || fallbackId).toLowerCase();
-    if (!activityId || activityId.length < 4) return [];
+    const query = (url.searchParams.get("activityId") || url.searchParams.get("activity_id") || url.searchParams.get("id") || "").toLowerCase();
+    const pathId = (url.pathname.split("/").find(part => (uuid.test(part) && part.length === 36) || /^\d{4,18}$/.test(part)) ?? "").toLowerCase();
+    const activityId = official(query) ? query : official(pathId) ? pathId : official(markupId) ? markupId : "";
+    if (!activityId) return [];
     const service = cells.find(cell => cell && !/download|unduh/i.test(cell) && !uuid.test(cell)) ?? clean(row.textContent).slice(0, 180);
     const timestamp = cells.find(cell => /\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(cell)) ?? "";
     return [{ activityId, service, timestamp, downloadUrl: url.toString(), text: clean(row.textContent) }];
@@ -366,19 +466,17 @@ async function readPortalDownload(download: Download) {
 }
 
 async function downloadControl(page: Page, activity: ClientSimulatorActivity) {
-  if (!/^[a-z0-9-]{4,40}$/i.test(activity.activityId)) throw portalError.missing();
-  const id = activity.activityId.replace(/[^a-z0-9-]/gi, "");
-  const byId = page.locator(`tbody tr a[href*="${id}"], tbody tr button[onclick*="${id}"], tbody tr a[onclick*="${id}"]`);
-  const idCount = await byId.count();
-  if (idCount > 1) throw portalError.ambiguous();
-  if (idCount === 1) return byId;
-  const rows = page.locator("tbody tr").filter({ hasText: activity.service });
-  const rowCount = await rows.count();
+  const id = officialActivityId(activity.activityId);
+  if (!id) throw portalError.missing();
+  const row = page.locator(`tbody tr:has(a[href*="${id}"]), tbody tr:has([onclick*="${id}"])`);
+  const rowCount = await row.count();
   if (rowCount > 1) throw portalError.ambiguous();
   if (rowCount !== 1) throw portalError.missing();
-  const control = rows.locator("a,button,input").filter({ hasText: /download|unduh/i });
-  if (await control.count() !== 1) throw portalError.trigger();
-  return control;
+  const named = row.locator("a,button,input").filter({ hasText: /download|unduh/i });
+  if (await named.count() === 1) return named;
+  const link = row.locator(`a[href*="${id}"]`);
+  if (await link.count() === 1) return link;
+  throw portalError.trigger();
 }
 
 /** Click Download on the matched activity row and keep the file that click produces. Never page.pdf(). */
@@ -433,34 +531,45 @@ export async function runClientSimulatorOnPage(page: Page, form: ClientSimulator
   steps.push({ stage: "aspi_send", httpStatus: displayed.httpStatus, responseCode: displayed.responseCode });
   await note("api_request", "completed", `${form.serviceName} — response ${displayed.responseCode || "diterima"}.`);
   await beat?.();
-  await note("pdf_download", "running", "Save Result, lalu menunggu Download di Client Simulator Activity.");
+  await note("save_result", "running", "Save Result pada form ASPI. Send tidak diulang.");
+  let saved: SaveResultOutcome;
   try {
-    const confirmation = await saveDisplayedResult(page);
-    steps.push({ stage: "save_result", ok: true, confirmation });
+    saved = await saveDisplayedResult(page);
+    steps.push({ stage: "save_result", state: saved.state, httpStatus: saved.httpStatus, redirectPath: saved.redirectPath ?? null, activityId: saved.activityId ?? null, verified: saved.verified });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Save Result gagal.";
-    steps.push({ stage: "save_result", ok: false, error: message });
-    await note("pdf_download", "failed", message);
-    return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: `${message} Hasil tidak masuk ke Client Simulator Activity.`, steps };
+    steps.push({ stage: "save_result", state: "UNKNOWN", ok: false, error: message });
+    await note("save_result", "failed", message);
+    return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: message, steps };
   }
+  await note("save_redirect", saved.state === "AUTH_EXPIRED" || saved.state === "REJECTED" ? "failed" : "completed", saveDiagnosis(saved));
+  if (saved.state === "AUTH_EXPIRED" || saved.state === "REJECTED") {
+    return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: saveDiagnosis(saved), steps };
+  }
+  const baseline = new Set(before.map(row => row.activityId));
   let activity: ClientSimulatorActivity | null = null;
   let matchError: string | null = null;
+  await note("activity_id", "running", saved.activityId ? `Mencari Activity ID ${saved.activityId}.` : "Mencari satu Activity ID resmi yang baru.");
   for (let attempt = 0; attempt < 4; attempt++) {
     if (signal?.aborted) throw Error("Pengujian dibatalkan pengguna.");
     const rows = await readClientSimulatorActivities(page);
-    const matched = matchClientSimulatorActivity(rows, { serviceName: form.serviceName, before: new Set(before.map(row => row.activityId)) });
+    const matched = saved.activityId ? findActivityById(rows, saved.activityId) : findNewOfficialActivity(baseline, rows);
     steps.push({ stage: "activity_match", attempt, listed: rows.length, activityId: matched.ok ? matched.activity.activityId : null, code: matched.ok ? null : matched.code });
     if (matched.ok) { activity = matched.activity; break; }
-    if (matched.code === "ASPI_ACTIVITY_AMBIGUOUS") { matchError = portalError.ambiguous().userMessage; break; }
-    await note("pdf_download", "running", "Hasil tersimpan. Menunggu baris baru di Client Simulator Activity.");
+    if (!matched.ok && matched.code === "ACTIVITY_ID_UNRESOLVED") { matchError = "Setelah Save Result muncul lebih dari satu Activity ID baru. AutoSNAP tidak memilih Activity ID secara acak."; break; }
+    if (!matched.ok && matched.code === "ASPI_ACTIVITY_AMBIGUOUS") { matchError = portalError.ambiguous().userMessage; break; }
+    await note("activity_id", "running", "Activity ID belum terlihat. Membaca ulang Client Simulator Activity.");
     await page.waitForTimeout(2000);
     await page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined);
   }
-  if (!activity) {
-    const message = matchError || portalError.missing().userMessage;
-    await note("pdf_download", "failed", message);
+  const proven = proveSavedActivity(saved, activity);
+  steps.push({ stage: "activity_id", state: proven.state, activityId: proven.activityId ?? null, verified: proven.verified });
+  if (!proven.verified || !activity) {
+    const message = matchError || saveDiagnosis(saved);
+    await note("activity_id", "failed", message);
     return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: message, steps };
   }
+  await note("activity_id", "completed", `Activity ID ${activity.activityId}.`);
   let pdf: Buffer | null = null;
   let pdfError: string | null = null;
   try {
