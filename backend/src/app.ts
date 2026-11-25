@@ -21,7 +21,7 @@ import { RunControl } from "./run-control";
 import { canAccessRun, readHistory } from "./history";
 import { writeAudit } from "./audit-log";
 import { runClientSimulator } from "./simulator-run";
-import { ClientSimulatorPortalError, clientSimulatorRetryTarget, officialActivityId } from "./aspi-client-simulator";
+import { ASPI_SERVICE_NAME_MAX, ClientSimulatorPortalError, clientSimulatorEvidenceOutcome, clientSimulatorRetryTarget, clientSimulatorServiceLabel, officialActivityId } from "./aspi-client-simulator";
 import { AspiAutomationError } from "./aspi-types";
 import { normalizeSignatureMode } from "./simulator-signing";
 import {DocumentationReader} from "./documentation-reader";
@@ -261,7 +261,8 @@ export class AutoSnapController {
         try{
           await progress("preparing","completed","Konfigurasi Client Simulator tervalidasi. Form ASPI akan diisi, lalu PDF ditunggu dari Client Simulator Activity.");
           const result=await runClientSimulator(this.db,await this.allRecords(),user,input,{submit:(snapUser,form)=>this.portal.submitClientSimulator(snapUser,form,{onProgress:progress,signal:control.signal}),hitAspiSignature:(snapUser,request)=>this.portal.hitAspiSignatureUtility(snapUser,request,control.signal)},progress,control.signal);
-          const finished=await this.updateProgress(progressId,user.id,"finished",result.status==="FAILED"?"failed":"completed",`${String(result.notes??result.activityName??"")}${result.pdfReady?"":" Bukti PDF belum lengkap."}`);
+          const pipeline=result.status==="CANCELLED"?"cancelled":"completed";
+          const finished=await this.updateProgress(progressId,user.id,"finished",pipeline,`Finished — Outcome: ${result.status}. ${String(result.notes??"")}`);
           const stored=await this.db.one<{steps:unknown}>("SELECT steps FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[progressId,user.id]);
           await this.db.query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2",[JSON.stringify({progressId,progressLog:Array.isArray(stored?.steps)?stored.steps:[]}),result.id]);
           return res.json({...result,progressId,formReady:true,aspiReady:finished!=="cancelled"});
@@ -401,6 +402,11 @@ export class AutoSnapController {
       const pdf=validateAspiDownloadPdf(captured.pdf);
       const now=new Date().toISOString();
       const hash=pdfContentSha256(pdf),fingerprint=pdfEvidenceFingerprint(pdf),provenance=inspectPdfProvenance(pdf);
+      const parsed=clientSimulatorServiceLabel([],[captured.activity.service]);
+      const previous=String(activity?.serviceName??activity?.service??"");
+      const serviceLabel=parsed.serviceSource==="portal"?parsed.service:(/^\d{1,3}$/.test(previous)?"":previous);
+      const storedService=(serviceLabel||previous||"Client Simulator").slice(0,ASPI_SERVICE_NAME_MAX);
+      const serviceSource=parsed.serviceSource==="portal"?"portal":"autosnap_snapshot";
       await this.db.query(
         `INSERT INTO autosnap_evidence_pdfs(
            run_id,activity_id,service,pdf_data,byte_size,content_sha256,content_fingerprint,
@@ -410,15 +416,19 @@ export class AutoSnapController {
            service=EXCLUDED.service, pdf_data=EXCLUDED.pdf_data, byte_size=EXCLUDED.byte_size,
            content_sha256=EXCLUDED.content_sha256, content_fingerprint=EXCLUDED.content_fingerprint,
            verification_status='CAPTURED', pdf_producer=EXCLUDED.pdf_producer, source_url=EXCLUDED.source_url, downloaded_at=EXCLUDED.downloaded_at`,
-        [run.id,captured.activity.activityId,captured.activity.service.slice(0,120),pdf,pdf.length,hash,fingerprint,provenance.producer||null,captured.activity.downloadUrl,now]
+        [run.id,captured.activity.activityId,storedService,pdf,pdf.length,hash,fingerprint,provenance.producer||null,captured.activity.downloadUrl,now]
       );
-      const storedActivity={...(activity??{}),activityId,service:captured.activity.service,serviceName:captured.activity.service,timestamp:captured.activity.timestamp,downloadUrl:captured.activity.downloadUrl,pdfReady:true,evidenceStatus:"CAPTURED",authenticity:"aspi-html2pdf-download"};
+      const storedActivity={...(activity??{}),activityId,service:storedService,serviceName:storedService,serviceSource,timestamp:captured.activity.timestamp,downloadUrl:captured.activity.downloadUrl,pdfReady:true,evidenceStatus:"CAPTURED",authenticity:"aspi-html2pdf-download"};
       const aspiActivities=activities.map(item=>officialActivityId(String(item.activityId??""))===activityId?storedActivity:item);
       const pdfCounts={ready:1,required};
+      const evaluation=object(request.evaluation)?request.evaluation:null;
+      const status=clientSimulatorEvidenceOutcome(evaluation,true,run.status);
+      const promoted=evaluation?{...evaluation,outcome:status}:null;
       const reprocess={retryEvidence:false,resumeTesting:false,requireMutatingConfirm:false};
-      const audit={at:now,stage:"pdf_reprocessing",result:"COMPLETED",priorStatus:run.status,statusAfter:run.status,note:"PDF Client Simulator diambil ulang dari Client Simulator Activity. Send tidak dijalankan.",actorId:operator.id,actorUsername:operator.username,actorName:operator.name};
-      await this.db.query("UPDATE autosnap_runs SET request_json=jsonb_set(request_json || $1::jsonb,'{reprocessAudit}',COALESCE(request_json->'reprocessAudit','[]'::jsonb)||$2::jsonb,true) WHERE id=$3",[JSON.stringify({aspiActivities,pdfCounts,reprocess,evidenceErrors:[]}),JSON.stringify([audit]),run.id]);
-      return res.json({ok:true,status:run.status,notes:run.notes,complete:true,stored:1,required,missing:[],pdfCounts,reprocess,reprocessAudit:[audit],processing:false});
+      const notes=`${run.notes??""} Outcome: ${status}.`.trim();
+      const audit={at:now,stage:"pdf_reprocessing",result:"COMPLETED",priorStatus:run.status,statusAfter:status,note:"PDF Client Simulator diambil ulang dari Client Simulator Activity. Send tidak dijalankan. HTTP dan SNAP yang tersimpan tidak diubah.",actorId:operator.id,actorUsername:operator.username,actorName:operator.name};
+      await this.db.query("UPDATE autosnap_runs SET status=$1, notes=$2, request_json=jsonb_set(request_json || $3::jsonb,'{reprocessAudit}',COALESCE(request_json->'reprocessAudit','[]'::jsonb)||$4::jsonb,true) WHERE id=$5",[status,notes,JSON.stringify({outcome:status,evaluation:promoted,aspiActivities,pdfCounts,reprocess,evidenceErrors:[]}),JSON.stringify([audit]),run.id]);
+      return res.json({ok:true,status,notes,complete:true,stored:1,required,missing:[],pdfCounts,reprocess,reprocessAudit:[audit],processing:false});
     }catch(error){
       if(error instanceof AspiAutomationError&&error.outcome==="ASPI_SESSION_BUSY")return this.fail(res,clientError("Akun ASPI ini sedang dipakai. PDF yang sudah tersimpan tetap aman. Transaksi tidak dijalankan ulang.",409,"ASPI_SESSION_BUSY"));
       if(error instanceof AspiAutomationError)return this.fail(res,clientError("Sesi ASPI telah berakhir. Login ulang diperlukan sebelum mengambil bukti.",502,"ASPI_SESSION_EXPIRED"));

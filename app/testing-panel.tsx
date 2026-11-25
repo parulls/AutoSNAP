@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import type { Api, HistoryFilters, Item, Run, State } from "./model";
 import DynamicRequestFields from "./dynamic-request-fields";
+import EvaluationNotice from "./evaluation-notice";
 import UiIcon from "./ui-icon";
 import PdfPreview from "./pdf-preview";
 import HistoryFilter from "./history-filter";
@@ -253,12 +254,6 @@ function ReprocessHistory({run}:{run:Run}){
   </>;
 }
 function ErrorDialog({error,onClose}:{error:TestingError;onClose:()=>void}){return <div className="modal-backdrop error-layer"><section className="card error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="testing-error-title"><CloseButton onClick={onClose}/><h2 id="testing-error-title">{error.summary}</h2><dl><div><dt>Tahap</dt><dd>{progressStages.find(item=>item.key===error.stage)?.label??error.stage}</dd></div><div><dt>Outcome</dt><dd>{error.outcome}</dd></div><div><dt>HTTP Status</dt><dd>{error.httpStatus}</dd></div><div><dt>Detail</dt><dd>{error.technical}</dd></div><div><dt>Saran</dt><dd>{error.suggestion}</dd></div></dl></section></div>;}
-function EvaluationNotice({run}:{run:Run|null|undefined}){
-  const evaluation=object(run?.request)&&object(run.request.evaluation)?run.request.evaluation:null;
-  if(!evaluation||!["COMPLETED","PASSED","FAILED","AUTOMATION_ERROR"].includes(String(evaluation.outcome)))return null;
-  const mode=String(evaluation.mode??"HTTP_ONLY")==="SNAP_AND_HTTP"?"SNAP + HTTP":"HTTP Only";
-  return <aside className="evaluation-notice" role="status" aria-label="Hasil pengujian"><strong>Outcome: {String(evaluation.outcome)}</strong><p>Validasi: {mode}</p><p>Tahap: {String(evaluation.stageLabel??"Validasi")}</p><p>{String(evaluation.detail)}</p>{evaluation.suggestion?<p>Saran: {String(evaluation.suggestion)}</p>:null}</aside>;
-}
 function EvidenceDownloadDialog({pdfs,downloadingId,onClose,onDownload,onView,onZip}:{pdfs:EvidenceChoice[];downloadingId:string;runId:string;onClose:()=>void;onDownload:(evidence:EvidenceChoice)=>void;onView:(evidence:EvidenceChoice)=>void;onZip:()=>void}){
   const dialog=useRef<HTMLDialogElement>(null),busy=!!downloadingId;
   useEffect(()=>{const node=dialog.current;node?.showModal();return()=>node?.close();},[]);

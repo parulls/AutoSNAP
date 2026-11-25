@@ -3,7 +3,8 @@ import type { DatabaseService, RecordRow } from "./database.service";
 import type { Operator } from "./accounts";
 import { decrypt, redact } from "./security";
 import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateAspiDownloadPdf } from "./aspi-evidence";
-import { ASPI_SERVICE_NAME_MAX, buildClientSimulatorServiceName, buildSimulatorActivityEvidence, evaluateClientSimulator, finalizeSimulatorStatus, normalizeClientSimulatorComponent, officialActivityId, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
+import { ASPI_SERVICE_NAME_MAX, buildClientSimulatorServiceName, buildSimulatorActivityEvidence, clientSimulatorDispatchOutcome, clientSimulatorServiceLabel, evaluateClientSimulator, normalizeClientSimulatorComponent, officialActivityId, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
+import { finalOutcome, isHttpResponse } from "./test-evaluation";
 import {
   aspiSignatureTarget,
   getXSignatureAccessTokenFunction,
@@ -331,16 +332,20 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
 
   const responseObj=portal.response&&typeof portal.response==="object"&&!Array.isArray(portal.response)?portal.response as Record<string,unknown>:{};
   const responseCode=String(responseObj.responseCode??"");
-  const httpStatus=portal.httpStatus??(typeof responseObj.httpStatus==="number"?responseObj.httpStatus:null);
-  const evaluation=evaluateClientSimulator({testType:legacyTestType,httpStatus,responseCode,expectedHttp,expectedCode});
+  const httpSource=portal.httpSource??(isHttpResponse(portal.httpStatus)?"target_api":"unavailable");
+  const httpStatus=httpSource==="target_api"&&isHttpResponse(portal.httpStatus)?portal.httpStatus:null;
+  const evaluation=evaluateClientSimulator({testType:legacyTestType,httpStatus,responseCode,expectedHttp,expectedCode,httpSource});
   const activity=portal.activity;
-  let status=finalizeSimulatorStatus(evaluation.status,false);
+  const portalService=activity?clientSimulatorServiceLabel([],activity.serviceSource==="portal"?[activity.service]:[activity.service]):{service:"",serviceSource:"unavailable" as const};
+  const evidenceServiceName=(activity?.serviceSource==="portal"&&activity.service?activity.service:portalService.service)||aspiServiceName;
+  const serviceSource=evidenceServiceName===aspiServiceName&&portalService.serviceSource!=="portal"?"autosnap_snapshot":"portal";
+  let status=finalOutcome(evaluation.evaluation,false);
   const now=new Date().toISOString();
   let pdfReady=false;
   let pdfError=portal.pdfError;
   const officialId=officialActivityId(activity?.activityId);
-  const evidence=officialId?buildSimulatorActivityEvidence({runId,activityId:officialId,serviceId:service.id,serviceName:activity?.service||aspiServiceName,testType:legacyTestType,scenarioName,savedAt:activity?.timestamp||null,downloadUrl:activity?.downloadUrl||null,pdfReady:false,evidenceStatus:portal.pdf?"DOWNLOADING":pdfError?"FAILED":"PENDING"}):null;
-  const aspiActivities=evidence?[{...evidence,service:evidence.serviceName,timestamp:activity?.timestamp??"",authenticity:undefined as string|undefined}]:[];
+  const evidence=officialId?buildSimulatorActivityEvidence({runId,activityId:officialId,serviceId:service.id,serviceName:evidenceServiceName,testType:legacyTestType,scenarioName,savedAt:activity?.timestamp||null,downloadUrl:activity?.downloadUrl||null,pdfReady:false,evidenceStatus:portal.pdf?"DOWNLOADING":pdfError?"FAILED":"PENDING"}):null;
+  const aspiActivities=evidence?[{...evidence,service:evidence.serviceName,serviceSource,timestamp:activity?.timestamp??"",authenticity:undefined as string|undefined}]:[];
   const requestJson={
     mode:"client_sim",
     activityName,
@@ -360,7 +365,8 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     steps,
     overrides:redact(overrides),
     operator:{id:operator.id,name:operator.name,username:operator.username,role:operator.role},
-    evaluation:{matched:evaluation.matched,expectedHttp,expectedCode,httpStatus,responseCode,legacyTestType,httpVerified:evaluation.httpVerified,snapVerified:evaluation.snapVerified},
+    outcome:status,
+    evaluation:evaluation.evaluation,
     aspiActivities,
     evidenceErrors:pdfError?[pdfError]:[] as string[],
     pdfCounts:{ready:0,required:1},
@@ -386,7 +392,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
            service=EXCLUDED.service, pdf_data=EXCLUDED.pdf_data, byte_size=EXCLUDED.byte_size,
            content_sha256=EXCLUDED.content_sha256, content_fingerprint=EXCLUDED.content_fingerprint,
            verification_status='CAPTURED', pdf_producer=EXCLUDED.pdf_producer, source_url=EXCLUDED.source_url, downloaded_at=EXCLUDED.downloaded_at`,
-        [runId,activity.activityId,activity.service.slice(0,ASPI_SERVICE_NAME_MAX),pdf,pdf.length,hash,fingerprint,provenance.producer||null,activity.downloadUrl,now]
+        [runId,activity.activityId,evidenceServiceName.slice(0,ASPI_SERVICE_NAME_MAX),pdf,pdf.length,hash,fingerprint,provenance.producer||null,activity.downloadUrl,now]
       );
       pdfReady=true;
       pdfError=null;
@@ -394,7 +400,9 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
       requestJson.evidenceErrors=[];
       requestJson.pdfCounts.ready=1;
       requestJson.reprocess.retryEvidence=false;
-      if(evaluation.status==="PASSED")status="PASSED";
+      status=finalOutcome(evaluation.evaluation,true);
+      requestJson.outcome=status;
+      requestJson.evaluation={...evaluation.evaluation,outcome:status,detail:status==="PASSED"?evaluation.evaluation.detail.replace(/Pengumpulan bukti PDF belum selesai\.?/,"Bukti PDF lengkap."):evaluation.evaluation.detail,suggestion:status==="PASSED"?"":evaluation.evaluation.suggestion};
       await db.query("UPDATE autosnap_runs SET status=$1, request_json=$2::jsonb, notes=$3 WHERE id=$4",[status,JSON.stringify(requestJson),noteFor(true,null),runId]);
     }catch(error){
       pdfError=error instanceof Error?error.message:"PDF berhasil diterima tetapi gagal disimpan. Status evidence belum lengkap.";
@@ -404,14 +412,15 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
       await db.query("UPDATE autosnap_runs SET request_json=$1::jsonb, notes=$2 WHERE id=$3",[JSON.stringify(requestJson),noteFor(false,pdfError),runId]);
     }
   }
-  await report("evaluation",status==="FAILED"?"failed":"completed",`${activityName}. HTTP ${evaluation.httpVerified?httpStatus:"belum terverifikasi"}. Response ${responseCode||"—"}.`);
+  const evaluationStep=status==="FAILED"||status==="AUTOMATION_ERROR"||status==="VALIDATION_ERROR"?"failed":"completed";
+  await report("evaluation",evaluationStep,`${status} — ${requestJson.evaluation.detail}`);
   if(pdfReady)await report("pdf_store","completed","PDF resmi ASPI tersimpan.");
   else if(pdfError)await report("pdf_store","failed",pdfError);
   return {ok:true,id:runId,status,httpStatus,responseCode,matched:evaluation.matched,activityName,pdfReady,pdfError,aspiActivities,steps:requestJson.steps,request:redact(requestJson),response:redact(portal.response),notes:noteFor(pdfReady,pdfError)};
   }catch(error){
     const message=error instanceof Error?error.message:error&&typeof error==="object"&&"error" in error?String((error as {error:unknown}).error):"Client Simulator gagal.";
     if(durable){
-      const outcome=dispatch==="SEND_STARTED"?"UNKNOWN":signal?.aborted?"CANCELLED":"AUTOMATION_ERROR";
+      const outcome=clientSimulatorDispatchOutcome(dispatch,signal?.aborted===true);
       await db.query("UPDATE autosnap_runs SET status=$1, notes=$2, duration_ms=$3, request_json=request_json || $4::jsonb WHERE id=$5",[outcome,message,Date.now()-started,JSON.stringify({dispatch,outcome}),runId]).catch(()=>undefined);
     }
     await onProgress?.(stage,"failed",message).catch(()=>undefined);

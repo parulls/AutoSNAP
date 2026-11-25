@@ -1,3 +1,4 @@
+import {aspiDownloadFixture} from "./aspi-download-fixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {createRequire} from "node:module";
@@ -62,8 +63,8 @@ test("admin sees all operators, filters by role/user/status, and petugas cannot 
     await insert("admin-run",adminId,"PASSED","admin","hist-admin");
     await insert("petugas-run",petugasId,"FAILED","petugas","hist-petugas",true);
     await insert("other-run",otherId,"COMPLETED","petugas","hist-other");
-    const storedPdf=Buffer.from("%PDF-1.7x\n%%EOF\n");
-    await db.query("INSERT INTO autosnap_evidence_pdfs(run_id,activity_id,service,pdf_data,byte_size,created_at) VALUES('petugas-run',$1,'balance',$2,$3,$4)",[activityId,storedPdf,storedPdf.length,now]);
+    const storedPdf=aspiDownloadFixture("history");
+    await db.query("INSERT INTO autosnap_evidence_pdfs(run_id,activity_id,service,pdf_data,byte_size,verification_status,created_at) VALUES('petugas-run',$1,'balance',$2,$3,'CAPTURED',$4)",[activityId,storedPdf,storedPdf.length,now]);
 
     const admin={id:adminId,role:"admin",username:"hist-admin",name:"Admin",privileges:[]};
     const petugas={id:petugasId,role:"petugas",username:"hist-petugas",name:"Petugas",privileges:["dev_site"]};
@@ -114,7 +115,7 @@ test("admin cross-user reprocess keeps ownership and records actor audit",async(
     const evidence={version:1,phase:"INCOMPLETE",retryCount:0,accountHash:sha256("snap@example.test"),beforeIds:[],operations:[{key:"op-0",path:"/api/v1.0/balance-inquiry",service:"balance",attempts:0,pdfReady:false,activity:{activityId:"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee01",service:"balance",timestamp:now,downloadUrl:"https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity"}}]};
     await db.query("INSERT INTO autosnap_records(id,kind,name,parent_id,data,created_at,updated_at) VALUES('snap-user','snap_user','SNAP',null,$1::jsonb,$2,$2)",[JSON.stringify({email:"snap@example.test",password:"fixture"}),now]);
     await db.query("INSERT INTO autosnap_runs(id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,mode,status,http_status,response_code,expected_code,duration_ms,notes,request_json,response_json,created_at) VALUES($1,$2,'c','p','e','snap-user','s','ep','portal','COMPLETED',200,'2001100',null,10,'open',$3::jsonb,'{}'::jsonb,$4)",[runId,petugasId,JSON.stringify({evaluation,evidence,outcome:"COMPLETED",operator:{id:petugasId,name:"Petugas",username:"retry-petugas",role:"petugas"}}),now]);
-    const portal={collectEvidence:async input=>input.operations.map(item=>({key:item.key,path:item.path,activity:item.activity,pdf:Buffer.from("%PDF-1.7\ncross\n%%EOF\n"),attempts:1}))};
+    const portal={collectEvidence:async input=>input.operations.map(item=>({key:item.key,path:item.path,activity:item.activity,pdf:aspiDownloadFixture("cross"),attempts:1}))};
     const service=new RunEvidenceService(db,portal);
     const controller=new AutoSnapController(db,null,portal,null,service);
     const admin={id:adminId,role:"admin",username:"retry-admin",name:"Admin",privileges:[]};

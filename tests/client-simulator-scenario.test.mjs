@@ -92,3 +92,28 @@ test("scenario name is rebuilt from database records and does not send a new tra
   assert.equal(renamed.matched, true, "the words Invalid Signature do not make the run negative");
   assert.equal(submitted.length, 2);
 });
+
+test("a crash after Send starts does not submit the transaction again", async () => {
+  process.env.AUTOSNAP_ENCRYPTION_KEY = randomBytes(32).toString("base64");
+  const { encrypt } = await load("security.js");
+  const { runClientSimulator } = await load("simulator-run.js");
+  const now = new Date().toISOString();
+  const provider = {
+    id: "prov", kind: "sim_provider", name: "Bank SUMUT", parent_id: null, partner_id: null, created_at: now, updated_at: now,
+    data: { baseUrl: "https://dev.banksumut.co.id", clientKey: "client-key", clientSecret: encrypt("secret"), signatureAccessTokenMode: "NONE", signatureServiceMode: "FUNCTION", hmacEncoding: "base64", channelId: "0001", deviceId: "device-1", timestampConfig: { offsetMinutes: 420, includeMillis: false } },
+  };
+  const service = {
+    id: "svc", kind: "sim_service", name: "Create VA", parent_id: "prov", partner_id: null, created_at: now, updated_at: now,
+    data: { method: "POST", path: "/api/v1.0/transfer-va/create-va", defaultBody: "{}", expectedHttpStatus: 200, expectedCode: "2002700" },
+  };
+  const user = { id: "snap", kind: "snap_user", name: "QA", parent_id: null, partner_id: null, created_at: now, updated_at: now, data: { email: "qa@example.test", password: encrypt("secret") } };
+  const operator = { id: "op", username: "qa", email: "qa@example.test", name: "QA", role: "admin", active: true, privileges: [], created_at: now };
+  const calls = [];
+  const db = { query: async (sql, params) => { calls.push({ sql, params }); return sql.includes("autosnap_external_ids") ? [{ external_id: params[1] }] : []; } };
+  let submits = 0;
+  const gateway = { submit: async () => { submits += 1; throw Error("browser crashed after send"); } };
+  await assert.rejects(runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioName: "Positive Case" }, gateway), error => message(error) === "browser crashed after send");
+  assert.equal(submits, 1);
+  const statusUpdate = calls.filter(call => call.sql.includes("UPDATE autosnap_runs SET status")).at(-1);
+  assert.equal(statusUpdate.params[0], "UNKNOWN");
+});
