@@ -256,17 +256,21 @@ export function evaluateClientSimulator(input: {
   testType?: "positive" | "negative" | null;
   httpStatus: number | null;
   responseCode: string;
+  responseMessage?: string | null;
   expectedHttp: number | null;
   expectedCode: string | null;
+  expectedMessage?: string | null;
   httpSource?: "target_api" | "portal_metadata_verified" | "unavailable";
 }): { matched: boolean; status: RunStatus; httpVerified: boolean; snapVerified: boolean; evaluation: Evaluation } {
-  const explicit = input.expectedHttp != null || !!input.expectedCode;
+  const explicit = input.expectedHttp != null || !!input.expectedCode || !!input.expectedMessage;
   const negative = input.testType === "negative" && !explicit;
   const evaluated = evaluateTest({
     httpStatus: input.httpStatus,
     expectedHttpStatus: input.expectedHttp ?? (negative ? 400 : undefined),
     actualCode: input.responseCode || null,
     expectedCode: negative ? null : input.expectedCode,
+    actualMessage: input.responseMessage,
+    expectedMessage: negative ? null : input.expectedMessage,
     negative,
     httpSource: input.httpSource,
   });

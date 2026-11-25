@@ -67,27 +67,28 @@ test("scenario name is rebuilt from database records and does not send a new tra
   const submitted = [];
   const gateway = { submit: async (_user, form) => { submitted.push(form); return { httpStatus: 200, response: { responseCode: "2002700" }, responseText: "", activity: null, pdf: null, pdfError: null, steps: [] }; } };
 
-  await assert.rejects(runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioName: "   " }, gateway), error => message(error) === "Nama Skenario wajib diisi sebelum menjalankan Client Simulator.");
+  await assert.rejects(runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap" }, gateway), error => message(error) === "Skenario pengujian tidak valid. Pilih salah satu dari lima skenario.");
   assert.equal(calls.length, 0);
   await assert.rejects(runClientSimulator(db, [provider, other, user], operator, { providerId: "prov", serviceId: "other", snapUserId: "snap", scenarioName: "Positive Case" }, gateway), error => /tidak milik penyedia/.test(message(error)));
 
   const result = await runClientSimulator(db, [provider, service, user], operator, {
-    providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioName: "Positive Case", aspiServiceName: "FORGED", serviceName: "FORGED",
+    providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "POSITIVE", scenarioName: "FORGED", aspiServiceName: "FORGED", serviceName: "FORGED",
     overrides: { expectedHttpStatus: "", expectedCode: "" },
   }, gateway);
   assert.equal(submitted.length, 1);
-  assert.equal(submitted[0].serviceName, "Bank SUMUT - Create VA - Positive Case");
-  assert.equal(result.activityName, "Bank SUMUT - Create VA - Positive Case");
+  assert.equal(submitted[0].serviceName, "Bank SUMUT - Create VA - Positif");
+  assert.equal(result.activityName, "Bank SUMUT - Create VA - Positif");
   assert.equal(result.matched, true);
   const stored = JSON.parse(calls.find(call => call.sql.includes("INSERT INTO autosnap_runs")).params[15]);
   assert.equal(stored.identity.providerName, "Bank SUMUT");
-  assert.equal(stored.identity.scenarioName, "Positive Case");
-  assert.equal(stored.aspiServiceName, "Bank SUMUT - Create VA - Positive Case");
+  assert.equal(stored.identity.scenarioName, "Positif");
+  assert.equal(stored.scenarioId, "POSITIVE");
+  assert.equal(stored.aspiServiceName, "Bank SUMUT - Create VA - Positif");
   provider.name = "Bank ABC";
   assert.equal(stored.identity.providerName, "Bank SUMUT");
 
-  const renamed = await runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioName: "Invalid Signature" }, gateway);
-  assert.equal(renamed.activityName, "Bank ABC - Create VA - Invalid Signature");
+  const renamed = await runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "POSITIVE" }, gateway);
+  assert.equal(renamed.activityName, "Bank ABC - Create VA - Positif");
   assert.equal(submitted.at(-1).serviceName, renamed.activityName);
   assert.equal(renamed.matched, true, "the words Invalid Signature do not make the run negative");
   assert.equal(submitted.length, 2);
@@ -112,7 +113,7 @@ test("a crash after Send starts does not submit the transaction again", async ()
   const db = { query: async (sql, params) => { calls.push({ sql, params }); return sql.includes("autosnap_external_ids") ? [{ external_id: params[1] }] : []; } };
   let submits = 0;
   const gateway = { submit: async () => { submits += 1; throw Error("browser crashed after send"); } };
-  await assert.rejects(runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioName: "Positive Case" }, gateway), error => message(error) === "browser crashed after send");
+  await assert.rejects(runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "POSITIVE" }, gateway), error => message(error) === "browser crashed after send");
   assert.equal(submits, 1);
   const statusUpdate = calls.filter(call => call.sql.includes("UPDATE autosnap_runs SET status")).at(-1);
   assert.equal(statusUpdate.params[0], "UNKNOWN");

@@ -19,13 +19,14 @@ type Props={
 };
 
 export default function TestingProgress({progress,running,formReady,accountBusy=false,onCancel,onClose,onRetryEvidence,product="Dev Site"}:Props){
-  const end=useRef<HTMLDivElement>(null),[cancelling,setCancelling]=useState(false),[cancelError,setCancelError]=useState("");
-  const ownActive=running||progress.status==="cancel_requested"||cancelling;
+  const end=useRef<HTMLDivElement>(null),[cancelRequested,setCancelRequested]=useState(false),[cancelError,setCancelError]=useState("");
+  const stopping=cancelRequested&&running;
+  const ownActive=running||progress.status==="cancel_requested";
   // Tutup hanya setelah proses milik kita selesai. Jika form masih terkunci oleh proses ASPI lain, izinkan Tutup
   // tetapi jangan klaim "form siap" — tampilkan penyebab sebenarnya.
   const canClose=!ownActive;
   const statusText=ownActive
-    ?(cancelling||progress.status==="cancel_requested"?"Menghentikan proses…":progress.stage==="finalizing"?"Menyelesaikan dan melepaskan sesi ASPI…":"Proses berjalan")
+    ?(stopping||progress.status==="cancel_requested"?"Menghentikan proses…":progress.stage==="finalizing"?"Menyelesaikan dan melepaskan sesi ASPI…":"Proses berjalan")
     :progress.status==="unknown"
       ?"Status belum dapat dipastikan"
       :formReady
@@ -43,7 +44,7 @@ export default function TestingProgress({progress,running,formReady,accountBusy=
     window.addEventListener("keydown",onKey,true);
     return ()=>window.removeEventListener("keydown",onKey,true);
   },[canClose,onClose]);
-  async function cancel(){setCancelling(true);setCancelError("");try{await onCancel();}catch(error){setCancelError((error as Error).message);setCancelling(false);}}
+  async function cancel(){setCancelRequested(true);setCancelError("");try{await onCancel();}catch(error){setCancelError((error as Error).message);setCancelRequested(false);}}
   return <div className="modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget&&!canClose){event.preventDefault();event.stopPropagation();}}} onClick={event=>{if(event.target===event.currentTarget){if(!canClose){event.preventDefault();return;}onClose();}}}>
     <section className="card testing-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="terminal-title" onClick={event=>event.stopPropagation()}>
       <div className="section-header">
@@ -60,7 +61,7 @@ export default function TestingProgress({progress,running,formReady,accountBusy=
       </div>
       <div className="terminal-actions">
         {ownActive
-          ?<><span>Request yang sudah terkirim tetap tercatat.</span><button type="button" className="danger-button" disabled={cancelling||progress.status==="cancel_requested"} onClick={()=>void cancel()}>{cancelling||progress.status==="cancel_requested"?"Menghentikan…":"Cancel Testing"}</button></>
+          ?<><span>Request yang sudah terkirim tetap tercatat.</span><button type="button" className="danger-button" disabled={stopping||progress.status==="cancel_requested"} onClick={()=>void cancel()}>{stopping||progress.status==="cancel_requested"?"Menghentikan…":"Cancel Testing"}</button></>
           :<>{onRetryEvidence&&formReady&&<button type="button" className="secondary-button" onClick={()=>void onRetryEvidence()}>Proses Ulang Bukti</button>}{canClose?<button type="button" className="secondary-button" onClick={onClose}>{formReady?"Tutup":"Tutup Log"}</button>:<span>{`Menunggu form ${product} siap digunakan kembali…`}</span>}<span>{formReady?"Log tersimpan pada detail History Testing.":accountBusy?"Form belum siap: akun ASPI dipakai proses lain.":"Menunggu pelepasan sesi ASPI…"}</span></>}
       </div>
     </section>

@@ -531,7 +531,12 @@ export class AutoSnapController {
       const email=String(data.email??data.username??"").trim().toLowerCase();
       if(email&&!/^\S+@\S+\.\S+$/.test(email))return this.fail(res,clientError("Email User SNAP harus valid jika diisi."));
       if(email&&rows.some(row=>row.kind==="snap_user"&&row.id!==id&&String(row.data.email??row.data.username??"").toLowerCase()===email))return this.fail(res,clientError("Email User SNAP sudah digunakan.",409));
-      data.email=email;data.username=email;
+      const displayUsername=String(data.displayUsername??"").trim().replace(/[ \t\f\v]+/g," ");
+      if(displayUsername.includes("@"))return this.fail(res,clientError("Username User SNAP tidak boleh berisi email."));
+      if(displayUsername.length>80)return this.fail(res,clientError("Username User SNAP maksimal 80 karakter."));
+      data.displayUsername=displayUsername;
+      data.email=email;
+      data.username=email;
     }
     if(kind==="service"&&data.config)validateConfig(data.config);
     if(kind==="service"&&data.code&&!/^\d{2}$/.test(String(data.code)))return this.fail(res,clientError("Service code harus dua digit."));
@@ -580,6 +585,9 @@ export class AutoSnapController {
       }
       if(data.expectedHttpStatus!=null&&data.expectedHttpStatus!==""&&!(Number(data.expectedHttpStatus)>=100&&Number(data.expectedHttpStatus)<=599))return this.fail(res,clientError("Expected HTTP Status tidak valid."));
       if(typeof data.expectedCode==="string"&&/[\u0000-\u001F\u007F]/.test(data.expectedCode))return this.fail(res,clientError("Expected SNAP Response Code tidak valid."));
+      const serviceCode=String(data.serviceCode??"").trim();
+      if(serviceCode&&!/^\d{2}$/.test(serviceCode))return this.fail(res,clientError("Kode service SNAP harus dua digit."));
+      data.serviceCode=serviceCode;
       for(const field of [...secretFields,"baseUrl","clientKey","clientId","signatureAccessTokenUrl","signatureServiceUrl","signatureAccessTokenMode","signatureServiceMode"])delete data[field];
     }
     const now=new Date().toISOString();

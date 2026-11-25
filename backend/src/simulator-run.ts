@@ -5,6 +5,7 @@ import { decrypt, redact } from "./security";
 import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateAspiDownloadPdf } from "./aspi-evidence";
 import { ASPI_SERVICE_NAME_MAX, buildClientSimulatorServiceName, buildSimulatorActivityEvidence, clientSimulatorDispatchOutcome, clientSimulatorServiceLabel, evaluateClientSimulator, normalizeClientSimulatorComponent, officialActivityId, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
 import { finalOutcome, isHttpResponse } from "./test-evaluation";
+import { DUPLICATE_EXTERNAL_ID_MISSING, clientSimulatorScenario, corruptSignature, duplicateExternalIdAllowed, priorExternalIdFromRuns, replacementAccessToken, resolveScenarioExpectation, unknownPartnerId } from "./client-simulator-scenarios";
 import {
   aspiSignatureTarget,
   getXSignatureAccessTokenFunction,
@@ -28,22 +29,6 @@ export type SimulatorOverrides={
   body?:string;timestamp?:string;includeMillis?:boolean;offsetMinutes?:number;
   regenerateExternalId?:boolean;expectedHttpStatus?:string|number|null;expectedCode?:string|null;
 };
-
-function configuredHttp(value:unknown){
-  if(value==null||value==="")return null;
-  const status=Number(value);
-  if(!Number.isInteger(status)||status<100||status>599)throw {error:"Expected HTTP Status tidak valid.",status:400};
-  return status;
-}
-function configuredCode(value:unknown){
-  if(value==null)return null;
-  const text=String(value);
-  if(/[\u0000-\u001F\u007F]/.test(text))throw {error:"Expected SNAP Response Code tidak valid.",status:400};
-  const trimmed=text.trim();
-  if(!trimmed)return null;
-  if(trimmed.length>16)throw {error:"Expected SNAP Response Code terlalu panjang.",status:400};
-  return trimmed;
-}
 
 function timestampConfig(provider:RecordRow,overrides:SimulatorOverrides):TimestampConfig{
   const raw=provider.data.timestampConfig;
@@ -189,12 +174,14 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   if(!service||service.parent_id!==provider.id)throw {error:"API Service tidak milik penyedia yang dipilih.",status:400};
   const providerName=normalizeClientSimulatorComponent(provider.name,"Nama penyedia");
   const registeredServiceName=normalizeClientSimulatorComponent(service.name,"Nama service");
-  const scenarioName=normalizeClientSimulatorComponent(input.scenarioName,"Nama Skenario");
+  const scenario=clientSimulatorScenario(input.scenarioId);
+  const scenarioName=scenario.label;
+  const expectation=resolveScenarioExpectation(scenario,service.data);
   const aspiServiceName=buildClientSimulatorServiceName(providerName,registeredServiceName,scenarioName);
-  const legacyTestType=input.testType==="negative"?"negative":input.testType==="positive"?"positive":null;
   const overrides=(input.overrides&&typeof input.overrides==="object"&&!Array.isArray(input.overrides)?input.overrides:{}) as SimulatorOverrides;
-  const expectedHttp=configuredHttp("expectedHttpStatus" in overrides?overrides.expectedHttpStatus:service.data.expectedHttpStatus);
-  const expectedCode=configuredCode("expectedCode" in overrides?overrides.expectedCode:service.data.expectedCode??service.data.expectedSnapCode);
+  const expectedHttp=expectation.expectedHttp;
+  const expectedCode=expectation.expectedCode;
+  const expectedMessage=expectation.expectedMessage;
   const method=String(service.data.method??"POST").toUpperCase();
   if(!methods.has(method))throw {error:"Method HTTP service tidak valid.",status:400};
   const relative=String(service.data.path??service.data.serviceUrl??"").trim();
@@ -206,15 +193,26 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   if(!clientKey)throw {error:"Client Key / Client ID penyedia wajib diisi.",status:400};
 
   const tsConfig=timestampConfig(provider,overrides);
-  const timestamp=ensureFutureTimestamp(tsConfig,overrides.timestamp,legacyTestType==="negative"?"negative":"positive");
+  const timestamp=ensureFutureTimestamp(tsConfig,overrides.timestamp,"positive");
   const partnerId=overrides.partnerId?.trim()||value(service,"partnerId")||value(provider,"partnerId")||clientKey;
   const channelId=overrides.channelId?.trim()||value(service,"channelId")||value(provider,"channelId")||"";
   const deviceId=overrides.deviceId?.trim()||value(service,"deviceId")||value(provider,"deviceId")||"";
   let externalId=overrides.externalId?.trim()||value(service,"externalId")||"";
-  if(!externalId||overrides.regenerateExternalId===true)externalId=randomUUID();
-  const externalDay=timestamp.slice(0,10);
-  const claimedExternal=await db.query("INSERT INTO autosnap_external_ids (environment_id,external_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING external_id",[provider.id,externalId,externalDay]);
-  if(!claimedExternal.length)throw {error:"X-EXTERNAL-ID sudah dipakai pada hari ini. Buat pengujian baru agar ID tidak bertabrakan.",status:409};
+  let sourceRunId:string|null=null;
+  if(scenario.mutation==="EXTERNAL_ID_REUSE"){
+    if(input.confirmDuplicateExternalId!==true)throw {error:"Konfirmasi diperlukan sebelum mengirim ulang X-EXTERNAL-ID yang sudah pernah dikirim.",status:400};
+    if(!duplicateExternalIdAllowed(baseUrl,provider.data.allowDuplicateExternalId===true))throw {error:"Skenario X-EXTERNAL-ID duplikat hanya diizinkan pada environment sandbox atau pengujian.",status:400};
+    const previousRows=await db.query<{id:string;request_json:Record<string,unknown>}>("SELECT id, request_json FROM autosnap_runs WHERE mode='client_sim' AND environment_id=$1 AND service_id=$2 AND id<>$3 ORDER BY created_at DESC LIMIT 40",[provider.id,service.id,""]);
+    const previous=priorExternalIdFromRuns(previousRows.map(row=>({id:row.id,request:row.request_json&&typeof row.request_json==="object"?row.request_json:null})),{serviceId:service.id,partnerId});
+    if(!previous)throw {error:DUPLICATE_EXTERNAL_ID_MISSING,status:409};
+    externalId=previous.externalId;
+    sourceRunId=previous.sourceRunId;
+  }else{
+    if(!externalId||overrides.regenerateExternalId===true)externalId=randomUUID();
+    const externalDay=timestamp.slice(0,10);
+    const claimedExternal=await db.query("INSERT INTO autosnap_external_ids (environment_id,external_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING external_id",[provider.id,externalId,externalDay]);
+    if(!claimedExternal.length)throw {error:"X-EXTERNAL-ID sudah dipakai pada hari ini. Buat pengujian baru agar ID tidak bertabrakan.",status:409};
+  }
 
   const bodyText=typeof overrides.body==="string"?overrides.body:typeof service.data.defaultBody==="string"?service.data.defaultBody:typeof service.data.requestBody==="string"?String(service.data.requestBody):"{}";
   if(bodyText.includes("replaced_in_prescript"))throw {error:"Request body masih berisi replaced_in_prescript. Di koleksi SNAP Batubara: partnerServiceId dan prefix_real = 9296, additionalInfo.clientid = 51.",status:400};
@@ -238,13 +236,13 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const started=Date.now();
   let durable=false;
   let dispatch:"NOT_SENT"|"SEND_STARTED"="NOT_SENT";
-  const identity={providerId:provider.id,providerName,serviceId:service.id,serviceName:registeredServiceName,scenarioName,aspiServiceName};
-  const evaluationPolicy={expectedHttp,expectedCode,legacyTestType};
+  const identity={providerId:provider.id,providerName,serviceId:service.id,serviceName:registeredServiceName,scenarioId:scenario.id,scenarioName,aspiServiceName};
+  const evaluationPolicy={expectedHttp,expectedCode,expectedMessage,mutation:scenario.mutation};
   try{
   await db.query(
     `INSERT INTO autosnap_runs (id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19)`,
-    [runId,operator.id,provider.id,provider.id,provider.id,snapUser.id,service.id,provider.id,null,"client_sim","RUNNING",null,null,expectedCode,0,JSON.stringify({mode:"client_sim",progressId:typeof input.progressId==="string"?input.progressId:null,activityName,aspiServiceName,scenarioName,identity,evaluationPolicy,dispatch,idempotency:{externalId,serviceId:service.id,timestamp},...(legacyTestType?{testType:legacyTestType}:{}),body:redact(JSON.parse(minified||"{}")),operator:{id:operator.id,name:operator.name,username:operator.username,role:operator.role}}),JSON.stringify({}),`${activityName}. Send belum dikirim.`,openedAt]
+    [runId,operator.id,provider.id,provider.id,provider.id,snapUser.id,service.id,provider.id,scenario.id,"client_sim","RUNNING",null,null,expectedCode,0,JSON.stringify({mode:"client_sim",progressId:typeof input.progressId==="string"?input.progressId:null,activityName,aspiServiceName,scenarioId:scenario.id,scenarioName,identity,evaluationPolicy,scenario:{id:scenario.id,label:scenario.label,mutation:scenario.mutation,mutationApplied:false,sourceRunId},dispatch,idempotency:{externalId,serviceId:service.id,partnerId,timestamp},body:redact(JSON.parse(minified||"{}")),operator:{id:operator.id,name:operator.name,username:operator.username,role:operator.role}}),JSON.stringify({}),`${activityName}. Send belum dikirim.`,openedAt]
   );
   durable=true;
 
@@ -281,21 +279,26 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
 
   const signedBody=minified||"{}";
   await report("signature_service","running",serviceViaAspi?`${method} ${relative} — Signature Service lewat halaman Keamanan ASPI`:`${method} ${relative}`);
-  const serviceSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:accessToken,body:signedBody,timestamp},signer);
+  let sentToken=accessToken;
+  if(scenario.mutation==="ACCESS_TOKEN")sentToken=replacementAccessToken(accessToken);
+  const serviceSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:sentToken,body:signedBody,timestamp},signer);
   steps.push({stage:"signature_service",mode:serviceSign.mode,httpStatus:serviceSign.httpStatus,response:serviceSign.response,ok:true});
   await report("signature_service","completed",`Signature Service ${serviceSign.mode}`);
   if(!serviceSign.signature)throw {error:"X-SIGNATURE kosong. Isi Client Secret dengan mode FUNCTION, atau URL signature HIT_API.",status:400};
+  const sentSignature=scenario.mutation==="SIGNATURE"?corruptSignature(serviceSign.signature):serviceSign.signature;
+  const sentPartner=scenario.mutation==="PARTNER_ID"?unknownPartnerId(partnerId,String(service.data.unknownPartnerId??"")):partnerId;
+  steps.push({stage:"scenario_mutation",mutation:scenario.mutation,applied:true,sourceRunId});
   if(!gateway)throw {error:"Sesi portal ASPI tidak tersedia pada server ini.",status:500};
 
   const serviceHeaders:Record<string,string>={
     "Content-Type":"application/json",
     "X-TIMESTAMP":timestamp,
-    "X-PARTNER-ID":partnerId,
+    "X-PARTNER-ID":sentPartner,
     "X-EXTERNAL-ID":externalId,
-    "X-SIGNATURE":serviceSign.signature,
+    "X-SIGNATURE":sentSignature,
     "CHANNEL-ID":channelId,
   };
-  if(accessToken)serviceHeaders.Authorization=`Bearer ${accessToken}`;
+  if(sentToken)serviceHeaders.Authorization=`Bearer ${sentToken}`;
   if(deviceId)serviceHeaders["X-DEVICE-ID"]=deviceId;
   const origin=value(provider,"origin"),ipAddress=value(provider,"ipAddress"),latitude=value(provider,"latitude"),longitude=value(provider,"longitude");
   if(origin)serviceHeaders.ORIGIN=origin;
@@ -314,12 +317,12 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     method,
     contentType:"application/json",
     timestamp,
-    signature:serviceSign.signature,
-    partnerId,
+    signature:sentSignature,
+    partnerId:sentPartner,
     externalId,
     channelId,
     body:signedBody,
-    authorization:accessToken?`Bearer ${accessToken}`:undefined,
+    authorization:sentToken?`Bearer ${sentToken}`:undefined,
     deviceId:deviceId||undefined,
     clientKey:clientKey||undefined,
     origin:origin||undefined,
@@ -332,9 +335,10 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
 
   const responseObj=portal.response&&typeof portal.response==="object"&&!Array.isArray(portal.response)?portal.response as Record<string,unknown>:{};
   const responseCode=String(responseObj.responseCode??"");
+  const responseMessage=String(responseObj.responseMessage??"");
   const httpSource=portal.httpSource??(isHttpResponse(portal.httpStatus)?"target_api":"unavailable");
   const httpStatus=httpSource==="target_api"&&isHttpResponse(portal.httpStatus)?portal.httpStatus:null;
-  const evaluation=evaluateClientSimulator({testType:legacyTestType,httpStatus,responseCode,expectedHttp,expectedCode,httpSource});
+  const evaluation=evaluateClientSimulator({httpStatus,responseCode,responseMessage,expectedHttp,expectedCode,expectedMessage,httpSource});
   const activity=portal.activity;
   const portalService=activity?clientSimulatorServiceLabel([],activity.serviceSource==="portal"?[activity.service]:[activity.service]):{service:"",serviceSource:"unavailable" as const};
   const evidenceServiceName=(activity?.serviceSource==="portal"&&activity.service?activity.service:portalService.service)||aspiServiceName;
@@ -344,7 +348,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   let pdfReady=false;
   let pdfError=portal.pdfError;
   const officialId=officialActivityId(activity?.activityId);
-  const evidence=officialId?buildSimulatorActivityEvidence({runId,activityId:officialId,serviceId:service.id,serviceName:evidenceServiceName,testType:legacyTestType,scenarioName,savedAt:activity?.timestamp||null,downloadUrl:activity?.downloadUrl||null,pdfReady:false,evidenceStatus:portal.pdf?"DOWNLOADING":pdfError?"FAILED":"PENDING"}):null;
+  const evidence=officialId?buildSimulatorActivityEvidence({runId,activityId:officialId,serviceId:service.id,serviceName:evidenceServiceName,scenarioName,savedAt:activity?.timestamp||null,downloadUrl:activity?.downloadUrl||null,pdfReady:false,evidenceStatus:portal.pdf?"DOWNLOADING":pdfError?"FAILED":"PENDING"}):null;
   const aspiActivities=evidence?[{...evidence,service:evidence.serviceName,serviceSource,timestamp:activity?.timestamp??"",authenticity:undefined as string|undefined}]:[];
   const requestJson={
     mode:"client_sim",
@@ -353,10 +357,12 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     provider:{id:provider.id,name:providerName},
     service:{id:service.id,name:registeredServiceName,method,path:relative},
     snapUser:{id:snapUser.id,name:snapUser.name},
+    scenarioId:scenario.id,
     scenarioName,
+    scenario:{id:scenario.id,label:scenario.label,mutation:scenario.mutation,mutationApplied:true,sourceRunId},
     identity,
     evaluationPolicy,
-    ...(legacyTestType?{testType:legacyTestType}:{}),
+    actual:{httpStatus,responseCode,responseMessage,httpSource},
     timestamp,
     headers:redact(serviceHeaders),
     dispatch:"SENT",

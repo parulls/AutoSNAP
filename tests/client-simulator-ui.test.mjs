@@ -5,6 +5,8 @@ import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright-core");
@@ -26,11 +28,15 @@ test("client simulator uses a scenario name and API services live in master data
     assert.ok(ready);
     const now = new Date().toISOString();
     const records = [
-      { id: "snap", kind: "snap_user", name: "QA SNAP", parentId: null, partnerId: null, data: { email: "qa@example.test" }, createdAt: now, updatedAt: now },
+      { id: "snap", kind: "snap_user", name: "QA SNAP", parentId: null, partnerId: null, data: { email: "qa@example.test", displayUsername: "ulitesting" }, createdAt: now, updatedAt: now },
       { id: "prov", kind: "sim_provider", name: "Bank SUMUT", parentId: null, partnerId: null, data: { baseUrl: "https://dev.banksumut.co.id", clientKey: "key", channelId: "0001", deviceId: "device-1", signatureAccessTokenMode: "FUNCTION", signatureServiceMode: "FUNCTION" }, createdAt: now, updatedAt: now },
       { id: "other", kind: "sim_provider", name: "Bank ABC", parentId: null, partnerId: null, data: { baseUrl: "https://example.test", clientKey: "key" }, createdAt: now, updatedAt: now },
     ];
     let saved;
+    let releaseRun = () => {};
+    const holdRun = new Promise(resolve => { releaseRun = resolve; });
+    let runs = 0;
+    let cancelSeen = false;
     browser = await chromium.launch({ executablePath: chrome, headless: true });
     const page = await browser.newPage();
     page.on("dialog", dialog => dialog.accept());
@@ -38,7 +44,7 @@ test("client simulator uses a scenario name and API services live in master data
       const input = route.request().method() === "POST" ? route.request().postDataJSON() : {};
       let data;
       if (!input.action) data = { user: { id: "admin", username: "qa", role: "admin", active: true }, records, runs: [], scenarios: [], operators: [] };
-      else if (input.action === "getHistory" || input.action === "aspiBusy" || input.action === "getProgress" || input.action === "cancelRun") data = input.action === "aspiBusy" ? { busyUserIds: [] } : input.action === "getProgress" ? { status: "completed", stage: "finished", steps: [] } : input.action === "cancelRun" ? { ok: true } : history;
+      else if (input.action === "getHistory" || input.action === "aspiBusy" || input.action === "getProgress") data = input.action === "aspiBusy" ? { busyUserIds: [] } : input.action === "getProgress" ? { status: "completed", stage: "finished", steps: [] } : history;
       else if (input.action === "save") {
         assert.equal(input.kind, "sim_service");
         assert.equal(input.data.clientSecret, undefined);
@@ -56,10 +62,16 @@ test("client simulator uses a scenario name and API services live in master data
         records.splice(index, 1);
         data = { ok: true };
       } else if (input.action === "runClientSimulator") {
-        assert.equal(input.scenarioName, "Saldo Tidak Cukup");
+        runs += 1;
+        assert.equal(input.scenarioId, "POSITIVE");
+        assert.equal(input.scenarioName, undefined);
         assert.equal(input.aspiServiceName, undefined);
         assert.equal(input.testType, undefined);
-        data = { ok: true, status: "COMPLETED", activityName: "Bank SUMUT - Create VA - Saldo Tidak Cukup", pdfReady: false };
+        if (runs === 1) await holdRun;
+        data = { ok: true, status: "COMPLETED", activityName: "Bank SUMUT - Create VA Updated - Positif", pdfReady: false };
+      } else if (input.action === "cancelRun") {
+        cancelSeen = true;
+        data = { ok: true };
       } else throw Error(`Unexpected UI action ${input.action}`);
       return route.fulfill({ contentType: "application/json", body: JSON.stringify(data) });
     });
@@ -83,22 +95,56 @@ test("client simulator uses a scenario name and API services live in master data
     await page.getByRole("navigation").getByRole("button", { name: "Client Simulator", exact: true }).click();
     assert.equal(await page.getByLabel("Jenis Pengujian").count(), 0);
     assert.equal(await page.getByRole("button", { name: "Tambah API Service", exact: true }).count(), 0);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    assert.equal(await page.getByText("menekan Send satu kali").count(), 0);
+    await page.getByText("Pilih User SNAP, penyedia, API Service, dan skenario pengujian.").waitFor();
+    const userOptions = await page.getByLabel("User SNAP").locator("option").allTextContents();
+    assert.equal(userOptions.includes("ulitesting"), true);
+    assert.equal(userOptions.some(option => option.includes("@")), false);
+    const scenarioOptions = await page.getByLabel("Skenario Pengujian").locator("option").allTextContents();
+    assert.deepEqual(scenarioOptions, ["Pilih Skenario", "Positif", "Access Token Invalid", "Unauthorized . Signature", "Unauthorized . Unknown Client", "Cannot use the same X-EXTERNAL-ID"]);
     await page.getByLabel("User SNAP").selectOption("snap");
     await page.getByLabel("Penyedia Client Simulator").selectOption("prov");
     await page.getByLabel("API Service").selectOption("svc");
     await page.getByRole("button", { name: "Jalankan Client Simulator", exact: true }).click();
-    await page.locator(".field-error", { hasText: "Nama Skenario wajib diisi sebelum menjalankan Client Simulator." }).waitFor();
-    await page.getByLabel("Nama Skenario *").fill("Saldo Tidak Cukup");
-    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Saldo Tidak Cukup");
+    await page.locator(".field-error", { hasText: "Pilih skenario pengujian terlebih dahulu." }).waitFor();
+    await page.getByLabel("Skenario Pengujian").selectOption("POSITIVE");
+    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Positif");
+    await page.getByText("konfigurasi belum lengkap").waitFor();
+    await page.getByLabel("Skenario Pengujian").selectOption("INVALID_ACCESS_TOKEN");
+    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Access Token Invalid");
+    await page.getByText("401xx01").waitFor();
+    await page.screenshot({ path: join(tmpdir(), "autosnap-client-sim-desktop.png"), fullPage: true });
+    await page.getByLabel("Skenario Pengujian").selectOption("DUPLICATE_EXTERNAL_ID");
+    await page.getByText("Request ini memakai kembali X-EXTERNAL-ID yang sudah dikirim pada pengujian sebelumnya.").waitFor();
+    await page.getByRole("button", { name: "Reset Form", exact: true }).click();
+    assert.equal(await page.getByLabel("Skenario Pengujian").inputValue(), "");
+    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "");
+    await page.getByText("Pilih skenario pengujian terlebih dahulu.", { exact: true }).waitFor();
+    await page.getByLabel("Skenario Pengujian").selectOption("INVALID_ACCESS_TOKEN");
     await page.getByLabel("Penyedia Client Simulator").selectOption("other");
     await page.getByLabel("API Service").selectOption("svc-b");
-    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank ABC - Transfer - Saldo Tidak Cukup");
+    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank ABC - Transfer - Access Token Invalid");
+    await page.setViewportSize({ width: 390, height: 844 });
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
+    assert.equal(overflow, true);
+    await page.screenshot({ path: join(tmpdir(), "autosnap-client-sim-mobile.png"), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 800 });
     await page.getByLabel("Penyedia Client Simulator").selectOption("prov");
     await page.getByLabel("API Service").selectOption("svc");
-    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Saldo Tidak Cukup");
+    await page.getByLabel("Skenario Pengujian").selectOption("POSITIVE");
+    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Positif");
     await page.getByRole("button", { name: "Jalankan Client Simulator", exact: true }).click();
-    await page.getByText("PDF belum tersimpan").waitFor();
-    await page.getByRole("button", { name: "Tutup", exact: true }).click();
+    await page.getByRole("button", { name: "Cancel Testing", exact: true }).click();
+    for (let i = 0; i < 30 && !cancelSeen; i++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(cancelSeen, true);
+    releaseRun();
+    await page.getByRole("button", { name: "Tutup", exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "Jalankan Client Simulator", exact: true }).click();
+    await page.getByRole("button", { name: "Tutup jendela log", exact: true }).click();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
     await page.getByRole("navigation").getByRole("button", { name: "Master Data", exact: true }).click();
     await page.getByRole("tab", { name: "API Service Client Simulator", exact: true }).click();
     await page.getByLabel("Filter penyedia").selectOption("prov");

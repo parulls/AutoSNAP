@@ -11,6 +11,7 @@ import PdfPreview from "./pdf-preview";
 import UiIcon from "./ui-icon";
 import { ApiError } from "./api-client";
 import { buildClientSimulatorServiceName, thrownMessage } from "./client-simulator-name";
+import { CLIENT_SIMULATOR_SCENARIOS, clientSimulatorScenario, presentScenarioExpectation } from "./client-simulator-scenarios";
 import EvaluationNotice from "./evaluation-notice";
 
 const value=(row:Item|undefined,key:string)=>String(row?.data[key]??"");
@@ -29,7 +30,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   const allServices=state.records.filter(r=>r.kind==="sim_service");
   const snapUsers=state.records.filter(r=>r.kind==="snap_user");
   const canViewAll=can(state.user,"history","view_all");
-  const [providerId,setProviderId]=useState(""),[serviceId,setServiceId]=useState(""),[snapUserId,setSnapUserId]=useState(""),[scenarioName,setScenarioName]=useState(""),[scenarioAttempted,setScenarioAttempted]=useState(false);
+  const [providerId,setProviderId]=useState(""),[serviceId,setServiceId]=useState(""),[snapUserId,setSnapUserId]=useState(""),[scenarioId,setScenarioId]=useState(""),[scenarioAttempted,setScenarioAttempted]=useState(false),[confirmDuplicate,setConfirmDuplicate]=useState(false);
   const provider=providers.find(p=>p.id===providerId);
   const services=allServices.filter(s=>s.parentId===providerId);
   const service=services.find(s=>s.id===serviceId);
@@ -38,7 +39,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   const [includeMillis,setIncludeMillis]=useState(defaultMillis);
   const [timestamp,setTimestamp]=useState(()=>buildTimestamp(offsetMinutes,defaultMillis,new Date(Date.now()+120_000)));
   const [body,setBody]=useState("{}");
-  const [partnerId,setPartnerId]=useState(""),[externalId,setExternalId]=useState(""),[deviceId,setDeviceId]=useState(""),[channelId,setChannelId]=useState(""),[expectedHttp,setExpectedHttp]=useState(""),[expectedCode,setExpectedCode]=useState("");
+  const [partnerId,setPartnerId]=useState(""),[externalId,setExternalId]=useState(""),[deviceId,setDeviceId]=useState(""),[channelId,setChannelId]=useState("");
   const [busy,setBusy]=useState(false),[running,setRunning]=useState(false),[progress,setProgress]=useState<TestProgress|null>(null);
   const progressIdRef=useRef("");
   const [historyRange,setHistoryRange]=useState(()=>rangeForPeriod("today"));
@@ -66,12 +67,17 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     setDeviceId(value(s,"deviceId")||value(p,"deviceId"));
     setChannelId(value(s,"channelId")||value(p,"channelId"));
     setBody(value(s,"defaultBody")||value(s,"requestBody")||"{}");
-    setExpectedHttp(value(s,"expectedHttpStatus"));
-    setExpectedCode(value(s,"expectedCode"));
   }
   function resetRequest(){
     if(running)return;
-    setScenarioName("");setScenarioAttempted(false);loadDefaults(provider,service);
+    setScenarioId("");setScenarioAttempted(false);setConfirmDuplicate(false);loadDefaults(provider,service);
+  }
+  function snapUserLabel(user:Item){
+    const display=value(user,"displayUsername").trim();
+    if(display&&!display.includes("@"))return display;
+    const name=user.name.trim();
+    if(name&&!name.includes("@"))return name;
+    return "Username belum diisi";
   }
 
   async function run(event:FormEvent){
@@ -79,7 +85,10 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     setScenarioAttempted(true);
     if(!providerId||!serviceId||!provider||!service){setError("Pilih penyedia dan API Service sebelum menjalankan.");return;}
     if(!snapUserId){setError("Pilih User SNAP untuk login ke form Client Simulator ASPI.");return;}
-    try{buildClientSimulatorServiceName(provider.name,service.name,scenarioName);}catch(error){setError(thrownMessage(error));return;}
+    const chosen=clientSimulatorScenario(scenarioId);
+    if(!chosen){setError("Pilih skenario pengujian terlebih dahulu.");return;}
+    if(chosen.id==="DUPLICATE_EXTERNAL_ID"&&!confirmDuplicate){setError("Konfirmasi diperlukan sebelum mengirim ulang X-EXTERNAL-ID yang sudah pernah dikirim.");return;}
+    try{buildClientSimulatorServiceName(provider.name,service.name,chosen.label);}catch(error){setError(thrownMessage(error));return;}
     if(!channelId.trim()){setError("CHANNEL-ID wajib diisi. Form ASPI mengirim header ini.");return;}
     const progressId=crypto.randomUUID();
     progressIdRef.current=progressId;
@@ -93,8 +102,8 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     },700);
     try{
       const response=await api("runClientSimulator",{
-        progressId,providerId,serviceId,snapUserId,scenarioName,
-        overrides:{partnerId,externalId,deviceId,channelId,body,timestamp,includeMillis,offsetMinutes,regenerateExternalId:!externalId.trim(),expectedHttpStatus:expectedHttp,expectedCode},
+        progressId,providerId,serviceId,snapUserId,scenarioId,confirmDuplicateExternalId:confirmDuplicate,
+        overrides:{partnerId,externalId,deviceId,channelId,body,timestamp,includeMillis,offsetMinutes,regenerateExternalId:scenarioId!=="DUPLICATE_EXTERNAL_ID"&&!externalId.trim()},
       });
       try{setProgress(await api("getProgress",{id:progressId}) as unknown as TestProgress);}catch{/* the modal already has the last poll */}
       setNotice(`${String(response.activityName??"Client Simulator")} · ${String(response.status??"")} · PDF ${response.pdfReady?"tersimpan":"belum tersimpan"}`);
@@ -159,26 +168,29 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     const a=document.createElement("a");a.href=url;a.download=`${String(object(run.request)?run.request.activityName??run.id:run.id)}.json`;a.click();URL.revokeObjectURL(url);
   }
 
+  const selectedScenario=clientSimulatorScenario(scenarioId);
   let aspiServiceName="";
   let scenarioError="";
-  if(provider&&service&&scenarioName.trim()){
-    try{aspiServiceName=buildClientSimulatorServiceName(provider.name,service.name,scenarioName);}catch(error){scenarioError=thrownMessage(error);}
-  }else if(scenarioAttempted&&!scenarioName.trim())scenarioError="Nama Skenario wajib diisi sebelum menjalankan Client Simulator.";
-  else if(scenarioName&&/[\u0000-\u001F\u007F]/.test(scenarioName))scenarioError="Nama Skenario tidak boleh berisi baris baru atau karakter kontrol.";
+  if(provider&&service&&selectedScenario){
+    try{aspiServiceName=buildClientSimulatorServiceName(provider.name,service.name,selectedScenario.label);}catch(error){scenarioError=thrownMessage(error);}
+  }else if(scenarioAttempted&&!selectedScenario)scenarioError="Pilih skenario pengujian terlebih dahulu.";
+  const expectation=selectedScenario&&service?presentScenarioExpectation(selectedScenario.id,service.data):null;
 
   return <>
     <form className="card test-form" onSubmit={run}>
-      <div className="section-header"><div><h2>Client Simulator</h2><p>Pilih penyedia dan API Service yang sudah didaftarkan, isi Nama Skenario, lalu jalankan. AutoSNAP membentuk Service Name portal dari ketiga data itu, login ke ASPI, menekan Send satu kali, lalu menyimpan Activity ID dan PDF.</p></div></div>
+      <div className="section-header"><div><h2>Client Simulator</h2><p>Pilih User SNAP, penyedia, API Service, dan skenario pengujian.</p></div></div>
       <h3>Identitas pengujian</h3>
       <div className="form-grid">
-        <label className="form-field"><span>User SNAP</span><select required disabled={running} value={snapUserId} onChange={e=>setSnapUserId(e.target.value)}><option value="">Pilih akun portal ASPI</option>{snapUsers.map(user=><option key={user.id} value={user.id}>{user.name}{value(user,"email")?` (${value(user,"email")})`:""}</option>)}</select><small className="helper">Email dan password User SNAP dipakai untuk login https://apidevportal.aspi-indonesia.or.id/client-simulator.</small></label>
+        <label className="form-field"><span>User SNAP</span><select required aria-label="User SNAP" disabled={running} value={snapUserId} onChange={e=>setSnapUserId(e.target.value)}><option value="">Pilih User SNAP</option>{snapUsers.map(user=><option key={user.id} value={user.id}>{snapUserLabel(user)}</option>)}</select></label>
         <label className="form-field"><span>Penyedia Client Simulator</span><select required disabled={running} value={providerId} onChange={e=>{const id=e.target.value;setProviderId(id);setServiceId("");loadDefaults(providers.find(x=>x.id===id),undefined);}}><option value="">Pilih penyedia</option>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <label className="form-field"><span>API Service</span><select required aria-label="API Service" disabled={running||!providerId||!services.length} value={serviceId} onChange={e=>{const id=e.target.value;setServiceId(id);loadDefaults(provider,services.find(s=>s.id===id));}}><option value="">{services.length?"Pilih service":"Belum ada service"}</option>{services.map(s=><option key={s.id} value={s.id}>{s.name} — {value(s,"method")||"POST"} {value(s,"path")||value(s,"serviceUrl")}</option>)}</select></label>
-        <label className="form-field"><span>Nama Skenario *</span><input aria-invalid={scenarioError?true:undefined} disabled={running} maxLength={255} value={scenarioName} placeholder="Contoh: Positive Case, Invalid Signature, Saldo Tidak Cukup" onChange={e=>setScenarioName(e.target.value)}/>{scenarioError&&<small className="field-error" role="alert">{scenarioError}</small>}</label>
+        <label className="form-field"><span>Skenario Pengujian *</span><select aria-label="Skenario Pengujian" aria-invalid={scenarioError?true:undefined} disabled={running} value={scenarioId} onChange={e=>{setScenarioId(e.target.value);setConfirmDuplicate(false);}}><option value="">Pilih Skenario</option>{CLIENT_SIMULATOR_SCENARIOS.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>{scenarioError&&<small className="field-error" role="alert">{scenarioError}</small>}</label>
       </div>
       {provider&&!services.length&&<p className="helper">Penyedia ini belum mempunyai API Service. Tambahkan API Service melalui Master Data → API Service Client Simulator.{onOpenMasterData&&<> <button type="button" className="text-button" onClick={onOpenMasterData}>Buka API Service Client Simulator</button></>}</p>}
       <h3>Service Name ASPI</h3>
-      <label className="form-field wide"><span>Service Name ASPI</span><input readOnly aria-label="Service Name ASPI" value={aspiServiceName} placeholder="Pilih penyedia, API Service, lalu isi Nama Skenario."/></label>
+      <label className="form-field wide"><span>Service Name ASPI</span><input readOnly aria-label="Service Name ASPI" value={aspiServiceName} placeholder="Pilih penyedia, API Service, dan skenario."/></label>
+      {expectation&&<section aria-label="Expected Result"><h3>Expected Result</h3><dl className="expected-result"><div><dt>HTTP Status</dt><dd>{expectation.http}</dd></div><div><dt>SNAP Code</dt><dd>{expectation.ready&&expectation.code?expectation.code:`${expectation.pattern} · konfigurasi belum lengkap`}</dd></div><div><dt>Response Message</dt><dd>{expectation.message||"—"}</dd></div></dl><p className="helper">{selectedScenario?selectedScenario.summary:"Pilih skenario pengujian terlebih dahulu."}</p></section>}
+      {!selectedScenario&&<p className="helper">Pilih skenario pengujian terlebih dahulu.</p>}
       {provider&&service&&<>
         <h3>Konfigurasi request</h3>
         <div className="form-grid">
@@ -197,18 +209,14 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
             <small className="helper">Bank Sumut menolak jam yang tidak di depan servernya. Timestamp yang terlalu dekat dengan waktu sekarang dikirim sebagai sekarang + 2 menit.</small>
           </div>
           <label className="form-field"><span>X-PARTNER-ID</span><input disabled={running} value={partnerId} onChange={e=>setPartnerId(e.target.value)}/></label>
-          <label className="form-field"><span>X-EXTERNAL-ID</span><input disabled={running} value={externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis"/></label>
+          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={running||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Diambil dari pengujian sebelumnya":externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis"/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">ID sumber dipilih di server dari run yang sudah terkirim pada penyedia, service, dan partner yang sama.</small>}</label>
           <label className="form-field"><span>X-DEVICE-ID</span><input disabled={running} value={deviceId} onChange={e=>setDeviceId(e.target.value)}/></label>
           <label className="form-field"><span>CHANNEL-ID</span><input disabled={running} value={channelId} onChange={e=>setChannelId(e.target.value)}/></label>
           <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={10} spellCheck={false} disabled={running} value={body} onChange={e=>setBody(e.target.value)}/><small className="helper">Diisi dari Request Body API Service {service.name}. Perubahan di sini hanya untuk pengujian kali ini. URI yang diisi: {serviceUri}.</small></label>
         </div>
-        <h3>Validation Settings</h3>
-        <div className="form-grid">
-          <label className="form-field"><span>Expected HTTP Status</span><input disabled={running} inputMode="numeric" value={expectedHttp} onChange={e=>setExpectedHttp(e.target.value)} placeholder="Kosong jika tidak ditentukan"/></label>
-          <label className="form-field"><span>Expected SNAP Response Code</span><input disabled={running} value={expectedCode} onChange={e=>setExpectedCode(e.target.value)} placeholder="Contoh: 2002700"/></label>
-          <p className="helper wide">Kosong memakai aturan HTTP 2xx bila expected tidak diisi di API Service. Nama Skenario tidak menentukan hasil Positive atau Negative. Signature Access Token: {String(provider.data.signatureAccessTokenMode??"FUNCTION")} · Signature Service: {String(provider.data.signatureServiceMode??"FUNCTION")}.</p>
-        </div>
-        <div className="form-actions"><button type="button" className="secondary-button" disabled={running} onClick={resetRequest}>Reset Request</button><button className="primary-button" disabled={busy}>{busy?"Menjalankan...":"Jalankan Client Simulator"}</button></div>
+        {scenarioId==="DUPLICATE_EXTERNAL_ID"&&<label className="form-field wide"><span>Konfirmasi</span><span><input type="checkbox" checked={confirmDuplicate} disabled={running} onChange={e=>setConfirmDuplicate(e.target.checked)}/> Request ini memakai kembali X-EXTERNAL-ID yang sudah dikirim pada pengujian sebelumnya.</span></label>}
+        {(scenarioId==="INVALID_ACCESS_TOKEN"||scenarioId==="INVALID_SIGNATURE"||scenarioId==="UNKNOWN_CLIENT")&&<p className="helper">Perubahan hanya terjadi pada request API Service. Kredensial Master Data dan token asli tidak ditampilkan.</p>}
+        <div className="form-actions"><button type="button" className="secondary-button" disabled={running} onClick={resetRequest}>Reset Form</button><button className="primary-button" disabled={busy}>{busy?"Menjalankan...":"Jalankan Client Simulator"}</button></div>
       </>}
       {!snapUsers.length&&<p className="helper">Belum ada User SNAP. Tambahkan di Master Data beserta email dan password portal ASPI.</p>}
       {!providers.length&&<p className="helper">Belum ada Penyedia. Tambahkan di Master Data → Penyedia Client Simulator.</p>}
