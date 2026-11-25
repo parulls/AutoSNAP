@@ -3,7 +3,7 @@ import type { DatabaseService, RecordRow } from "./database.service";
 import type { Operator } from "./accounts";
 import { decrypt, redact } from "./security";
 import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateAspiDownloadPdf } from "./aspi-evidence";
-import { buildSimulatorActivityEvidence, clientSimulatorServiceName, evaluateClientSimulator, officialActivityId, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
+import { buildSimulatorActivityEvidence, clientSimulatorServiceName, evaluateClientSimulator, finalizeSimulatorStatus, officialActivityId, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
 import {
   aspiSignatureTarget,
   getXSignatureAccessTokenFunction,
@@ -188,7 +188,10 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const channelId=overrides.channelId?.trim()||value(service,"channelId")||value(provider,"channelId")||"";
   const deviceId=overrides.deviceId?.trim()||value(service,"deviceId")||value(provider,"deviceId")||"";
   let externalId=overrides.externalId?.trim()||value(service,"externalId")||"";
-  if(!externalId||overrides.regenerateExternalId===true)externalId=String(Date.now()).slice(-16);
+  if(!externalId||overrides.regenerateExternalId===true)externalId=randomUUID();
+  const externalDay=timestamp.slice(0,10);
+  const claimedExternal=await db.query("INSERT INTO autosnap_external_ids (environment_id,external_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING external_id",[provider.id,externalId,externalDay]);
+  if(!claimedExternal.length)throw {error:"X-EXTERNAL-ID sudah dipakai pada hari ini. Buat pengujian baru agar ID tidak bertabrakan.",status:409};
 
   const bodyText=typeof overrides.body==="string"?overrides.body:typeof service.data.defaultBody==="string"?service.data.defaultBody:typeof service.data.requestBody==="string"?String(service.data.requestBody):"{}";
   if(bodyText.includes("replaced_in_prescript"))throw {error:"Request body masih berisi replaced_in_prescript. Di koleksi SNAP Batubara: partnerServiceId dan prefix_real = 9296, additionalInfo.clientid = 51.",status:400};
@@ -206,7 +209,19 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const accessViaAspi=accessMode==="HIT_API"&&!!aspiSignatureTarget(value(provider,"signatureAccessTokenUrl"),"auth");
   const serviceViaAspi=serviceMode==="HIT_API"&&!!aspiSignatureTarget(value(provider,"signatureServiceUrl"),"service");
   const steps:Record<string,unknown>[]=[];
+  const runId=randomUUID();
+  const activityName=`${provider.name} - ${service.name} - ${testType==="positive"?"Positif":"Negatif"}`;
+  const openedAt=new Date().toISOString();
+  const started=Date.now();
+  let durable=false;
+  let dispatch:"NOT_SENT"|"SEND_STARTED"="NOT_SENT";
   try{
+  await db.query(
+    `INSERT INTO autosnap_runs (id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19)`,
+    [runId,operator.id,provider.id,provider.id,provider.id,snapUser.id,service.id,provider.id,null,"client_sim","RUNNING",null,null,null,0,JSON.stringify({mode:"client_sim",progressId:typeof input.progressId==="string"?input.progressId:null,activityName,dispatch,idempotency:{externalId,serviceId:service.id,timestamp},testType,body:redact(JSON.parse(minified||"{}")),operator:{id:operator.id,name:operator.name,username:operator.username,role:operator.role}}),JSON.stringify({}),`${activityName}. Send belum dikirim.`,openedAt]
+  );
+  durable=true;
 
   await cancelled();
   await report("signature_auth","running",accessViaAspi?`${service.name} — Signature Authentication lewat halaman Keamanan ASPI`:`${service.name} — Signature Access Token ${accessMode}`);
@@ -227,7 +242,8 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     steps.push({stage:"access_token",uri:tokenUrl,httpStatus:tokenResult.httpStatus,request:{headers:redact(tokenHeaders),body:tokenPayload},response:redact(tokenResult.body)});
     const tokenBodyObj=tokenResult.body&&typeof tokenResult.body==="object"?tokenResult.body as Record<string,unknown>:{};
     accessToken=String(tokenBodyObj.accessToken??tokenBodyObj.access_token??"");
-    if(!accessToken){
+    const tokenCode=String(tokenBodyObj.responseCode??"");
+    if(tokenResult.httpStatus<200||tokenResult.httpStatus>=300||(tokenCode&&!tokenCode.startsWith("2"))||!accessToken){
       const code=String(tokenBodyObj.responseCode??"");
       const message=String(tokenBodyObj.responseMessage??"");
       throw {error:`Access Token ditolak (HTTP ${tokenResult.httpStatus}${code?` ${code}`:""}${message?`: ${message}`:""}).`,status:502};
@@ -264,8 +280,9 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
 
   const serviceUrl=joinUrl(baseUrl,relative);
   const aspiServiceName=clientSimulatorServiceName(service.name,testType);
-  const started=Date.now();
   await cancelled();
+  dispatch="SEND_STARTED";
+  await db.query("UPDATE autosnap_runs SET notes=$1, request_json=jsonb_set(request_json,'{dispatch}',$2::jsonb,true) WHERE id=$3",[`${activityName}. Send sudah dimulai. Jika proses terputus, transaksi mungkin sudah terkirim dan tidak boleh dikirim ulang.`,JSON.stringify("SEND_STARTED"),runId]);
   await report("api_request","running",`${aspiServiceName} — mengisi form ASPI lalu menunggu Download.`);
   const portal=await gateway.submit(snapUser,{
     serviceName:aspiServiceName,
@@ -296,9 +313,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const httpStatus=portal.httpStatus??(typeof responseObj.httpStatus==="number"?responseObj.httpStatus:null);
   const evaluation=evaluateClientSimulator({testType,httpStatus,responseCode,expectedHttp,expectedCode});
   const activity=portal.activity;
-  const status=evaluation.status;
-  const activityName=`${provider.name} - ${service.name} - ${testType==="positive"?"Positif":"Negatif"}`;
-  const runId=randomUUID();
+  let status=finalizeSimulatorStatus(evaluation.status,false);
   const now=new Date().toISOString();
   let pdfReady=false;
   let pdfError=portal.pdfError;
@@ -315,7 +330,8 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     testType,
     timestamp,
     headers:redact(serviceHeaders),
-    body:JSON.parse(signedBody),
+    dispatch:"SENT",
+    body:redact(JSON.parse(signedBody)),
     uris:{accessToken:tokenUrl,service:serviceUrl,form:"https://apidevportal.aspi-indonesia.or.id/client-simulator",activity:"https://apidevportal.aspi-indonesia.or.id/client-simulator-activity"},
     steps,
     overrides:redact(overrides),
@@ -328,9 +344,8 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   };
   const noteFor=(ready:boolean,problem:string|null)=>!activity?`${activityName}. ${problem||"Hasil tidak masuk ke Client Simulator Activity."}`:(problem&&!ready?`${activityName}. ${problem}`:activityName);
   await db.query(
-    `INSERT INTO autosnap_runs (id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19)`,
-    [runId,operator.id,provider.id,provider.id,provider.id,snapUser.id,service.id,provider.id,null,"client_sim",status,httpStatus,responseCode||null,expectedCode,Date.now()-started,JSON.stringify(requestJson),JSON.stringify(redact(portal.response)),noteFor(false,pdfError),now]
+    `UPDATE autosnap_runs SET status=$1,http_status=$2,response_code=$3,expected_code=$4,duration_ms=$5,request_json=$6::jsonb,response_json=$7::jsonb,notes=$8 WHERE id=$9`,
+    [status,httpStatus,responseCode||null,expectedCode,Date.now()-started,JSON.stringify(requestJson),JSON.stringify(redact(portal.response)),noteFor(false,pdfError),runId]
   );
   if(portal.pdf&&activity){
     try{
@@ -355,7 +370,8 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
       requestJson.evidenceErrors=[];
       requestJson.pdfCounts.ready=1;
       requestJson.reprocess.retryEvidence=false;
-      await db.query("UPDATE autosnap_runs SET request_json=$1::jsonb, notes=$2 WHERE id=$3",[JSON.stringify(requestJson),noteFor(true,null),runId]);
+      if(evaluation.status==="PASSED")status="PASSED";
+      await db.query("UPDATE autosnap_runs SET status=$1, request_json=$2::jsonb, notes=$3 WHERE id=$4",[status,JSON.stringify(requestJson),noteFor(true,null),runId]);
     }catch(error){
       pdfError=error instanceof Error?error.message:"PDF berhasil diterima tetapi gagal disimpan. Status evidence belum lengkap.";
       requestJson.evidenceErrors=[pdfError];
@@ -370,6 +386,10 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   return {ok:true,id:runId,status,httpStatus,responseCode,matched:evaluation.matched,activityName,pdfReady,pdfError,aspiActivities,steps:requestJson.steps,request:redact(requestJson),response:redact(portal.response),notes:noteFor(pdfReady,pdfError)};
   }catch(error){
     const message=error instanceof Error?error.message:error&&typeof error==="object"&&"error" in error?String((error as {error:unknown}).error):"Client Simulator gagal.";
+    if(durable){
+      const outcome=dispatch==="SEND_STARTED"?"UNKNOWN":signal?.aborted?"CANCELLED":"AUTOMATION_ERROR";
+      await db.query("UPDATE autosnap_runs SET status=$1, notes=$2, duration_ms=$3, request_json=request_json || $4::jsonb WHERE id=$5",[outcome,message,Date.now()-started,JSON.stringify({dispatch,outcome}),runId]).catch(()=>undefined);
+    }
     await onProgress?.(stage,"failed",message).catch(()=>undefined);
     throw error;
   }

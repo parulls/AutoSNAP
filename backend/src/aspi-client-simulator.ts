@@ -85,9 +85,8 @@ export type SimulatorActivityEvidence = {
 };
 
 export function clientSimulatorServiceName(name: string, testType: "positive" | "negative") {
-  const base = name.trim().replace(/\s+/g, " ");
+  const base = name.trim().replace(/\s+/g, " ").replace(/\s*-\s*(?:positive|negative)\s+case\s*$/i, "");
   if (!base) throw Error("Nama service kosong.");
-  if (/positive case|negative case/i.test(base)) return base;
   return `${base} - ${testType === "positive" ? "Positive Case" : "Negative Case"}`;
 }
 
@@ -200,8 +199,7 @@ export function evaluateClientSimulator(input: {
   const { testType, httpStatus, responseCode, expectedHttp, expectedCode } = input;
   const snapVerified = expectedCode ? responseCode === expectedCode : testType === "positive" ? /^200\d{2}/.test(responseCode) : responseCode.length > 0 && !/^200/.test(responseCode);
   const httpVerified = httpStatus != null && (expectedHttp == null || httpStatus === expectedHttp);
-  if (httpStatus == null && !responseCode) return { matched: false, status: "COMPLETED", httpVerified: false, snapVerified: false };
-  if (expectedHttp != null && httpStatus == null) return { matched: false, status: "COMPLETED", httpVerified: false, snapVerified };
+  if (httpStatus == null) return { matched: false, status: "COMPLETED", httpVerified: false, snapVerified };
   let matched = false;
   if (testType === "positive") {
     if (expectedCode) matched = snapVerified && httpVerified;
@@ -211,6 +209,12 @@ export function evaluateClientSimulator(input: {
     matched = expectedHttp != null ? httpStatus === expectedHttp : httpStatus != null ? httpStatus >= 400 : snapVerified;
   }
   return { matched, status: matched ? "PASSED" : "FAILED", httpVerified, snapVerified };
+}
+
+/** PASSED requires the API checks that were actually performed to match and the required PDF to be stored. */
+export function finalizeSimulatorStatus(apiStatus: "PASSED" | "FAILED" | "COMPLETED", pdfReady: boolean) {
+  if (apiStatus === "PASSED" && !pdfReady) return "COMPLETED";
+  return apiStatus;
 }
 
 const mandatoryFields: { label: string; pattern: RegExp; key: keyof ClientSimulatorFormInput }[] = [

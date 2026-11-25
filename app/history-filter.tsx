@@ -14,7 +14,7 @@ type Props={
   onModeChange?:(mode:string)=>void;
 };
 
-const statuses=["PASSED","COMPLETED","FAILED","AUTOMATION_ERROR","VALIDATION_ERROR","CANCELLED"];
+const statuses=["PASSED","COMPLETED","FAILED","RUNNING","UNKNOWN","AUTOMATION_ERROR","VALIDATION_ERROR","CANCELLED"];
 
 export default function HistoryFilter({value,onChange,filters={},onFiltersChange,isAdmin=false,showMode=false,mode="all",onModeChange}:Props){
   const setFilter=(patch:Partial<HistoryFilters>)=>onFiltersChange?.({...filters,...patch});

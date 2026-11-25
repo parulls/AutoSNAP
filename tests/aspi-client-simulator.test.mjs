@@ -21,6 +21,7 @@ test("service name keeps a single Positive or Negative Case suffix", async () =>
   assert.equal(clientSimulatorServiceName("Create VA", "positive"), "Create VA - Positive Case");
   assert.equal(clientSimulatorServiceName("Create VA", "negative"), "Create VA - Negative Case");
   assert.equal(clientSimulatorServiceName("Create VA - Positive Case", "positive"), "Create VA - Positive Case");
+  assert.equal(clientSimulatorServiceName("Create VA - Positive Case", "negative"), "Create VA - Negative Case");
 });
 
 test("activity id is read only from the ASPI portal download link", async () => {
@@ -94,4 +95,12 @@ test("pass or fail follows the response shown by ASPI", async () => {
   assert.equal(unverified.matched, false);
   assert.equal(unverified.httpVerified, false);
   assert.equal(unverified.snapVerified, true);
+  const snapWithoutHttp = evaluateClientSimulator({ testType: "positive", httpStatus: null, responseCode: "2002700", expectedHttp: null, expectedCode: null });
+  assert.equal(snapWithoutHttp.status, "COMPLETED");
+  assert.equal(snapWithoutHttp.matched, false);
+  assert.equal(snapWithoutHttp.httpVerified, false);
+  const { finalizeSimulatorStatus } = await load();
+  assert.equal(finalizeSimulatorStatus("PASSED", false), "COMPLETED");
+  assert.equal(finalizeSimulatorStatus("PASSED", true), "PASSED");
+  assert.equal(finalizeSimulatorStatus("FAILED", true), "FAILED");
 });
