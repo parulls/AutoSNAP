@@ -29,20 +29,42 @@ export function mintClientSimulatorExternalId(at = Date.now()) {
   return `${at}${String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0")}`.slice(0, 36);
 }
 
-function bankAcceptedRequest(request: Record<string, unknown>) {
+function bankAcceptedRequest(request: Record<string, unknown>, rowHttp?: number | null, rowCode?: string | null) {
   const actual = request.actual && typeof request.actual === "object" && !Array.isArray(request.actual) ? request.actual as Record<string, unknown> : {};
-  const http = Number(actual.httpStatus);
+  const http = Number(actual.httpStatus ?? rowHttp);
   if (Number.isInteger(http) && http >= 200 && http < 300) return true;
-  const code = String(actual.responseCode ?? "").trim();
+  const code = String(actual.responseCode ?? rowCode ?? "").trim();
   return /^2\d{6}$/.test(code);
 }
 
 function externalIdFromRequest(request: Record<string, unknown>) {
   const headers = request.headers && typeof request.headers === "object" && !Array.isArray(request.headers) ? request.headers as Record<string, unknown> : {};
   const fromHeader = String(headers["X-EXTERNAL-ID"] ?? headers["x-external-id"] ?? "").trim();
-  if (fromHeader) return fromHeader;
+  if (fromHeader && fromHeader !== "[REDACTED]") return fromHeader;
   const idempotency = request.idempotency && typeof request.idempotency === "object" && !Array.isArray(request.idempotency) ? request.idempotency as Record<string, unknown> : {};
   return String(idempotency.externalId ?? "").trim();
+}
+
+function serviceIdFromRequest(request: Record<string, unknown>) {
+  const idempotency = request.idempotency && typeof request.idempotency === "object" && !Array.isArray(request.idempotency) ? request.idempotency as Record<string, unknown> : {};
+  if (String(idempotency.serviceId ?? "").trim()) return String(idempotency.serviceId).trim();
+  const service = request.service && typeof request.service === "object" && !Array.isArray(request.service) ? request.service as Record<string, unknown> : {};
+  if (String(service.id ?? "").trim()) return String(service.id).trim();
+  const identity = request.identity && typeof request.identity === "object" && !Array.isArray(request.identity) ? request.identity as Record<string, unknown> : {};
+  return String(identity.serviceId ?? "").trim();
+}
+
+function partnerIdFromRequest(request: Record<string, unknown>) {
+  const idempotency = request.idempotency && typeof request.idempotency === "object" && !Array.isArray(request.idempotency) ? request.idempotency as Record<string, unknown> : {};
+  if (String(idempotency.partnerId ?? "").trim()) return String(idempotency.partnerId).trim();
+  const headers = request.headers && typeof request.headers === "object" && !Array.isArray(request.headers) ? request.headers as Record<string, unknown> : {};
+  return String(headers["X-PARTNER-ID"] ?? headers["x-partner-id"] ?? "").trim();
+}
+
+function dayFromRequest(request: Record<string, unknown>, createdAt?: string | null) {
+  const idempotency = request.idempotency && typeof request.idempotency === "object" && !Array.isArray(request.idempotency) ? request.idempotency as Record<string, unknown> : {};
+  const stamp = String(idempotency.timestamp ?? request.timestamp ?? createdAt ?? "").trim();
+  return stamp.slice(0, 10);
 }
 
 export function clientSimulatorScenario(id: unknown): ScenarioDefinition {
@@ -109,20 +131,24 @@ export function duplicateExternalIdAllowed(baseUrl: string, explicitlyAllowed: b
 /**
  * Reuse only an External ID that the bank already accepted.
  * SEND_STARTED alone is not enough — that ID may never have reached the bank.
- * Prefer the header snapshot actually sent, and keep the same WIB calendar day when provided.
+ * Finished request_json may omit idempotency on older rows; fall back to service/headers/columns.
  */
-export function priorExternalIdFromRuns(rows: { id: string; request: Record<string, unknown> | null }[], scope: { serviceId: string; partnerId: string; day?: string }) {
+export function priorExternalIdFromRuns(
+  rows: { id: string; request: Record<string, unknown> | null; httpStatus?: number | null; responseCode?: string | null; createdAt?: string | null }[],
+  scope: { serviceId: string; partnerId: string; day?: string },
+) {
   for (const row of rows) {
     const request = row.request;
     if (!request) continue;
-    if (request.dispatch !== "SENT") continue;
-    if (!bankAcceptedRequest(request)) continue;
-    const idempotency = request.idempotency && typeof request.idempotency === "object" && !Array.isArray(request.idempotency) ? request.idempotency as Record<string, unknown> : {};
-    if (String(idempotency.serviceId ?? "") !== scope.serviceId) continue;
-    if (String(idempotency.partnerId ?? "") !== scope.partnerId) continue;
+    // Prefer proven SENT rows; also accept older finished rows that never wrote dispatch but already have a bank 2xx.
+    if (request.dispatch && request.dispatch !== "SENT") continue;
+    if (!bankAcceptedRequest(request, row.httpStatus, row.responseCode)) continue;
+    if (serviceIdFromRequest(request) !== scope.serviceId) continue;
+    const partner = partnerIdFromRequest(request);
+    if (partner && partner !== scope.partnerId) continue;
     if (scope.day) {
-      const stamp = String(idempotency.timestamp ?? request.timestamp ?? "");
-      if (stamp.slice(0, 10) && stamp.slice(0, 10) !== scope.day) continue;
+      const day = dayFromRequest(request, row.createdAt);
+      if (day && day !== scope.day) continue;
     }
     const externalId = externalIdFromRequest(request);
     if (!externalId) continue;

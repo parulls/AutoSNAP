@@ -203,8 +203,8 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   if(scenario.mutation==="EXTERNAL_ID_REUSE"){
     if(input.confirmDuplicateExternalId!==true)throw {error:"Konfirmasi diperlukan sebelum mengirim ulang X-EXTERNAL-ID yang sudah pernah dikirim.",status:400};
     if(!duplicateExternalIdAllowed(baseUrl,provider.data.allowDuplicateExternalId===true))throw {error:"Skenario X-EXTERNAL-ID duplikat hanya diizinkan pada environment sandbox atau pengujian.",status:400};
-    const previousRows=await db.query<{id:string;request_json:Record<string,unknown>}>("SELECT id, request_json FROM autosnap_runs WHERE mode='client_sim' AND environment_id=$1 AND service_id=$2 ORDER BY created_at DESC LIMIT 40",[provider.id,service.id]);
-    const previous=priorExternalIdFromRuns(previousRows.map(row=>({id:row.id,request:row.request_json&&typeof row.request_json==="object"?row.request_json:null})),{serviceId:service.id,partnerId,day:externalDay});
+    const previousRows=await db.query<{id:string;request_json:Record<string,unknown>;http_status:number|null;response_code:string|null;created_at:string}>("SELECT id, request_json, http_status, response_code, created_at FROM autosnap_runs WHERE mode='client_sim' AND environment_id=$1 AND service_id=$2 ORDER BY created_at DESC LIMIT 40",[provider.id,service.id]);
+    const previous=priorExternalIdFromRuns(previousRows.map(row=>({id:row.id,request:row.request_json&&typeof row.request_json==="object"?row.request_json:null,httpStatus:row.http_status,responseCode:row.response_code,createdAt:row.created_at})),{serviceId:service.id,partnerId,day:externalDay});
     if(!previous)throw {error:DUPLICATE_EXTERNAL_ID_MISSING,status:409};
     externalId=previous.externalId;
     sourceRunId=previous.sourceRunId;
@@ -377,6 +377,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     timestamp,
     headers:redact(serviceHeaders),
     dispatch:"SENT",
+    idempotency:{externalId,serviceId:service.id,partnerId,timestamp},
     body:redact(JSON.parse(signedBody)),
     uris:{accessToken:tokenUrl,service:serviceUrl,form:"https://apidevportal.aspi-indonesia.or.id/client-simulator",activity:"https://apidevportal.aspi-indonesia.or.id/client-simulator-activity"},
     steps,

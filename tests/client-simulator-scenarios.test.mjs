@@ -46,6 +46,10 @@ test("five scenarios use optional SNAP codes and isolate one request field", asy
   ], { serviceId: "svc", partnerId: "9296", day: "2026-11-25" });
   assert.equal(previous.externalId, "used-1");
   assert.equal(previous.sourceRunId, "old");
+  const legacy = scenarios.priorExternalIdFromRuns([
+    { id: "legacy", httpStatus: 200, responseCode: "2002700", createdAt: "2026-11-25T05:00:00.000Z", request: { timestamp: "2026-11-25T12:00:00+07:00", service: { id: "svc" }, headers: { "X-EXTERNAL-ID": "legacy-1", "X-PARTNER-ID": "9296" } } },
+  ], { serviceId: "svc", partnerId: "9296", day: "2026-11-25" });
+  assert.equal(legacy.externalId, "legacy-1");
   assert.equal(scenarios.priorExternalIdFromRuns([
     { id: "old", request: { dispatch: "SENT", actual: { httpStatus: 200, responseCode: "2002700" }, headers: { "X-EXTERNAL-ID": "used-1" }, idempotency: { externalId: "used-1", serviceId: "svc", partnerId: "9296", timestamp: "2026-11-24T12:00:00+07:00" } } },
   ], { serviceId: "svc", partnerId: "9296", day: "2026-11-25" }), null);
