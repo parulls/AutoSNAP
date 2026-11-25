@@ -283,13 +283,22 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   await report("signature_service","running",serviceViaAspi?`${method} ${relative} — Signature Service lewat halaman Keamanan ASPI`:`${method} ${relative}`);
   let sentToken=accessToken;
   if(scenario.mutation==="ACCESS_TOKEN")sentToken=replacementAccessToken(accessToken);
-  const serviceSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:sentToken,body:signedBody,timestamp},signer);
+  // HIT_API / ASPI signature-service validates AccessToken. Negative token mutation must not break signing.
+  // Invalid token is applied only on the Client Simulator API Service request.
+  const remoteSigning=serviceMode==="HIT_API"||serviceViaAspi;
+  const signingToken=scenario.mutation==="ACCESS_TOKEN"&&remoteSigning?accessToken:sentToken;
+  const serviceSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:signingToken,body:signedBody,timestamp},signer);
   steps.push({stage:"signature_service",mode:serviceSign.mode,httpStatus:serviceSign.httpStatus,response:serviceSign.response,ok:true});
-  await report("signature_service","completed",`Signature Service ${serviceSign.mode}`);
+  await report("signature_service","completed",scenario.mutation==="ACCESS_TOKEN"&&remoteSigning?`Signature Service ${serviceSign.mode} — token valid untuk signing; token invalid hanya ke API Service`:`Signature Service ${serviceSign.mode}`);
   if(!serviceSign.signature)throw {error:"X-SIGNATURE kosong. Isi Client Secret dengan mode FUNCTION, atau URL signature HIT_API.",status:400};
-  const sentSignature=scenario.mutation==="SIGNATURE"?corruptSignature(serviceSign.signature):serviceSign.signature;
+  let sentSignature=serviceSign.signature;
+  if(scenario.mutation==="ACCESS_TOKEN"&&remoteSigning){
+    const secret=decrypt(value(provider,"clientSecret"));
+    if(!secret)throw {error:"Skenario Access Token Invalid membutuhkan Client Secret agar X-SIGNATURE bisa dihitung untuk token invalid tanpa mengirim token palsu ke signature-service bank.",status:400};
+    sentSignature=getXSignatureServiceFunction(secret,method,relative,sentToken,signedBody,timestamp,encodingOf(provider.data.hmacEncoding,"hex"));
+  }else if(scenario.mutation==="SIGNATURE")sentSignature=corruptSignature(serviceSign.signature);
   const sentPartner=scenario.mutation==="PARTNER_ID"?unknownPartnerId(partnerId,String(service.data.unknownPartnerId??"")):partnerId;
-  steps.push({stage:"scenario_mutation",mutation:scenario.mutation,applied:true,sourceRunId});
+  steps.push({stage:"scenario_mutation",mutation:scenario.mutation,applied:true,sourceRunId,remoteSigningProtected:scenario.mutation==="ACCESS_TOKEN"&&remoteSigning});
   if(!gateway)throw {error:"Sesi portal ASPI tidak tersedia pada server ini.",status:500};
 
   const serviceHeaders:Record<string,string>={

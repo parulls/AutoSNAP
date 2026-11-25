@@ -129,6 +129,32 @@ test("negative scenarios change only the intended service-request field and do n
     assert.equal(tokenForm.signature, signedForSentToken);
     assert.notEqual(tokenForm.signature, signedForRealToken);
     assert.equal(tokenRun.matched, true);
+
+    const hitCalls = [];
+    globalThis.fetch = async (url, init = {}) => {
+      const target = String(url);
+      if (target === "https://token.test/access-token") {
+        return new Response(JSON.stringify({ responseCode: "2007300", accessToken: "real-token" }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      hitCalls.push({ url: target, headers: init.headers || {}, body: init.body });
+      return new Response(JSON.stringify({ signature: "bank-signature-for-valid-token" }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const hitProvider = {
+      ...provider,
+      data: {
+        ...provider.data,
+        accessTokenUrl: "https://token.test/access-token",
+        signatureServiceMode: "HIT_API",
+        signatureServiceUrl: "/api/v1.0.0/utilities/signature-service",
+      },
+    };
+    const hitRun = await runClientSimulator(db, [hitProvider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "INVALID_ACCESS_TOKEN" }, gatewayFor({ httpStatus: 401, responseCode: "4012701", responseMessage: "Access Token Invalid" }));
+    assert.equal(hitCalls.length, 1);
+    assert.equal(hitCalls[0].headers.AccessToken, "real-token");
+    const hitForm = submitted.at(-1);
+    assert.equal(hitForm.authorization, "Bearer invalid-access-token");
+    assert.equal(hitForm.signature, getXSignatureServiceFunction("secret", hitForm.method, relative, "invalid-access-token", hitForm.body, hitForm.timestamp, "base64"));
+    assert.equal(hitRun.matched, true);
   } finally { globalThis.fetch = originalFetch; }
   const blocked = { query: async (sql) => sql.includes("autosnap_external_ids") ? [] : [] };
   await assert.rejects(runClientSimulator(blocked, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap", scenarioId: "POSITIVE", overrides: { externalId: "used-external" } }, signatureGateway), error => message(error).includes("sudah dipakai"));
