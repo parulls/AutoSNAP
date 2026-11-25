@@ -4,7 +4,7 @@ export const CLIENT_SIMULATOR_SCENARIOS = [
   { id: "INVALID_ACCESS_TOKEN", label: "Access Token Invalid", expectedHttp: 401, codePrefix: "401", codeSuffix: "01", expectedMessage: "Access Token Invalid", summary: "Signature Service tetap memakai Access Token valid. Token invalid hanya dipakai pada request API Service lewat Client Simulator ASPI." },
   { id: "INVALID_SIGNATURE", label: "Unauthorized . Signature", expectedHttp: 401, codePrefix: "401", codeSuffix: "00", expectedMessage: "Unauthorized Signature", summary: "X-SIGNATURE pada request API Service berbeda dari signature yang valid. Access Token dan Partner ID tetap valid." },
   { id: "UNKNOWN_CLIENT", label: "Unauthorized . Unknown Client", expectedHttp: 401, codePrefix: "401", codeSuffix: "00", expectedMessage: "Unauthorized Client", summary: "X-PARTNER-ID pada request API Service diganti identitas yang tidak dikenal. Access Token dan signature tetap valid." },
-  { id: "DUPLICATE_EXTERNAL_ID", label: "Cannot use the same X-EXTERNAL-ID", expectedHttp: 409, codePrefix: "409", codeSuffix: "01", expectedMessage: "Conflict", summary: "X-EXTERNAL-ID diambil dari pengujian sebelumnya yang sudah terkirim. Access Token dan signature tetap valid." },
+  { id: "DUPLICATE_EXTERNAL_ID", label: "Cannot use the same X-EXTERNAL-ID", expectedHttp: 409, codePrefix: "409", codeSuffix: "01", expectedMessage: "Conflict", summary: "X-EXTERNAL-ID diambil dari pengujian Positif sebelumnya yang respons bank-nya sudah sukses hari ini. Access Token dan signature tetap valid." },
 ] as const;
 
 export type ClientSimulatorScenarioId = (typeof CLIENT_SIMULATOR_SCENARIOS)[number]["id"];

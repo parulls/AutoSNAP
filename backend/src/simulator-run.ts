@@ -5,7 +5,7 @@ import { decrypt, redact } from "./security";
 import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateAspiDownloadPdf } from "./aspi-evidence";
 import { ASPI_SERVICE_NAME_MAX, buildClientSimulatorServiceName, buildSimulatorActivityEvidence, clientSimulatorDispatchOutcome, clientSimulatorServiceLabel, evaluateClientSimulator, normalizeClientSimulatorComponent, officialActivityId, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
 import { finalOutcome, isHttpResponse } from "./test-evaluation";
-import { DUPLICATE_EXTERNAL_ID_MISSING, clientSimulatorScenario, corruptSignature, duplicateExternalIdAllowed, priorExternalIdFromRuns, replacementAccessToken, resolveScenarioExpectation, unknownPartnerId } from "./client-simulator-scenarios";
+import { DUPLICATE_EXTERNAL_ID_MISSING, clientSimulatorScenario, corruptSignature, duplicateExternalIdAllowed, mintClientSimulatorExternalId, priorExternalIdFromRuns, replacementAccessToken, resolveScenarioExpectation, unknownPartnerId } from "./client-simulator-scenarios";
 import {
   aspiSignatureTarget,
   getXSignatureAccessTokenFunction,
@@ -199,17 +199,17 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const deviceId=overrides.deviceId?.trim()||value(service,"deviceId")||value(provider,"deviceId")||"";
   let externalId=overrides.externalId?.trim()||value(service,"externalId")||"";
   let sourceRunId:string|null=null;
+  const externalDay=timestamp.slice(0,10);
   if(scenario.mutation==="EXTERNAL_ID_REUSE"){
     if(input.confirmDuplicateExternalId!==true)throw {error:"Konfirmasi diperlukan sebelum mengirim ulang X-EXTERNAL-ID yang sudah pernah dikirim.",status:400};
     if(!duplicateExternalIdAllowed(baseUrl,provider.data.allowDuplicateExternalId===true))throw {error:"Skenario X-EXTERNAL-ID duplikat hanya diizinkan pada environment sandbox atau pengujian.",status:400};
-    const previousRows=await db.query<{id:string;request_json:Record<string,unknown>}>("SELECT id, request_json FROM autosnap_runs WHERE mode='client_sim' AND environment_id=$1 AND service_id=$2 AND id<>$3 ORDER BY created_at DESC LIMIT 40",[provider.id,service.id,""]);
-    const previous=priorExternalIdFromRuns(previousRows.map(row=>({id:row.id,request:row.request_json&&typeof row.request_json==="object"?row.request_json:null})),{serviceId:service.id,partnerId});
+    const previousRows=await db.query<{id:string;request_json:Record<string,unknown>}>("SELECT id, request_json FROM autosnap_runs WHERE mode='client_sim' AND environment_id=$1 AND service_id=$2 ORDER BY created_at DESC LIMIT 40",[provider.id,service.id]);
+    const previous=priorExternalIdFromRuns(previousRows.map(row=>({id:row.id,request:row.request_json&&typeof row.request_json==="object"?row.request_json:null})),{serviceId:service.id,partnerId,day:externalDay});
     if(!previous)throw {error:DUPLICATE_EXTERNAL_ID_MISSING,status:409};
     externalId=previous.externalId;
     sourceRunId=previous.sourceRunId;
   }else{
-    if(!externalId||overrides.regenerateExternalId===true)externalId=randomUUID();
-    const externalDay=timestamp.slice(0,10);
+    if(!externalId||overrides.regenerateExternalId===true)externalId=mintClientSimulatorExternalId();
     const claimedExternal=await db.query("INSERT INTO autosnap_external_ids (environment_id,external_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING external_id",[provider.id,externalId,externalDay]);
     if(!claimedExternal.length)throw {error:"X-EXTERNAL-ID sudah dipakai pada hari ini. Buat pengujian baru agar ID tidak bertabrakan.",status:409};
   }

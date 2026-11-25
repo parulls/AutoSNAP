@@ -40,12 +40,17 @@ test("five scenarios use optional SNAP codes and isolate one request field", asy
   assert.equal(scenarios.unknownPartnerId("9296"), "AUTOSNAP-UNKNOWN-CLIENT");
   assert.throws(() => scenarios.unknownPartnerId("AUTOSNAP-UNKNOWN-CLIENT"), error => message(error).includes("sama dengan"));
   const previous = scenarios.priorExternalIdFromRuns([
-    { id: "new", request: { dispatch: "NOT_SENT", idempotency: { externalId: "fresh", serviceId: "svc", partnerId: "9296" } } },
-    { id: "old", request: { dispatch: "SENT", idempotency: { externalId: "used-1", serviceId: "svc", partnerId: "9296" } } },
-  ], { serviceId: "svc", partnerId: "9296" });
+    { id: "started", request: { dispatch: "SEND_STARTED", idempotency: { externalId: "started-only", serviceId: "svc", partnerId: "9296", timestamp: "2026-11-25T10:00:00+07:00" } } },
+    { id: "failed", request: { dispatch: "SENT", actual: { httpStatus: 401, responseCode: "4012701" }, idempotency: { externalId: "failed-id", serviceId: "svc", partnerId: "9296", timestamp: "2026-11-25T11:00:00+07:00" } } },
+    { id: "old", request: { dispatch: "SENT", actual: { httpStatus: 200, responseCode: "2002700" }, headers: { "X-EXTERNAL-ID": "used-1" }, idempotency: { externalId: "ignored", serviceId: "svc", partnerId: "9296", timestamp: "2026-11-25T12:00:00+07:00" } } },
+  ], { serviceId: "svc", partnerId: "9296", day: "2026-11-25" });
   assert.equal(previous.externalId, "used-1");
   assert.equal(previous.sourceRunId, "old");
+  assert.equal(scenarios.priorExternalIdFromRuns([
+    { id: "old", request: { dispatch: "SENT", actual: { httpStatus: 200, responseCode: "2002700" }, headers: { "X-EXTERNAL-ID": "used-1" }, idempotency: { externalId: "used-1", serviceId: "svc", partnerId: "9296", timestamp: "2026-11-24T12:00:00+07:00" } } },
+  ], { serviceId: "svc", partnerId: "9296", day: "2026-11-25" }), null);
   assert.equal(scenarios.priorExternalIdFromRuns([], { serviceId: "svc", partnerId: "9296" }), null);
+  assert.match(scenarios.mintClientSimulatorExternalId(1_700_000_000_000), /^\d{1,36}$/);
 
   const valid = evaluateTest({ httpStatus: 401, expectedHttpStatus: 401, actualCode: "4012700", expectedCode: "4012700", actualMessage: "Unauthorized Signature", expectedMessage: "Unauthorized Signature", httpSource: "target_api" });
   assert.equal(valid.status, "COMPLETED");
@@ -74,7 +79,8 @@ test("negative scenarios change only the intended service-request field and do n
   const service = { id: "svc", kind: "sim_service", name: "Create VA", parent_id: "prov", partner_id: null, created_at: now, updated_at: now, data: { method: "POST", path: "/api/v1.0/transfer-va/create-va", defaultBody: "{}", serviceCode: "27" } };
   const user = { id: "snap", kind: "snap_user", name: "QA", parent_id: null, partner_id: null, created_at: now, updated_at: now, data: { email: "qa@example.test", password: encrypt("secret") } };
   const operator = { id: "op", username: "qa", email: "qa@example.test", name: "QA", role: "admin", active: true, privileges: [], created_at: now };
-  const previous = { id: "old-run", request_json: { dispatch: "SENT", idempotency: { externalId: "used-external", serviceId: "svc", partnerId: "9296" } } };
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const previous = { id: "old-run", request_json: { dispatch: "SENT", actual: { httpStatus: 200, responseCode: "2002700", responseMessage: "Successful" }, headers: { "X-EXTERNAL-ID": "used-external" }, idempotency: { externalId: "used-external", serviceId: "svc", partnerId: "9296", timestamp: `${day}T12:00:00+07:00` } } };
   const calls = [];
   const db = { query: async (sql, params) => { calls.push(sql); if (sql.includes("autosnap_external_ids")) return [{ external_id: params[1] }]; if (sql.includes("FROM autosnap_runs")) return [previous]; return []; } };
   const submitted = [];
