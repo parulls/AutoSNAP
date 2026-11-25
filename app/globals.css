@@ -86,7 +86,7 @@ input,select { min-height:40px; }
 .documentation-confirmation > input[type="checkbox"] { flex:0 0 16px; width:16px; min-width:16px; height:16px; min-height:16px; margin:2px 0 0; padding:0; accent-color:var(--primary); cursor:pointer; }
 .documentation-confirmation > span { flex:1; min-width:0; }
 .documentation-confirmation > input[type="checkbox"]:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
-.check-row { display:flex; flex-direction:row; align-items:flex-start; gap:10px; margin:0; padding:12px; border:1px solid var(--border); border-radius:6px; background:#f8fafc; color:var(--text-primary); font-size:14px; font-weight:400; line-height:20px; cursor:pointer; }
+.check-row { display:flex; flex-direction:row; align-items:flex-start; gap:10px; margin:16px 0 0; padding:12px; border:1px solid var(--border); border-radius:6px; background:#f8fafc; color:var(--text-primary); font-size:14px; font-weight:400; line-height:20px; cursor:pointer; }
 .check-row > input[type="checkbox"] { flex:0 0 16px; width:16px; min-width:16px; height:16px; min-height:16px; margin:2px 0 0; padding:0; accent-color:var(--primary); cursor:pointer; }
 .check-row > span { flex:1; min-width:0; font-weight:500; }
 .check-row > span .helper { display:block; margin-top:2px; }
