@@ -77,17 +77,36 @@ export type SimulatorActivityEvidence = {
   activityId: string;
   serviceId: string;
   serviceName: string;
-  testType: "positive" | "negative";
+  testType?: "positive" | "negative" | null;
+  scenarioName?: string | null;
   savedAt: string | null;
   downloadUrl: string | null;
   pdfReady: boolean;
   evidenceStatus: "PENDING" | "DOWNLOADING" | "CAPTURED" | "FAILED";
 };
 
-export function clientSimulatorServiceName(name: string, testType: "positive" | "negative") {
-  const base = name.trim().replace(/\s+/g, " ").replace(/\s*-\s*(?:positive|negative)\s+case\s*$/i, "");
-  if (!base) throw Error("Nama service kosong.");
-  return `${base} - ${testType === "positive" ? "Positive Case" : "Negative Case"}`;
+/** #serviceName on the ASPI Client Simulator form has no maxlength attribute. 255 keeps the combined name in that field and in evidence metadata. */
+export const ASPI_SERVICE_NAME_MAX = 255;
+const controlChars = /[\u0000-\u001F\u007F]/;
+
+export function normalizeClientSimulatorComponent(value: unknown, label: string) {
+  const empty = label === "Nama Skenario" ? "Nama Skenario wajib diisi sebelum menjalankan Client Simulator." : `${label} wajib diisi.`;
+  if (typeof value !== "string") throw { error: empty, status: 400 };
+  const withoutControls = value.replace(controlChars, "").trim();
+  if (controlChars.test(value)) throw { error: withoutControls ? `${label} tidak boleh berisi baris baru atau karakter kontrol.` : empty, status: 400 };
+  const normalized = value.trim().replace(/[ \t\f\v]+/g, " ");
+  if (!normalized) throw { error: empty, status: 400 };
+  return normalized;
+}
+
+/** Provider, API service, and the scenario typed for this run. Nothing is inferred or appended. */
+export function buildClientSimulatorServiceName(providerName: string, serviceName: string, scenarioName: string) {
+  const provider = normalizeClientSimulatorComponent(providerName, "Nama penyedia");
+  const service = normalizeClientSimulatorComponent(serviceName, "Nama service");
+  const scenario = normalizeClientSimulatorComponent(scenarioName, "Nama Skenario");
+  const combined = `${provider} - ${service} - ${scenario}`;
+  if (combined.length > ASPI_SERVICE_NAME_MAX) throw { error: `Service Name ASPI maksimal ${ASPI_SERVICE_NAME_MAX} karakter. Perkecil Nama Skenario.`, status: 400 };
+  return combined;
 }
 
 /** Activity id printed on an ASPI Client Simulator download link. Other origins are rejected. */
@@ -183,31 +202,29 @@ export function clientSimulatorRetryTarget(activities: { activityId?: string }[]
   return { ok: true as const, activityId: stored[0] };
 }
 
-export function buildSimulatorActivityEvidence(input: { runId: string; activityId: string; serviceId: string; serviceName: string; testType: "positive" | "negative"; savedAt?: string | null; downloadUrl?: string | null; pdfReady?: boolean; evidenceStatus?: SimulatorActivityEvidence["evidenceStatus"] }): SimulatorActivityEvidence | null {
+export function buildSimulatorActivityEvidence(input: { runId: string; activityId: string; serviceId: string; serviceName: string; testType?: "positive" | "negative" | null; scenarioName?: string | null; savedAt?: string | null; downloadUrl?: string | null; pdfReady?: boolean; evidenceStatus?: SimulatorActivityEvidence["evidenceStatus"] }): SimulatorActivityEvidence | null {
   const activityId = officialActivityId(input.activityId);
   if (!activityId) return null;
-  return { runId: input.runId, activityId, serviceId: input.serviceId, serviceName: input.serviceName, testType: input.testType, savedAt: input.savedAt || null, downloadUrl: input.downloadUrl || null, pdfReady: input.pdfReady === true, evidenceStatus: input.evidenceStatus ?? (input.pdfReady ? "CAPTURED" : "PENDING") };
+  return { runId: input.runId, activityId, serviceId: input.serviceId, serviceName: input.serviceName, testType: input.testType ?? null, scenarioName: input.scenarioName ?? null, savedAt: input.savedAt || null, downloadUrl: input.downloadUrl || null, pdfReady: input.pdfReady === true, evidenceStatus: input.evidenceStatus ?? (input.pdfReady ? "CAPTURED" : "PENDING") };
 }
 
 export function evaluateClientSimulator(input: {
-  testType: "positive" | "negative";
+  testType?: "positive" | "negative" | null;
   httpStatus: number | null;
   responseCode: string;
   expectedHttp: number | null;
   expectedCode: string | null;
 }): { matched: boolean; status: "PASSED" | "FAILED" | "COMPLETED"; httpVerified: boolean; snapVerified: boolean } {
-  const { testType, httpStatus, responseCode, expectedHttp, expectedCode } = input;
-  const snapVerified = expectedCode ? responseCode === expectedCode : testType === "positive" ? /^200\d{2}/.test(responseCode) : responseCode.length > 0 && !/^200/.test(responseCode);
+  const { httpStatus, responseCode, expectedHttp, expectedCode } = input;
+  const testType = input.testType === "negative" ? "negative" : "positive";
+  const explicit = expectedHttp != null || !!expectedCode;
+  const snapVerified = expectedCode ? responseCode === expectedCode : testType === "negative" ? responseCode.length > 0 && !/^200/.test(responseCode) : /^200\d{2}/.test(responseCode);
   const httpVerified = httpStatus != null && (expectedHttp == null || httpStatus === expectedHttp);
   if (httpStatus == null) return { matched: false, status: "COMPLETED", httpVerified: false, snapVerified };
   let matched = false;
-  if (testType === "positive") {
-    if (expectedCode) matched = snapVerified && httpVerified;
-    else if (expectedHttp != null) matched = httpVerified;
-    else matched = httpStatus != null ? httpStatus >= 200 && httpStatus < 300 : snapVerified;
-  } else {
-    matched = expectedHttp != null ? httpStatus === expectedHttp : httpStatus != null ? httpStatus >= 400 : snapVerified;
-  }
+  if (explicit) matched = (expectedHttp == null || httpStatus === expectedHttp) && (!expectedCode || responseCode === expectedCode);
+  else if (testType === "positive") matched = httpStatus >= 200 && httpStatus < 300;
+  else matched = httpStatus >= 400;
   return { matched, status: matched ? "PASSED" : "FAILED", httpVerified, snapVerified };
 }
 

@@ -17,7 +17,7 @@ const empty:State={records:[],runs:[],scenarios:[],operators:[]};
 const pages:{label:Page;icon:"dashboard"|"testing"|"simulator"|"data"|"users"}[]=[{label:"Dashboard",icon:"dashboard"},{label:"Dev Site Client",icon:"testing"},{label:"Client Simulator",icon:"simulator"},{label:"Master Data",icon:"data"},{label:"User Management",icon:"users"}];
 export default function Home(){
   const [state,setState]=useState<State>(empty),[loading,setLoading]=useState(true),[page,setPage]=useState<Page>("Dashboard");
-  const [error,setError]=useState(""),[notice,setNotice]=useState(""),[sidebarOpen,setSidebarOpen]=useState(true),[profileOpen,setProfileOpen]=useState(false);
+  const [error,setError]=useState(""),[notice,setNotice]=useState(""),[sidebarOpen,setSidebarOpen]=useState(true),[profileOpen,setProfileOpen]=useState(false),[masterFocus,setMasterFocus]=useState<{kind:"sim_service";token:number}|null>(null);
   async function reload(){setState(await fetchState());}
   useEffect(()=>{fetchState().then(setState).catch(e=>setError(e.message)).finally(()=>setLoading(false));},[]);
   async function logout(){if(!window.confirm("Keluar dari AutoSNAP? Proses testing yang sedang berjalan tidak otomatis dibatalkan."))return;try{await api("logout");setState(empty);await reload();setNotice("");setError("");}catch(e){setError((e as Error).message);}}
@@ -37,9 +37,9 @@ export default function Home(){
       {error&&<div className="form-error" role="alert">{error}<button aria-label="Tutup pesan kesalahan" onClick={()=>setError("")}>×</button></div>}
       {notice&&<div className="form-notice" role="status">{notice}<button aria-label="Tutup pemberitahuan" onClick={()=>setNotice("")}>×</button></div>}
       {visiblePage==="Dashboard"&&<Dashboard state={state} api={api} navigate={setPage} reload={reload}/>}
-      {visiblePage==="Master Data"&&<MasterData {...common}/>}
+      {visiblePage==="Master Data"&&<MasterData key={masterFocus?.token??"master"} {...common} initialKind={masterFocus?.kind??"snap_user"}/>}
       {visiblePage==="Dev Site Client"&&<Testing {...common} variant="dev_site"/>}
-      {visiblePage==="Client Simulator"&&<ClientSimulatorPanel {...common}/>}
+      {visiblePage==="Client Simulator"&&<ClientSimulatorPanel {...common} onOpenMasterData={can(state.user,"master_data")?()=>{setMasterFocus({kind:"sim_service",token:Date.now()});setPage("Master Data");}:undefined}/>}
       {visiblePage==="User Management"&&<UserManagement {...common}/>}
     </main>
   </div>;

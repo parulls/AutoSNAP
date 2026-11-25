@@ -10,6 +10,7 @@ import TestingProgress, { type TestProgress } from "./testing-progress";
 import PdfPreview from "./pdf-preview";
 import UiIcon from "./ui-icon";
 import { ApiError } from "./api-client";
+import { buildClientSimulatorServiceName, thrownMessage } from "./client-simulator-name";
 
 const value=(row:Item|undefined,key:string)=>String(row?.data[key]??"");
 const object=(entry:unknown):entry is Record<string,unknown>=>!!entry&&typeof entry==="object"&&!Array.isArray(entry);
@@ -22,12 +23,12 @@ function buildTimestamp(offsetMinutes:number,includeMillis:boolean,at=new Date()
   return `${local.getUTCFullYear()}-${pad(local.getUTCMonth()+1)}-${pad(local.getUTCDate())}T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}${ms}${sign}${pad(Math.floor(abs/60))}:${pad(abs%60)}`;
 }
 
-export default function ClientSimulatorPanel({state,api,reload,setError,setNotice}:{state:State;api:Api;reload:()=>Promise<void>;setError:(s:string)=>void;setNotice:(s:string)=>void}){
+export default function ClientSimulatorPanel({state,api,reload,setError,setNotice,onOpenMasterData}:{state:State;api:Api;reload:()=>Promise<void>;setError:(s:string)=>void;setNotice:(s:string)=>void;onOpenMasterData?:()=>void}){
   const providers=state.records.filter(r=>r.kind==="sim_provider");
   const allServices=state.records.filter(r=>r.kind==="sim_service");
   const snapUsers=state.records.filter(r=>r.kind==="snap_user");
   const canViewAll=can(state.user,"history","view_all");
-  const [providerId,setProviderId]=useState(""),[serviceId,setServiceId]=useState(""),[snapUserId,setSnapUserId]=useState(""),[testType,setTestType]=useState<"positive"|"negative">("positive");
+  const [providerId,setProviderId]=useState(""),[serviceId,setServiceId]=useState(""),[snapUserId,setSnapUserId]=useState(""),[scenarioName,setScenarioName]=useState(""),[scenarioAttempted,setScenarioAttempted]=useState(false);
   const provider=providers.find(p=>p.id===providerId);
   const services=allServices.filter(s=>s.parentId===providerId);
   const service=services.find(s=>s.id===serviceId);
@@ -36,12 +37,9 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   const [includeMillis,setIncludeMillis]=useState(defaultMillis);
   const [timestamp,setTimestamp]=useState(()=>buildTimestamp(offsetMinutes,defaultMillis,new Date(Date.now()+120_000)));
   const [body,setBody]=useState("{}");
-  const [partnerId,setPartnerId]=useState(""),[externalId,setExternalId]=useState(""),[deviceId,setDeviceId]=useState(""),[channelId,setChannelId]=useState("");
+  const [partnerId,setPartnerId]=useState(""),[externalId,setExternalId]=useState(""),[deviceId,setDeviceId]=useState(""),[channelId,setChannelId]=useState(""),[expectedHttp,setExpectedHttp]=useState(""),[expectedCode,setExpectedCode]=useState("");
   const [busy,setBusy]=useState(false),[running,setRunning]=useState(false),[progress,setProgress]=useState<TestProgress|null>(null);
   const progressIdRef=useRef("");
-  const [adding,setAdding]=useState(false);
-  const emptyService={name:"",method:"POST",path:"",defaultBody:"{}",channelId:"",deviceId:"",partnerId:"",externalId:"",expectedHttpStatus:"200",expectedCode:""};
-  const [serviceDraft,setServiceDraft]=useState(emptyService);
   const [historyRange,setHistoryRange]=useState(()=>rangeForPeriod("today"));
   const [historyFilters,setHistoryFilters]=useState<HistoryFilters>({scope:canViewAll?"all":"mine"});
   const [historyQuery,setHistoryQuery]=useState(""),[offset,setOffset]=useState(0);
@@ -67,36 +65,20 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     setDeviceId(value(s,"deviceId")||value(p,"deviceId"));
     setChannelId(value(s,"channelId")||value(p,"channelId"));
     setBody(value(s,"defaultBody")||value(s,"requestBody")||"{}");
+    setExpectedHttp(value(s,"expectedHttpStatus"));
+    setExpectedCode(value(s,"expectedCode"));
   }
-
-  async function addService(){
-    if(!provider)return;
-    const path=serviceDraft.path.trim();
-    if(!serviceDraft.name.trim()){setError("Isi nama API Service.");return;}
-    if(!path.startsWith("/")||path.startsWith("//")){setError("Service URL harus path relatif diawali /.");return;}
-    const bodyText=serviceDraft.defaultBody.trim()||"{}";
-    try{const parsed=JSON.parse(bodyText);if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))throw Error();}catch{setError("Request Body harus object JSON.");return;}
-    setBusy(true);setError("");
-    try{
-      const saved=await api("save",{kind:"sim_service",name:serviceDraft.name.trim(),parentId:provider.id,data:{...serviceDraft,path,defaultBody:bodyText,expectedHttpStatus:serviceDraft.expectedHttpStatus?Number(serviceDraft.expectedHttpStatus):null}});
-      const id=String(saved.id??"");
-      setServiceId(id);
-      setBody(bodyText);
-      setPartnerId(serviceDraft.partnerId||value(provider,"partnerId")||value(provider,"clientKey")||value(provider,"clientId"));
-      setExternalId(serviceDraft.externalId);
-      setDeviceId(serviceDraft.deviceId||value(provider,"deviceId"));
-      setChannelId(serviceDraft.channelId||value(provider,"channelId"));
-      setAdding(false);setServiceDraft(emptyService);
-      setNotice("API Service disimpan dan siap dijalankan.");
-      await reload();
-    }catch(e){setError((e as Error).message);}finally{setBusy(false);}
+  function resetRequest(){
+    if(running)return;
+    setScenarioName("");setScenarioAttempted(false);loadDefaults(provider,service);
   }
 
   async function run(event:FormEvent){
     event.preventDefault();
-    if(adding){await addService();return;}
-    if(!providerId||!serviceId){setError("Pilih penyedia dan API Service sebelum menjalankan.");return;}
+    setScenarioAttempted(true);
+    if(!providerId||!serviceId||!provider||!service){setError("Pilih penyedia dan API Service sebelum menjalankan.");return;}
     if(!snapUserId){setError("Pilih User SNAP untuk login ke form Client Simulator ASPI.");return;}
+    try{buildClientSimulatorServiceName(provider.name,service.name,scenarioName);}catch(error){setError(thrownMessage(error));return;}
     if(!channelId.trim()){setError("CHANNEL-ID wajib diisi. Form ASPI mengirim header ini.");return;}
     const progressId=crypto.randomUUID();
     progressIdRef.current=progressId;
@@ -110,8 +92,8 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     },700);
     try{
       const response=await api("runClientSimulator",{
-        progressId,providerId,serviceId,snapUserId,testType,
-        overrides:{partnerId,externalId,deviceId,channelId,body,timestamp,includeMillis,offsetMinutes,regenerateExternalId:!externalId.trim()},
+        progressId,providerId,serviceId,snapUserId,scenarioName,
+        overrides:{partnerId,externalId,deviceId,channelId,body,timestamp,includeMillis,offsetMinutes,regenerateExternalId:!externalId.trim(),expectedHttpStatus:expectedHttp,expectedCode},
       });
       try{setProgress(await api("getProgress",{id:progressId}) as unknown as TestProgress);}catch{/* the modal already has the last poll */}
       setNotice(`${String(response.activityName??"Client Simulator")} · ${String(response.status??"")} · PDF ${response.pdfReady?"tersimpan":"belum tersimpan"}`);
@@ -176,48 +158,56 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     const a=document.createElement("a");a.href=url;a.download=`${String(object(run.request)?run.request.activityName??run.id:run.id)}.json`;a.click();URL.revokeObjectURL(url);
   }
 
+  let aspiServiceName="";
+  let scenarioError="";
+  if(provider&&service&&scenarioName.trim()){
+    try{aspiServiceName=buildClientSimulatorServiceName(provider.name,service.name,scenarioName);}catch(error){scenarioError=thrownMessage(error);}
+  }else if(scenarioAttempted&&!scenarioName.trim())scenarioError="Nama Skenario wajib diisi sebelum menjalankan Client Simulator.";
+  else if(scenarioName&&/[\u0000-\u001F\u007F]/.test(scenarioName))scenarioError="Nama Skenario tidak boleh berisi baris baru atau karakter kontrol.";
+
   return <>
     <form className="card test-form" onSubmit={run}>
-      <div className="section-header"><div><h2>Client Simulator</h2><p>AutoSNAP login ke portal ASPI, mengisi form Client Simulator, menekan Send lalu Save Result, dan mengunduh PDF dari Client Simulator Activity. Access Token diambil ke penyedia supaya X-SIGNATURE bisa diisi. Request service dikirim satu kali, lewat tombol Send di form ASPI.</p></div></div>
+      <div className="section-header"><div><h2>Client Simulator</h2><p>Pilih penyedia dan API Service yang sudah didaftarkan, isi Nama Skenario, lalu jalankan. AutoSNAP membentuk Service Name portal dari ketiga data itu, login ke ASPI, menekan Send satu kali, lalu menyimpan Activity ID dan PDF.</p></div></div>
+      <h3>Identitas pengujian</h3>
       <div className="form-grid">
-        <label className="form-field"><span>User SNAP</span><select required value={snapUserId} onChange={e=>setSnapUserId(e.target.value)}><option value="">Pilih akun portal ASPI</option>{snapUsers.map(user=><option key={user.id} value={user.id}>{user.name}{value(user,"email")?` (${value(user,"email")})`:""}</option>)}</select><small className="helper">Email dan password User SNAP dipakai untuk login https://apidevportal.aspi-indonesia.or.id/client-simulator.</small></label>
-        <label className="form-field"><span>Penyedia Client Simulator</span><select required value={providerId} onChange={e=>{const id=e.target.value;setProviderId(id);setServiceId("");setAdding(false);loadDefaults(providers.find(x=>x.id===id),undefined);}}><option value="">Pilih penyedia</option>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-        <div className="form-field"><span>API Service</span><select required={!adding} aria-label="API Service" value={serviceId} disabled={!providerId||!services.length} onChange={e=>{const id=e.target.value;setServiceId(id);loadDefaults(provider,services.find(s=>s.id===id));}}><option value="">{services.length?"Pilih service":"Belum ada service"}</option>{services.map(s=><option key={s.id} value={s.id}>{s.name} — {value(s,"method")||"POST"} {value(s,"path")||value(s,"serviceUrl")}</option>)}</select>{provider&&<button type="button" className="text-button" disabled={busy} onClick={()=>{setAdding(value=>!value);setServiceDraft({...emptyService,channelId:value(provider,"channelId"),deviceId:value(provider,"deviceId"),partnerId:value(provider,"partnerId")||value(provider,"clientKey")});}}>{adding?"Tutup form service":"Tambah API Service"}</button>}</div>
-        <label className="form-field"><span>Jenis Pengujian</span><select value={testType} onChange={e=>setTestType(e.target.value as "positive"|"negative")}><option value="positive">Positif</option><option value="negative">Negatif</option></select></label>
+        <label className="form-field"><span>User SNAP</span><select required disabled={running} value={snapUserId} onChange={e=>setSnapUserId(e.target.value)}><option value="">Pilih akun portal ASPI</option>{snapUsers.map(user=><option key={user.id} value={user.id}>{user.name}{value(user,"email")?` (${value(user,"email")})`:""}</option>)}</select><small className="helper">Email dan password User SNAP dipakai untuk login https://apidevportal.aspi-indonesia.or.id/client-simulator.</small></label>
+        <label className="form-field"><span>Penyedia Client Simulator</span><select required disabled={running} value={providerId} onChange={e=>{const id=e.target.value;setProviderId(id);setServiceId("");loadDefaults(providers.find(x=>x.id===id),undefined);}}><option value="">Pilih penyedia</option>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label className="form-field"><span>API Service</span><select required aria-label="API Service" disabled={running||!providerId||!services.length} value={serviceId} onChange={e=>{const id=e.target.value;setServiceId(id);loadDefaults(provider,services.find(s=>s.id===id));}}><option value="">{services.length?"Pilih service":"Belum ada service"}</option>{services.map(s=><option key={s.id} value={s.id}>{s.name} — {value(s,"method")||"POST"} {value(s,"path")||value(s,"serviceUrl")}</option>)}</select></label>
+        <label className="form-field"><span>Nama Skenario *</span><input aria-invalid={scenarioError?true:undefined} disabled={running} maxLength={255} value={scenarioName} placeholder="Contoh: Positive Case, Invalid Signature, Saldo Tidak Cukup" onChange={e=>setScenarioName(e.target.value)}/>{scenarioError&&<small className="field-error" role="alert">{scenarioError}</small>}</label>
       </div>
-      {provider&&!services.length&&!adding&&<p className="helper">Penyedia ini belum punya API Service, jadi belum ada request yang bisa dikirim. Isi Tambah API Service.</p>}
-      {adding&&provider&&<div className="form-grid">
-        <p className="helper wide">Service baru melekat pada {provider.name}. Path disambung ke {value(provider,"baseUrl")||"Base URL penyedia"}.</p>
-        <label className="form-field"><span>Nama Service *</span><input required={adding} maxLength={120} value={serviceDraft.name} onChange={e=>setServiceDraft({...serviceDraft,name:e.target.value})}/></label>
-        <label className="form-field"><span>Method *</span><select value={serviceDraft.method} onChange={e=>setServiceDraft({...serviceDraft,method:e.target.value})}><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
-        <label className="form-field wide"><span>Service URL / Relative Path *</span><input required={adding} value={serviceDraft.path} onChange={e=>setServiceDraft({...serviceDraft,path:e.target.value})} placeholder="/api/v1.0/..."/></label>
-        <label className="form-field wide"><span>Request Body JSON</span><textarea rows={8} spellCheck={false} value={serviceDraft.defaultBody} onChange={e=>setServiceDraft({...serviceDraft,defaultBody:e.target.value})}/><small className="helper">Body ini diisi ke form ASPI dan ikut dihitung pada X-SIGNATURE. Kalau kosong, form menerima {}.</small></label>
-        <div className="form-actions wide"><button type="button" className="secondary-button" disabled={busy} onClick={()=>setAdding(false)}>Batal</button><button type="button" className="primary-button" disabled={busy} onClick={()=>void addService()}>{busy?"Menyimpan...":"Simpan API Service"}</button></div>
-      </div>}
+      {provider&&!services.length&&<p className="helper">Penyedia ini belum mempunyai API Service. Tambahkan API Service melalui Master Data → API Service Client Simulator.{onOpenMasterData&&<> <button type="button" className="text-button" onClick={onOpenMasterData}>Buka API Service Client Simulator</button></>}</p>}
+      <h3>Service Name ASPI</h3>
+      <label className="form-field wide"><span>Service Name ASPI</span><input readOnly aria-label="Service Name ASPI" value={aspiServiceName} placeholder="Pilih penyedia, API Service, lalu isi Nama Skenario."/></label>
       {provider&&service&&<>
+        <h3>Konfigurasi request</h3>
         <div className="form-grid">
           <label className="form-field"><span>Access Token URI</span><input readOnly value={accessTokenUri}/></label>
           <label className="form-field"><span>Service URI</span><input readOnly value={serviceUri}/></label>
           <div className="timestamp-field wide">
-            <label className="form-field"><span>X-TIMESTAMP</span><input value={timestamp} onChange={e=>setTimestamp(e.target.value)} spellCheck={false}/></label>
+            <label className="form-field"><span>X-TIMESTAMP</span><input disabled={running} value={timestamp} onChange={e=>setTimestamp(e.target.value)} spellCheck={false}/></label>
             <div className="timestamp-controls">
               <div className="timestamp-buttons">
-                <button type="button" className="secondary-button" onClick={()=>setTimestamp(t=>{try{const d=Date.parse(t);return buildTimestamp(offsetMinutes,includeMillis,new Date((Number.isFinite(d)?d:Date.now())-60_000));}catch{return buildTimestamp(offsetMinutes,includeMillis,new Date(Date.now()-60_000));}})}>-1 Menit</button>
-                <button type="button" className="secondary-button" onClick={()=>setTimestamp(t=>{const d=Date.parse(t);return buildTimestamp(offsetMinutes,includeMillis,new Date((Number.isFinite(d)?d:Date.now())+60_000));})}>+1 Menit</button>
-                <button type="button" className="secondary-button" onClick={()=>setTimestamp(buildTimestamp(offsetMinutes,includeMillis,new Date(Date.now()+120_000)))}>Reset</button>
+                <button type="button" className="secondary-button" disabled={running} onClick={()=>setTimestamp(t=>{try{const d=Date.parse(t);return buildTimestamp(offsetMinutes,includeMillis,new Date((Number.isFinite(d)?d:Date.now())-60_000));}catch{return buildTimestamp(offsetMinutes,includeMillis,new Date(Date.now()-60_000));}})}>-1 Menit</button>
+                <button type="button" className="secondary-button" disabled={running} onClick={()=>setTimestamp(t=>{const d=Date.parse(t);return buildTimestamp(offsetMinutes,includeMillis,new Date((Number.isFinite(d)?d:Date.now())+60_000));})}>+1 Menit</button>
+                <button type="button" className="secondary-button" disabled={running} onClick={()=>setTimestamp(buildTimestamp(offsetMinutes,includeMillis,new Date(Date.now()+120_000)))}>Reset</button>
               </div>
-              <label className="timestamp-millis"><input type="checkbox" checked={includeMillis} onChange={e=>{setIncludeMillis(e.target.checked);setTimestamp(buildTimestamp(offsetMinutes,e.target.checked,new Date(Date.now()+120_000)));}}/><span>Milidetik</span></label>
+              <label className="timestamp-millis"><input type="checkbox" disabled={running} checked={includeMillis} onChange={e=>{setIncludeMillis(e.target.checked);setTimestamp(buildTimestamp(offsetMinutes,e.target.checked,new Date(Date.now()+120_000)));}}/><span>Milidetik</span></label>
             </div>
-            <small className="helper">Bank Sumut menolak jam yang tidak di depan servernya. Pengujian positif yang masih dekat dengan waktu sekarang dikirim sebagai sekarang + 2 menit.</small>
+            <small className="helper">Bank Sumut menolak jam yang tidak di depan servernya. Timestamp yang terlalu dekat dengan waktu sekarang dikirim sebagai sekarang + 2 menit.</small>
           </div>
-          <label className="form-field"><span>X-PARTNER-ID</span><input value={partnerId} onChange={e=>setPartnerId(e.target.value)}/></label>
-          <label className="form-field"><span>X-EXTERNAL-ID</span><input value={externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis"/></label>
-          <label className="form-field"><span>X-DEVICE-ID</span><input value={deviceId} onChange={e=>setDeviceId(e.target.value)}/></label>
-          <label className="form-field"><span>CHANNEL-ID</span><input value={channelId} onChange={e=>setChannelId(e.target.value)}/></label>
-          <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={10} spellCheck={false} value={body} onChange={e=>setBody(e.target.value)}/><small className="helper">Diisi dari Request Body API Service {service?.name}. Perubahan di sini hanya untuk pengujian kali ini.</small></label>
+          <label className="form-field"><span>X-PARTNER-ID</span><input disabled={running} value={partnerId} onChange={e=>setPartnerId(e.target.value)}/></label>
+          <label className="form-field"><span>X-EXTERNAL-ID</span><input disabled={running} value={externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis"/></label>
+          <label className="form-field"><span>X-DEVICE-ID</span><input disabled={running} value={deviceId} onChange={e=>setDeviceId(e.target.value)}/></label>
+          <label className="form-field"><span>CHANNEL-ID</span><input disabled={running} value={channelId} onChange={e=>setChannelId(e.target.value)}/></label>
+          <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={10} spellCheck={false} disabled={running} value={body} onChange={e=>setBody(e.target.value)}/><small className="helper">Diisi dari Request Body API Service {service.name}. Perubahan di sini hanya untuk pengujian kali ini. URI yang diisi: {serviceUri}.</small></label>
         </div>
-        <p className="helper">Service Name di form ASPI: {/positive case|negative case/i.test(service.name)?service.name:`${service.name} - ${testType==="positive"?"Positive Case":"Negative Case"}`}. URI yang diisi: {serviceUri}. Signature Access Token: {String(provider.data.signatureAccessTokenMode??"FUNCTION")} · Signature Service: {String(provider.data.signatureServiceMode??"FUNCTION")}.</p>
-        <div className="form-actions"><button className="primary-button" disabled={busy}>{busy?"Menjalankan...":"Jalankan Client Simulator"}</button></div>
+        <h3>Validation Settings</h3>
+        <div className="form-grid">
+          <label className="form-field"><span>Expected HTTP Status</span><input disabled={running} inputMode="numeric" value={expectedHttp} onChange={e=>setExpectedHttp(e.target.value)} placeholder="Kosong jika tidak ditentukan"/></label>
+          <label className="form-field"><span>Expected SNAP Response Code</span><input disabled={running} value={expectedCode} onChange={e=>setExpectedCode(e.target.value)} placeholder="Contoh: 2002700"/></label>
+          <p className="helper wide">Kosong memakai aturan HTTP 2xx bila expected tidak diisi di API Service. Nama Skenario tidak menentukan hasil Positive atau Negative. Signature Access Token: {String(provider.data.signatureAccessTokenMode??"FUNCTION")} · Signature Service: {String(provider.data.signatureServiceMode??"FUNCTION")}.</p>
+        </div>
+        <div className="form-actions"><button type="button" className="secondary-button" disabled={running} onClick={resetRequest}>Reset Request</button><button className="primary-button" disabled={busy}>{busy?"Menjalankan...":"Jalankan Client Simulator"}</button></div>
       </>}
       {!snapUsers.length&&<p className="helper">Belum ada User SNAP. Tambahkan di Master Data beserta email dan password portal ASPI.</p>}
       {!providers.length&&<p className="helper">Belum ada Penyedia. Tambahkan di Master Data → Penyedia Client Simulator.</p>}
@@ -259,6 +249,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     {testingError&&<div className="modal-backdrop error-layer"><section className="card error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="sim-error-title"><button type="button" className="close-button" aria-label="Tutup" onClick={()=>setTestingError(null)}><UiIcon name="close"/></button><h2 id="sim-error-title">{testingError.summary}</h2><dl><div><dt>Detail</dt><dd>{testingError.technical}</dd></div><div><dt>Saran</dt><dd>{testingError.suggestion}</dd></div></dl></section></div>}
     {selectedRun&&<div className="modal-backdrop" onClick={event=>{if(event.target===event.currentTarget)setSelectedRun(null);}}><div className="card edit-modal run-modal" onClick={event=>event.stopPropagation()}>
       <div className="section-header"><div><h2>Detail Testing</h2><p>{selectedRun.notes||selectedRun.id}</p></div><button type="button" className="close-button" aria-label="Tutup" onClick={()=>setSelectedRun(null)}><UiIcon name="close"/></button></div>
+      <p className="helper">Service Name ASPI: {String(object(selectedRun.request)?selectedRun.request.aspiServiceName??selectedRun.request.activityName??"—":"—")}</p>
       <p className="helper">PDF ASPI: {countsOf(selectedRun).ready}/{countsOf(selectedRun).required||0}{countsOf(selectedRun).required>countsOf(selectedRun).ready?" · bukti belum lengkap":""}</p>
       {(()=>{const request=object(selectedRun.request)?selectedRun.request:null;const errors=request&&Array.isArray(request.evidenceErrors)?request.evidenceErrors:[];if(!errors.length)return null;return <div className="validation-box"><strong>Bukti yang belum tersedia</strong><p>{errors.map(item=>typeof item==="string"?item:object(item)?String(item.error??""):"").filter(Boolean).join(" · ")}</p></div>;})()}
       <div className="inline-actions">{pendingEvidence(selectedRun).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={running||!!reprocessingId} onClick={()=>void retryEvidence(selectedRun,item.activityId)}>{reprocessingId===`${selectedRun.id}:${item.activityId}`?"Mengambil bukti...":`Proses Ulang Bukti ${item.activityId.slice(0,8)}`}</button>)}{pdfsOf(selectedRun).filter(item=>item.pdfReady&&officialActivity(item.activityId)).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={!!downloadingId} onClick={()=>setPreview({runId:selectedRun.id,activityId:item.activityId,fileName:item.fileName})}>View PDF</button>)}</div>

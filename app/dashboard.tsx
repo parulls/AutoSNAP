@@ -6,6 +6,7 @@ import HistoryFilter from "./history-filter";
 import { rangeForPeriod } from "./history-period";
 import { operatorLabel, useHistory } from "./use-history";
 import { can } from "./privileges";
+import { clientSimulatorHistoryLabel } from "./client-simulator-name";
 
 type Target =
   | "Dev Site Client"
@@ -228,8 +229,8 @@ export default function Dashboard({
                 const context = contextOf(run);
                 const request = run.request && typeof run.request === "object" && !Array.isArray(run.request) ? run.request as Record<string, unknown> : {};
                 const named = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) && "name" in value ? String((value as { name?: unknown }).name ?? "") : "";
-                const testType = String(request.testType ?? context.testType ?? "");
                 const actor = operatorLabel(run);
+                const kindLabel = clientSimulatorHistoryLabel({ scenarioName: request.scenarioName, testType: request.testType ?? context.testType });
                 return (
                   <tr key={run.id}>
                     <td>
@@ -238,7 +239,7 @@ export default function Dashboard({
                     {isAdmin && <td>{actor.text}</td>}
                     <td>{String(context.service || named(request.service) || "—")}</td>
                     <td>{String(context.environment || named(request.provider) || "—")}</td>
-                    <td>{testType === "negative" || testType === "invalid_access_token" ? "Negatif" : testType ? "Positif" : "—"}</td>
+                    <td>{kindLabel}</td>
                     <td>
                       <span className={`status-badge ${statusClass(run.status)}`}>
                         {run.status}
