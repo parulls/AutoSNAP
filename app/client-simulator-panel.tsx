@@ -11,6 +11,7 @@ import PdfPreview from "./pdf-preview";
 import UiIcon from "./ui-icon";
 import { ApiError } from "./api-client";
 import { buildClientSimulatorServiceName, thrownMessage } from "./client-simulator-name";
+import EvaluationNotice from "./evaluation-notice";
 
 const value=(row:Item|undefined,key:string)=>String(row?.data[key]??"");
 const object=(entry:unknown):entry is Record<string,unknown>=>!!entry&&typeof entry==="object"&&!Array.isArray(entry);
@@ -249,6 +250,8 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     {testingError&&<div className="modal-backdrop error-layer"><section className="card error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="sim-error-title"><button type="button" className="close-button" aria-label="Tutup" onClick={()=>setTestingError(null)}><UiIcon name="close"/></button><h2 id="sim-error-title">{testingError.summary}</h2><dl><div><dt>Detail</dt><dd>{testingError.technical}</dd></div><div><dt>Saran</dt><dd>{testingError.suggestion}</dd></div></dl></section></div>}
     {selectedRun&&<div className="modal-backdrop" onClick={event=>{if(event.target===event.currentTarget)setSelectedRun(null);}}><div className="card edit-modal run-modal" onClick={event=>event.stopPropagation()}>
       <div className="section-header"><div><h2>Detail Testing</h2><p>{selectedRun.notes||selectedRun.id}</p></div><button type="button" className="close-button" aria-label="Tutup" onClick={()=>setSelectedRun(null)}><UiIcon name="close"/></button></div>
+      <EvaluationNotice run={selectedRun}/>
+      <p className="helper">Nama Skenario: {String(object(selectedRun.request)?selectedRun.request.scenarioName??"—":"—")}</p>
       <p className="helper">Service Name ASPI: {String(object(selectedRun.request)?selectedRun.request.aspiServiceName??selectedRun.request.activityName??"—":"—")}</p>
       <p className="helper">PDF ASPI: {countsOf(selectedRun).ready}/{countsOf(selectedRun).required||0}{countsOf(selectedRun).required>countsOf(selectedRun).ready?" · bukti belum lengkap":""}</p>
       {(()=>{const request=object(selectedRun.request)?selectedRun.request:null;const errors=request&&Array.isArray(request.evidenceErrors)?request.evidenceErrors:[];if(!errors.length)return null;return <div className="validation-box"><strong>Bukti yang belum tersedia</strong><p>{errors.map(item=>typeof item==="string"?item:object(item)?String(item.error??""):"").filter(Boolean).join(" · ")}</p></div>;})()}

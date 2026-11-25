@@ -90,27 +90,49 @@ test("evidence keeps the official activity id when the pdf is not stored", async
   assert.equal(buildSimulatorActivityEvidence({ runId: "run-1", activityId: "Create VA - Positive Case", serviceId: "svc", serviceName: "Create VA", testType: "positive" }), null);
 });
 
-test("pass or fail follows the response shown by ASPI", async () => {
-  const { evaluateClientSimulator } = await load();
-  assert.equal(evaluateClientSimulator({ testType: "positive", httpStatus: 200, responseCode: "2002400", expectedHttp: null, expectedCode: "2002400" }).status, "PASSED");
+test("client simulator uses the shared evaluator and final outcome", async () => {
+  const { evaluateClientSimulator, clientSimulatorEvidenceOutcome, clientSimulatorDispatchOutcome, classifyTargetHttp, clientSimulatorServiceLabel } = await load();
+  const { finalOutcome } = await import(pathToFileURL(join(root, "backend", "dist", "test-evaluation.js")).href);
+  const matchedSnap = evaluateClientSimulator({ testType: "positive", httpStatus: 200, responseCode: "2002400", expectedHttp: null, expectedCode: "2002400", httpSource: "target_api" });
+  assert.equal(matchedSnap.status, "COMPLETED");
+  assert.equal(matchedSnap.evaluation.mode, "SNAP_AND_HTTP");
+  assert.equal(finalOutcome(matchedSnap.evaluation, false), "COMPLETED");
+  assert.equal(finalOutcome(matchedSnap.evaluation, true), "PASSED");
   assert.equal(evaluateClientSimulator({ testType: "negative", httpStatus: 200, responseCode: "2002400", expectedHttp: null, expectedCode: null }).status, "FAILED");
-  assert.equal(evaluateClientSimulator({ testType: "positive", httpStatus: null, responseCode: "", expectedHttp: null, expectedCode: null }).status, "COMPLETED");
   const unverified = evaluateClientSimulator({ testType: "positive", httpStatus: null, responseCode: "2002700", expectedHttp: 200, expectedCode: null });
-  assert.equal(unverified.status, "COMPLETED");
-  assert.equal(unverified.matched, false);
+  assert.equal(unverified.status, "AUTOMATION_ERROR");
+  assert.equal(unverified.evaluation.cause, "HTTP_UNVERIFIED");
   assert.equal(unverified.httpVerified, false);
-  assert.equal(unverified.snapVerified, true);
-  const snapWithoutHttp = evaluateClientSimulator({ testType: "positive", httpStatus: null, responseCode: "2002700", expectedHttp: null, expectedCode: null });
-  assert.equal(evaluateClientSimulator({ httpStatus: 200, responseCode: "2002700", expectedHttp: null, expectedCode: null }).status, "PASSED");
-  assert.equal(evaluateClientSimulator({ testType: "negative", httpStatus: 200, responseCode: "4002400", expectedHttp: null, expectedCode: "4002400" }).status, "PASSED");
-  assert.equal(evaluateClientSimulator({ httpStatus: 200, responseCode: "2002700", expectedHttp: 400, expectedCode: null }).status, "FAILED");
-  assert.equal(snapWithoutHttp.status, "COMPLETED");
-  assert.equal(snapWithoutHttp.matched, false);
-  assert.equal(snapWithoutHttp.httpVerified, false);
-  const { finalizeSimulatorStatus } = await load();
-  assert.equal(finalizeSimulatorStatus("PASSED", false), "COMPLETED");
-  assert.equal(finalizeSimulatorStatus("PASSED", true), "PASSED");
-  assert.equal(finalizeSimulatorStatus("FAILED", true), "FAILED");
+  assert.equal(unverified.snapVerified, false);
+  assert.equal(unverified.evaluation.httpValidation.source, "unavailable");
+  assert.equal(finalOutcome(unverified.evaluation, true), "AUTOMATION_ERROR");
+  const httpOnly = evaluateClientSimulator({ httpStatus: 200, responseCode: "2002700", expectedHttp: null, expectedCode: null, httpSource: "target_api" });
+  assert.equal(httpOnly.status, "COMPLETED");
+  assert.equal(httpOnly.evaluation.mode, "HTTP_ONLY");
+  assert.equal(finalOutcome(httpOnly.evaluation, true), "PASSED");
+  const explicitSnap = evaluateClientSimulator({ testType: "negative", httpStatus: 200, responseCode: "4002400", expectedHttp: null, expectedCode: "4002400", httpSource: "target_api" });
+  assert.equal(explicitSnap.evaluation.mode, "SNAP_AND_HTTP");
+  assert.equal(finalOutcome(explicitSnap.evaluation, true), "PASSED");
+  assert.equal(evaluateClientSimulator({ httpStatus: 500, responseCode: "5002700", expectedHttp: 200, expectedCode: null, httpSource: "target_api" }).status, "FAILED");
+  assert.equal(evaluateClientSimulator({ httpStatus: 200, responseCode: "2002700", expectedHttp: 400, expectedCode: null, httpSource: "target_api" }).status, "FAILED");
+  const mismatchedSnap = evaluateClientSimulator({ httpStatus: 200, responseCode: "4002700", expectedHttp: 200, expectedCode: "2002700", httpSource: "target_api" });
+  assert.equal(mismatchedSnap.status, "FAILED");
+  assert.equal(finalOutcome(mismatchedSnap.evaluation, true), "FAILED");
+  const emptySnap = evaluateClientSimulator({ httpStatus: 200, responseCode: "", expectedHttp: 200, expectedCode: "2002700", httpSource: "target_api" });
+  assert.equal(emptySnap.status, "FAILED");
+  assert.equal(clientSimulatorEvidenceOutcome(unverified.evaluation, true, "AUTOMATION_ERROR"), "AUTOMATION_ERROR");
+  assert.equal(clientSimulatorEvidenceOutcome(httpOnly.evaluation, false, "COMPLETED"), "COMPLETED");
+  assert.equal(clientSimulatorEvidenceOutcome(httpOnly.evaluation, true, "COMPLETED"), "PASSED");
+  assert.equal(clientSimulatorEvidenceOutcome({ matched: false }, true, "COMPLETED"), "COMPLETED");
+  assert.equal(clientSimulatorDispatchOutcome("SEND_STARTED", true), "UNKNOWN");
+  assert.equal(clientSimulatorDispatchOutcome("SEND_STARTED", false), "UNKNOWN");
+  assert.equal(clientSimulatorDispatchOutcome("NOT_SENT", true), "CANCELLED");
+  assert.equal(clientSimulatorDispatchOutcome("NOT_SENT", false), "AUTOMATION_ERROR");
+  const bank = "https://bank.example.test/api/v1.0/transfer-va/create-va";
+  assert.deepEqual(classifyTargetHttp({ serviceUri: bank, observed: [{ url: bank, status: 200 }, { url: "https://apidevportal.aspi-indonesia.or.id/ClientSimulator/ClientSimulatorSave", status: 302 }] }), { httpStatus: 200, httpVerified: true, httpSource: "target_api" });
+  assert.deepEqual(classifyTargetHttp({ serviceUri: bank, observed: [{ url: "https://apidevportal.aspi-indonesia.or.id/ClientSimulator/ClientSimulatorSave", status: 302 }] }), { httpStatus: null, httpVerified: false, httpSource: "unavailable" });
+  assert.equal(clientSimulatorServiceLabel(["No", "Date", "Service Name"], ["1", "2026-11-25", "Bank SUMUT - Create VA - Positive Case"]).service, "Bank SUMUT - Create VA - Positive Case");
+  assert.equal(clientSimulatorServiceLabel([], ["1", "2026-11-25", "1"]).serviceSource, "unavailable");
 });
 
 test("two activities with the same service name stay on their own activity id", async () => {

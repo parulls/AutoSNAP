@@ -1,5 +1,6 @@
 import type { Dialog, Download, Locator, Page } from "playwright-core";
 import { validateAspiDownloadPdf } from "./aspi-evidence";
+import { evaluateTest, finalOutcome, isHttpResponse, type Evaluation, type RunStatus } from "./test-evaluation";
 
 /** Official ASPI Client Simulator. The portal is the HTTP client; AutoSNAP fills this form. */
 export const CLIENT_SIMULATOR_FORM = "https://apidevportal.aspi-indonesia.or.id/client-simulator";
@@ -28,6 +29,7 @@ export type ClientSimulatorFormInput = {
 export type ClientSimulatorActivity = {
   activityId: string;
   service: string;
+  serviceSource?: "portal" | "unavailable";
   timestamp: string;
   downloadUrl: string;
   text: string;
@@ -35,6 +37,7 @@ export type ClientSimulatorActivity = {
 
 export type ClientSimulatorPortalResult = {
   httpStatus: number | null;
+  httpSource?: "target_api" | "portal_metadata_verified" | "unavailable";
   response: unknown;
   responseText: string;
   activity: ClientSimulatorActivity | null;
@@ -208,30 +211,89 @@ export function buildSimulatorActivityEvidence(input: { runId: string; activityI
   return { runId: input.runId, activityId, serviceId: input.serviceId, serviceName: input.serviceName, testType: input.testType ?? null, scenarioName: input.scenarioName ?? null, savedAt: input.savedAt || null, downloadUrl: input.downloadUrl || null, pdfReady: input.pdfReady === true, evidenceStatus: input.evidenceStatus ?? (input.pdfReady ? "CAPTURED" : "PENDING") };
 }
 
+const ROW_INDEX = /^\d{1,3}$/;
+const ACTIVITY_DATE = /\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/;
+
+/** A column that is only a row number, a date, or an activity id is not a service name. */
+export function clientSimulatorServiceLabel(headers: string[], cells: string[]): { service: string; serviceSource: "portal" | "unavailable" } {
+  const clean = (value: string) => value.replace(/\s+/g, " ").trim();
+  const usable = (value: string) => {
+    const text = clean(value);
+    if (!text || ROW_INDEX.test(text) || ACTIVITY_DATE.test(text) || uuidPattern.test(text) || /^\d{4,18}$/.test(text) || /download|unduh|detail|view/i.test(text)) return "";
+    return text;
+  };
+  const index = headers.findIndex(header => /service/i.test(clean(header)) && !/\bid\b/i.test(clean(header)));
+  const fromHeader = index >= 0 ? usable(cells[index] ?? "") : "";
+  if (fromHeader) return { service: fromHeader, serviceSource: "portal" };
+  const fromCells = cells.map(usable).find(Boolean) ?? "";
+  if (fromCells) return { service: fromCells, serviceSource: "portal" };
+  return { service: "", serviceSource: "unavailable" };
+}
+
+/**
+ * The bank response is target HTTP only when Playwright observed that URL.
+ * A Save Result status, an access-token status, or a SNAP responseCode is not that response.
+ */
+export function classifyTargetHttp(input: { observed: { url: string; status: number }[]; serviceUri: string; portalOrigin?: string }): { httpStatus: number | null; httpVerified: boolean; httpSource: "target_api" | "unavailable" } {
+  const portal = input.portalOrigin ?? "https://apidevportal.aspi-indonesia.or.id";
+  let service: URL;
+  try { service = new URL(input.serviceUri); }
+  catch { return { httpStatus: null, httpVerified: false, httpSource: "unavailable" }; }
+  if (service.origin === portal) return { httpStatus: null, httpVerified: false, httpSource: "unavailable" };
+  const hits = input.observed.filter(item => {
+    try {
+      const url = new URL(item.url);
+      return url.origin === service.origin && url.pathname === service.pathname && isHttpResponse(item.status);
+    } catch { return false; }
+  });
+  const hit = hits.at(-1);
+  if (!hit) return { httpStatus: null, httpVerified: false, httpSource: "unavailable" };
+  return { httpStatus: hit.status, httpVerified: true, httpSource: "target_api" };
+}
+
+/** Adapter into the shared Dev Site evaluator. Explicit expected HTTP/SNAP wins over a legacy testType. */
 export function evaluateClientSimulator(input: {
   testType?: "positive" | "negative" | null;
   httpStatus: number | null;
   responseCode: string;
   expectedHttp: number | null;
   expectedCode: string | null;
-}): { matched: boolean; status: "PASSED" | "FAILED" | "COMPLETED"; httpVerified: boolean; snapVerified: boolean } {
-  const { httpStatus, responseCode, expectedHttp, expectedCode } = input;
-  const testType = input.testType === "negative" ? "negative" : "positive";
-  const explicit = expectedHttp != null || !!expectedCode;
-  const snapVerified = expectedCode ? responseCode === expectedCode : testType === "negative" ? responseCode.length > 0 && !/^200/.test(responseCode) : /^200\d{2}/.test(responseCode);
-  const httpVerified = httpStatus != null && (expectedHttp == null || httpStatus === expectedHttp);
-  if (httpStatus == null) return { matched: false, status: "COMPLETED", httpVerified: false, snapVerified };
-  let matched = false;
-  if (explicit) matched = (expectedHttp == null || httpStatus === expectedHttp) && (!expectedCode || responseCode === expectedCode);
-  else if (testType === "positive") matched = httpStatus >= 200 && httpStatus < 300;
-  else matched = httpStatus >= 400;
-  return { matched, status: matched ? "PASSED" : "FAILED", httpVerified, snapVerified };
+  httpSource?: "target_api" | "portal_metadata_verified" | "unavailable";
+}): { matched: boolean; status: RunStatus; httpVerified: boolean; snapVerified: boolean; evaluation: Evaluation } {
+  const explicit = input.expectedHttp != null || !!input.expectedCode;
+  const negative = input.testType === "negative" && !explicit;
+  const evaluated = evaluateTest({
+    httpStatus: input.httpStatus,
+    expectedHttpStatus: input.expectedHttp ?? (negative ? 400 : undefined),
+    actualCode: input.responseCode || null,
+    expectedCode: negative ? null : input.expectedCode,
+    negative,
+    httpSource: input.httpSource,
+  });
+  const http = evaluated.evaluation.httpValidation;
+  const snap = evaluated.evaluation.snapValidation;
+  return {
+    matched: evaluated.status === "COMPLETED",
+    status: evaluated.status,
+    httpVerified: http.performed && http.matches,
+    snapVerified: snap.matches === true,
+    evaluation: evaluated.evaluation,
+  };
 }
 
-/** PASSED requires the API checks that were actually performed to match and the required PDF to be stored. */
-export function finalizeSimulatorStatus(apiStatus: "PASSED" | "FAILED" | "COMPLETED", pdfReady: boolean) {
-  if (apiStatus === "PASSED" && !pdfReady) return "COMPLETED";
-  return apiStatus;
+/** PDF completion uses the stored evaluation. An old snapshot without the shared shape keeps its status. */
+export function clientSimulatorEvidenceOutcome(stored: Record<string, unknown> | null | undefined, pdfComplete: boolean, currentStatus: string): RunStatus | string {
+  const evaluation = stored && typeof stored === "object" ? stored : null;
+  const mode = evaluation?.mode;
+  const http = evaluation && typeof evaluation.httpValidation === "object" && evaluation.httpValidation ? evaluation.httpValidation as Evaluation["httpValidation"] : null;
+  if (!evaluation || (mode !== "HTTP_ONLY" && mode !== "SNAP_AND_HTTP") || !http) return currentStatus;
+  return finalOutcome(evaluation as Evaluation, pdfComplete);
+}
+
+/** A crash after Send may already have delivered the transaction. Do not submit it again. */
+export function clientSimulatorDispatchOutcome(dispatch: "NOT_SENT" | "SEND_STARTED", aborted: boolean): "UNKNOWN" | "CANCELLED" | "AUTOMATION_ERROR" {
+  if (dispatch === "SEND_STARTED") return "UNKNOWN";
+  return aborted ? "CANCELLED" : "AUTOMATION_ERROR";
 }
 
 const mandatoryFields: { label: string; pattern: RegExp; key: keyof ClientSimulatorFormInput }[] = [
@@ -342,7 +404,7 @@ async function pressSend(page: Page) {
   });
 }
 
-async function waitForAspiSimulatorResult(page: Page, signal?: AbortSignal) {
+async function waitForAspiSimulatorResult(page: Page, signal?: AbortSignal): Promise<{ httpStatus: number | null; response: Record<string, unknown>; responseCode: string; responseMessage: string; text: string }> {
   const started = Date.now();
   while (Date.now() - started < 60000) {
     if (signal?.aborted) throw Error("Pengujian dibatalkan pengguna.");
@@ -367,8 +429,8 @@ async function waitForAspiSimulatorResult(page: Page, signal?: AbortSignal) {
         const parsed = JSON.parse(state.responseBody);
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) response = { ...parsed, responseCode: String((parsed as { responseCode?: unknown }).responseCode ?? state.responseCode), responseMessage: String((parsed as { responseMessage?: unknown }).responseMessage ?? state.responseMessage) };
       } catch { response = { ...response, body: state.responseBody }; }
-      const http = state.responseBody.match(/HTTP(?:\/\d(?:\.\d)?)?\s+(\d{3})/i);
-      return { httpStatus: http ? Number(http[1]) : null, response, responseCode: state.responseCode, responseMessage: state.responseMessage, text: state.responseBody };
+      const httpStatus: number | null = null;
+      return { httpStatus, response, responseCode: state.responseCode, responseMessage: state.responseMessage, text: state.responseBody };
     }
     await page.waitForTimeout(500);
   }
@@ -442,6 +504,19 @@ export async function readClientSimulatorActivities(page: Page): Promise<ClientS
     if (row.classList.contains("dataTables_empty") || /^(no data|no matching|belum ada|tidak ada|empty)/i.test(clean(row.textContent).slice(0, 80))) return [];
     const cells = Array.from(row.querySelectorAll("td")).map(cell => clean(cell.textContent));
     if (!cells.length) return [];
+    const headers = Array.from(row.closest("table")?.querySelectorAll("thead th") ?? []).map(cell => clean(cell.textContent));
+    const rowIndex = /^\d{1,3}$/;
+    const dated = /\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/;
+    const usable = (value: string) => {
+      const text = clean(value);
+      if (!text || rowIndex.test(text) || dated.test(text) || uuid.test(text) || /^\d{4,18}$/.test(text) || /download|unduh|detail|view/i.test(text)) return "";
+      return text;
+    };
+    const headerIndex = headers.findIndex(header => /service/i.test(header) && !/\bid\b/i.test(header));
+    const fromHeader = headerIndex >= 0 ? usable(cells[headerIndex] ?? "") : "";
+    const service = fromHeader || cells.map(usable).find(Boolean) || "";
+    const serviceSource = service ? "portal" : "unavailable";
+    const timestamp = cells.find(cell => dated.test(cell)) ?? "";
     const anchors = Array.from(row.querySelectorAll("a"));
     const link = anchors.find(anchor => /download|unduh/i.test(clean(anchor.textContent)) || /download/i.test(anchor.getAttribute("href") ?? "")) ?? anchors.at(-1);
     const markupId = ((row.innerHTML.match(uuid) ?? [])[0] ?? "").toLowerCase();
@@ -449,8 +524,7 @@ export async function readClientSimulatorActivities(page: Page): Promise<ClientS
     const official = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value) || /^\d{4,18}$/.test(value);
     if (!href || /^\s*javascript:/i.test(href)) {
       if (!official(markupId)) return [];
-      const service = cells[2] || cells.find(cell => cell && !/download|unduh|detail|view/i.test(cell)) || clean(row.textContent).slice(0, 180);
-      return [{ activityId: markupId, service, timestamp: cells[1] ?? "", downloadUrl: "", text: clean(row.textContent) }];
+      return [{ activityId: markupId, service, serviceSource, timestamp, downloadUrl: "", text: clean(row.textContent) }];
     }
     let url: URL;
     try { url = new URL(href, origin); } catch { return []; }
@@ -459,9 +533,7 @@ export async function readClientSimulatorActivities(page: Page): Promise<ClientS
     const pathId = (url.pathname.split("/").find(part => (uuid.test(part) && part.length === 36) || /^\d{4,18}$/.test(part)) ?? "").toLowerCase();
     const activityId = official(query) ? query : official(pathId) ? pathId : official(markupId) ? markupId : "";
     if (!activityId) return [];
-    const service = cells.find(cell => cell && !/download|unduh/i.test(cell) && !uuid.test(cell)) ?? clean(row.textContent).slice(0, 180);
-    const timestamp = cells.find(cell => /\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(cell)) ?? "";
-    return [{ activityId, service, timestamp, downloadUrl: url.toString(), text: clean(row.textContent) }];
+    return [{ activityId, service, serviceSource, timestamp, downloadUrl: url.toString(), text: clean(row.textContent) }];
   }), "https://apidevportal.aspi-indonesia.or.id");
 }
 
@@ -547,9 +619,20 @@ export async function runClientSimulatorOnPage(page: Page, form: ClientSimulator
   await beat?.();
   if (signal?.aborted) throw Error("Pengujian dibatalkan pengguna.");
   await note("api_request", "running", `${form.serviceName} — Send di form ASPI. Menunggu response.`);
-  await pressSend(page);
-  const displayed = await waitForAspiSimulatorResult(page, signal);
-  steps.push({ stage: "aspi_send", httpStatus: displayed.httpStatus, responseCode: displayed.responseCode });
+  const observed: { url: string; status: number }[] = [];
+  const onResponse = (response: { url: () => string; status: () => number }) => { observed.push({ url: response.url(), status: response.status() }); };
+  page.on("response", onResponse);
+  let displayed: Awaited<ReturnType<typeof waitForAspiSimulatorResult>>;
+  try {
+    await pressSend(page);
+    displayed = await waitForAspiSimulatorResult(page, signal);
+  } finally {
+    page.off("response", onResponse);
+  }
+  const targetHttp = classifyTargetHttp({ observed, serviceUri: form.uri });
+  displayed = { ...displayed, httpStatus: targetHttp.httpStatus };
+  const httpSource = targetHttp.httpSource;
+  steps.push({ stage: "aspi_send", httpStatus: displayed.httpStatus, httpSource, responseCode: displayed.responseCode });
   await note("api_request", "completed", `${form.serviceName} — response ${displayed.responseCode || "diterima"}.`);
   await beat?.();
   await note("save_result", "running", "Save Result pada form ASPI. Send tidak diulang.");
@@ -561,11 +644,11 @@ export async function runClientSimulatorOnPage(page: Page, form: ClientSimulator
     const message = error instanceof Error ? error.message : "Save Result gagal.";
     steps.push({ stage: "save_result", state: "UNKNOWN", ok: false, error: message });
     await note("save_result", "failed", message);
-    return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: message, steps };
+    return { httpStatus: displayed.httpStatus, httpSource, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: message, steps };
   }
   await note("save_redirect", saved.state === "AUTH_EXPIRED" || saved.state === "REJECTED" ? "failed" : "completed", saveDiagnosis(saved));
   if (saved.state === "AUTH_EXPIRED" || saved.state === "REJECTED") {
-    return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: saveDiagnosis(saved), steps };
+    return { httpStatus: displayed.httpStatus, httpSource, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: saveDiagnosis(saved), steps };
   }
   const baseline = new Set(before.map(row => row.activityId));
   let activity: ClientSimulatorActivity | null = null;
@@ -588,7 +671,7 @@ export async function runClientSimulatorOnPage(page: Page, form: ClientSimulator
   if (!proven.verified || !activity) {
     const message = matchError || saveDiagnosis(saved);
     await note("activity_id", "failed", message);
-    return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: message, steps };
+    return { httpStatus: displayed.httpStatus, httpSource, response: displayed.response, responseText: displayed.text, activity: null, pdf: null, pdfError: message, steps };
   }
   await note("activity_id", "completed", `Activity ID ${activity.activityId}.`);
   let pdf: Buffer | null = null;
@@ -603,5 +686,5 @@ export async function runClientSimulatorOnPage(page: Page, form: ClientSimulator
     steps.push({ stage: "pdf_download", activityId: activity.activityId, error: pdfError });
     await note("pdf_download", "failed", pdfError);
   }
-  return { httpStatus: displayed.httpStatus, response: displayed.response, responseText: displayed.text, activity, pdf, pdfError, steps };
+  return { httpStatus: displayed.httpStatus, httpSource, response: displayed.response, responseText: displayed.text, activity, pdf, pdfError, steps };
 }

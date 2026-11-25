@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {configureBalanceExpectation} from "./balance-expectation-fixture.mjs";
+import {aspiDownloadFixture} from "./aspi-download-fixture.mjs";
 import {createRequire} from "node:module";
 import {randomBytes} from "node:crypto";
 const require=createRequire(import.meta.url);
@@ -27,7 +28,7 @@ test("History is saved before PDF collection; HTTP match downloads evidence incl
       const run=await db.one("SELECT * FROM autosnap_runs ORDER BY created_at DESC LIMIT 1");
       assert.ok(["COMPLETED","PASSED"].includes(run.status));assert.equal(run.operator_id,owner);assert.deepEqual(args.paths,paths);
       if(downloadFails)throw Error("ASPI download timeout");
-      return paths.map((path,index)=>({key:args.operations?.[index]?.key,path,activity:{activityId:`93f163ae-e2fc-4f2e-9a03-518094515b4${index}`,service:path,timestamp:now,downloadUrl:"https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity"},pdf:Buffer.from("%PDF-1.7\nASPI fixture\n%%EOF\n")}));
+      return paths.map((path,index)=>({key:args.operations?.[index]?.key,path,activity:{activityId:`93f163ae-e2fc-4f2e-9a03-518094515b4${index}`,service:path,timestamp:now,downloadUrl:"https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity"},pdf:aspiDownloadFixture(path)}));
     }};
     const evidence=new RunEvidenceService(db,portal);
     const controller=new AutoSnapController(db,null,portal,null,evidence);
