@@ -16,12 +16,17 @@ async function load() {
   }
 }
 
-test("service name keeps a single Positive or Negative Case suffix", async () => {
-  const { clientSimulatorServiceName } = await load();
-  assert.equal(clientSimulatorServiceName("Create VA", "positive"), "Create VA - Positive Case");
-  assert.equal(clientSimulatorServiceName("Create VA", "negative"), "Create VA - Negative Case");
-  assert.equal(clientSimulatorServiceName("Create VA - Positive Case", "positive"), "Create VA - Positive Case");
-  assert.equal(clientSimulatorServiceName("Create VA - Positive Case", "negative"), "Create VA - Negative Case");
+test("service name is provider, service, and the typed scenario", async () => {
+  const { buildClientSimulatorServiceName } = await load();
+  assert.equal(buildClientSimulatorServiceName("Bank SUMUT", "Create VA", "Positive Case"), "Bank SUMUT - Create VA - Positive Case");
+  assert.equal(buildClientSimulatorServiceName("Bank SUMUT", "Create VA", "Negative Case"), "Bank SUMUT - Create VA - Negative Case");
+  assert.equal(buildClientSimulatorServiceName("Bank SUMUT", "Balance Inquiry", "Saldo Tidak Cukup"), "Bank SUMUT - Balance Inquiry - Saldo Tidak Cukup");
+  assert.equal(buildClientSimulatorServiceName("Bank ABC", "Transfer", "Invalid Signature"), "Bank ABC - Transfer - Invalid Signature");
+  assert.equal(buildClientSimulatorServiceName(" Bank SUMUT ", "Create VA", "  Positive   Case "), "Bank SUMUT - Create VA - Positive Case");
+  assert.equal(buildClientSimulatorServiceName("Bank SUMUT", "Create VA - Positive Case", "Retry"), "Bank SUMUT - Create VA - Positive Case - Retry");
+  assert.throws(() => buildClientSimulatorServiceName("Bank SUMUT", "Create VA", "   "), error => error.error === "Nama Skenario wajib diisi sebelum menjalankan Client Simulator.");
+  assert.throws(() => buildClientSimulatorServiceName("Bank SUMUT", "Create VA", "Baris\nbaru"), error => /karakter kontrol/.test(error.error));
+  assert.throws(() => buildClientSimulatorServiceName("Bank SUMUT", "Create VA", "A".repeat(240)), error => /maksimal 255/.test(error.error));
 });
 
 test("activity id is read only from the ASPI portal download link", async () => {
@@ -96,6 +101,9 @@ test("pass or fail follows the response shown by ASPI", async () => {
   assert.equal(unverified.httpVerified, false);
   assert.equal(unverified.snapVerified, true);
   const snapWithoutHttp = evaluateClientSimulator({ testType: "positive", httpStatus: null, responseCode: "2002700", expectedHttp: null, expectedCode: null });
+  assert.equal(evaluateClientSimulator({ httpStatus: 200, responseCode: "2002700", expectedHttp: null, expectedCode: null }).status, "PASSED");
+  assert.equal(evaluateClientSimulator({ testType: "negative", httpStatus: 200, responseCode: "4002400", expectedHttp: null, expectedCode: "4002400" }).status, "PASSED");
+  assert.equal(evaluateClientSimulator({ httpStatus: 200, responseCode: "2002700", expectedHttp: 400, expectedCode: null }).status, "FAILED");
   assert.equal(snapWithoutHttp.status, "COMPLETED");
   assert.equal(snapWithoutHttp.matched, false);
   assert.equal(snapWithoutHttp.httpVerified, false);
@@ -103,4 +111,12 @@ test("pass or fail follows the response shown by ASPI", async () => {
   assert.equal(finalizeSimulatorStatus("PASSED", false), "COMPLETED");
   assert.equal(finalizeSimulatorStatus("PASSED", true), "PASSED");
   assert.equal(finalizeSimulatorStatus("FAILED", true), "FAILED");
+});
+
+test("two activities with the same service name stay on their own activity id", async () => {
+  const { matchClientSimulatorActivity } = await load();
+  const same = "Bank SUMUT - Create VA - Positive Case";
+  const rows = [row(idA, same), row(idB, same)];
+  assert.equal(matchClientSimulatorActivity(rows, { activityId: idB, serviceName: same }).activity.activityId, idB);
+  assert.equal(matchClientSimulatorActivity(rows, { serviceName: same }).ok, false);
 });

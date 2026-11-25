@@ -560,6 +560,7 @@ export class AutoSnapController {
       delete data.portalUrl;delete data.config;
     }
     if(kind==="sim_service"){
+      if(/[\u0000-\u001F\u007F]/.test(name))return this.fail(res,clientError("Nama API Service tidak boleh berisi baris baru atau karakter kontrol."));
       if(!methods.includes(String(data.method??"")))return this.fail(res,clientError("Method HTTP service tidak valid."));
       const path=String(data.path??data.serviceUrl??"").trim();
       if(!path.startsWith("/")||path.startsWith("//"))return this.fail(res,clientError("Service URL / Relative Path harus diawali / tanpa protokol."));
@@ -568,6 +569,8 @@ export class AutoSnapController {
         try{const body=String(data.defaultBody??data.requestBody);if(body.trim()&&!object(JSON.parse(body)))throw Error();data.defaultBody=body;}catch{return this.fail(res,clientError("Default request body harus object JSON valid."));}
       }
       if(data.expectedHttpStatus!=null&&data.expectedHttpStatus!==""&&!(Number(data.expectedHttpStatus)>=100&&Number(data.expectedHttpStatus)<=599))return this.fail(res,clientError("Expected HTTP Status tidak valid."));
+      if(typeof data.expectedCode==="string"&&/[\u0000-\u001F\u007F]/.test(data.expectedCode))return this.fail(res,clientError("Expected SNAP Response Code tidak valid."));
+      for(const field of [...secretFields,"baseUrl","clientKey","clientId","signatureAccessTokenUrl","signatureServiceUrl","signatureAccessTokenMode","signatureServiceMode"])delete data[field];
     }
     const now=new Date().toISOString();
     if(old)await this.db.query("UPDATE autosnap_records SET name=$1,parent_id=$2,partner_id=$3,data=$4::jsonb,updated_at=$5 WHERE id=$6",[name,parentId,partnerId,JSON.stringify(data),now,id]);
