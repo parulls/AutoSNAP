@@ -110,10 +110,11 @@ test("client simulator uses a scenario name and API services live in master data
     await page.locator(".field-error", { hasText: "Pilih skenario pengujian terlebih dahulu." }).waitFor();
     await page.getByLabel("Skenario Pengujian").selectOption("POSITIVE");
     assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Positif");
-    await page.getByText("konfigurasi belum lengkap").waitFor();
+    await page.getByText("200xx00 · opsional").waitFor();
     await page.getByLabel("Skenario Pengujian").selectOption("INVALID_ACCESS_TOKEN");
     assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Access Token Invalid");
-    await page.getByText("401xx01").waitFor();
+    await page.getByText("401xx01 · opsional").waitFor();
+    await page.getByRole("region", { name: "Expected Result" }).getByText("Access Token Invalid", { exact: true }).waitFor();
     await page.screenshot({ path: join(tmpdir(), "autosnap-client-sim-desktop.png"), fullPage: true });
     await page.getByLabel("Skenario Pengujian").selectOption("DUPLICATE_EXTERNAL_ID");
     await page.getByText("Request ini memakai kembali X-EXTERNAL-ID yang sudah dikirim pada pengujian sebelumnya.").waitFor();

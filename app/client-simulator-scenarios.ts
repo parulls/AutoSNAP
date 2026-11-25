@@ -13,25 +13,16 @@ export function clientSimulatorScenario(id: string) {
   return CLIENT_SIMULATOR_SCENARIOS.find(item => item.id === id) ?? null;
 }
 
-export function snapServiceCode(data: Record<string, unknown>) {
-  const direct = String(data.serviceCode ?? "").trim();
-  if (/^\d{2}$/.test(direct)) return direct;
-  const expected = String(data.expectedCode ?? data.expectedSnapCode ?? "").trim();
-  if (/^\d{7}$/.test(expected)) return expected.slice(3, 5);
-  return null;
-}
-
 export function presentScenarioExpectation(id: string, data: Record<string, unknown>) {
   const scenario = clientSimulatorScenario(id);
   if (!scenario) return null;
-  const serviceCode = snapServiceCode(data);
   const pattern = `${scenario.codePrefix}xx${scenario.codeSuffix}`;
+  const configured = String(data.expectedCode ?? data.expectedSnapCode ?? "").trim();
+  const configuredMessage = String(data.expectedMessage ?? "").trim();
   if (scenario.id === "POSITIVE") {
-    const configured = String(data.expectedCode ?? "").trim();
-    if (/^200\d{4}$/.test(configured)) return { http: 200, code: configured, pattern, message: String(data.expectedMessage ?? "").trim() || "—", ready: true, summary: scenario.summary };
-    if (serviceCode) return { http: 200, code: `200${serviceCode}00`, pattern, message: String(data.expectedMessage ?? "").trim() || "—", ready: true, summary: scenario.summary };
-    return { http: 200, code: null, pattern, message: "—", ready: false, summary: scenario.summary };
+    const code = /^\d{7}$/.test(configured) && configured.startsWith("200") ? configured : null;
+    return { http: 200, code, pattern, message: configuredMessage || "—", ready: true, summary: scenario.summary };
   }
-  if (!serviceCode) return { http: scenario.expectedHttp, code: null, pattern, message: scenario.expectedMessage, ready: false, summary: scenario.summary };
-  return { http: scenario.expectedHttp, code: `${scenario.codePrefix}${serviceCode}${scenario.codeSuffix}`, pattern, message: scenario.expectedMessage, ready: true, summary: scenario.summary };
+  const code = /^\d{7}$/.test(configured) && configured.startsWith(scenario.codePrefix) && configured.endsWith(scenario.codeSuffix) ? configured : null;
+  return { http: scenario.expectedHttp, code, pattern, message: scenario.expectedMessage, ready: true, summary: scenario.summary };
 }

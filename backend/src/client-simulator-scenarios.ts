@@ -34,25 +34,26 @@ export function normalizeSnapMessage(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
-export function snapServiceCode(serviceData: Record<string, unknown>): string | null {
-  const direct = String(serviceData.serviceCode ?? "").trim();
-  if (/^\d{2}$/.test(direct)) return direct;
-  const expected = String(serviceData.expectedCode ?? serviceData.expectedSnapCode ?? "").trim();
-  if (/^\d{7}$/.test(expected)) return expected.slice(3, 5);
-  return null;
+/** Optional SNAP responseCode filled by the operator. Service code is never invented. */
+export function configuredSnapCode(serviceData: Record<string, unknown>): string | null {
+  const configured = String(serviceData.expectedCode ?? serviceData.expectedSnapCode ?? "").trim();
+  return /^\d{7}$/.test(configured) ? configured : null;
 }
 
+/**
+ * Expected result for a Client Simulator scenario.
+ * HTTP comes from the scenario. SNAP responseCode is used only when the operator filled it.
+ * Without a SNAP code, evaluation is HTTP-only (and responseMessage for negative scenarios that need it).
+ */
 export function resolveScenarioExpectation(scenario: ScenarioDefinition, serviceData: Record<string, unknown>) {
-  const serviceCode = snapServiceCode(serviceData);
+  const configured = configuredSnapCode(serviceData);
   const configuredMessage = String(serviceData.expectedMessage ?? "").trim();
   if (scenario.id === "POSITIVE") {
-    const configured = String(serviceData.expectedCode ?? serviceData.expectedSnapCode ?? "").trim();
-    if (/^200\d{4}$/.test(configured)) return { expectedHttp: 200, expectedCode: configured, expectedMessage: configuredMessage || null, serviceCode: configured.slice(3, 5), ready: true };
-    if (serviceCode) return { expectedHttp: 200, expectedCode: `200${serviceCode}00`, expectedMessage: configuredMessage || null, serviceCode, ready: true };
-    return { expectedHttp: 200, expectedCode: null, expectedMessage: null, serviceCode: null, ready: false };
+    const expectedCode = configured && configured.startsWith("200") ? configured : null;
+    return { expectedHttp: 200, expectedCode, expectedMessage: configuredMessage || null, ready: true };
   }
-  if (!serviceCode) throw { error: "Kode service SNAP dua digit belum diisi pada API Service. ResponseCode skenario ini tidak ditebak.", status: 400 };
-  return { expectedHttp: scenario.expectedHttp, expectedCode: `${scenario.codePrefix}${serviceCode}${scenario.codeSuffix}`, expectedMessage: scenario.expectedMessage, serviceCode, ready: true };
+  const expectedCode = configured && configured.startsWith(scenario.codePrefix) && configured.endsWith(scenario.codeSuffix) ? configured : null;
+  return { expectedHttp: scenario.expectedHttp, expectedCode, expectedMessage: scenario.expectedMessage, ready: true };
 }
 
 export function replacementAccessToken(validToken: string) {

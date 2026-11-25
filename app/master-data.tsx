@@ -19,7 +19,7 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
   const [draft,setDraft]=useState({name:"",parentId:"",data:{} as Record<string,unknown>}),[busy,setBusy]=useState(false),[modalError,setModalError]=useState("");
   const [importing,setImporting]=useState<{endpoint?:Item;service?:Item}|null>(null);
   const [serviceEditor,setServiceEditor]=useState<{service?:Item}|null>(null);
-  const [serviceDraft,setServiceDraft]=useState({providerId:"",name:"",method:"POST",path:"",channelId:"",deviceId:"",partnerId:"",externalId:"",defaultBody:"{}",expectedHttpStatus:"",expectedCode:"",serviceCode:""});
+  const [serviceDraft,setServiceDraft]=useState({providerId:"",name:"",method:"POST",path:"",channelId:"",deviceId:"",partnerId:"",externalId:"",defaultBody:"{}",expectedHttpStatus:"",expectedCode:""});
   const [serviceQuery,setServiceQuery]=useState(""),[providerFilter,setProviderFilter]=useState("");
   const moduleAccess=kind==="sim_provider"||kind==="sim_service"?can(state.user,"client_simulator")||can(state.user,"master_data"):can(state.user,"master_data");
   const canCreate=moduleAccess,canUpdate=moduleAccess,canDelete=moduleAccess;
@@ -65,7 +65,7 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
   function openService(service?:Item){
     const providerId=service?.parentId||providerFilter||providers[0]?.id||"";
     setServiceEditor({service});setModalError("");
-    setServiceDraft(service?{providerId,name:service.name,method:value(service,"method")||"POST",path:value(service,"path")||value(service,"serviceUrl"),channelId:value(service,"channelId"),deviceId:value(service,"deviceId"),partnerId:value(service,"partnerId"),externalId:value(service,"externalId"),defaultBody:value(service,"defaultBody")||value(service,"requestBody")||"{}",expectedHttpStatus:value(service,"expectedHttpStatus"),expectedCode:value(service,"expectedCode"),serviceCode:value(service,"serviceCode")}:{providerId,name:"",method:"POST",path:"",channelId:"",deviceId:"",partnerId:"",externalId:"",defaultBody:"{}",expectedHttpStatus:"",expectedCode:"",serviceCode:""});
+    setServiceDraft(service?{providerId,name:service.name,method:value(service,"method")||"POST",path:value(service,"path")||value(service,"serviceUrl"),channelId:value(service,"channelId"),deviceId:value(service,"deviceId"),partnerId:value(service,"partnerId"),externalId:value(service,"externalId"),defaultBody:value(service,"defaultBody")||value(service,"requestBody")||"{}",expectedHttpStatus:value(service,"expectedHttpStatus"),expectedCode:value(service,"expectedCode")}:{providerId,name:"",method:"POST",path:"",channelId:"",deviceId:"",partnerId:"",externalId:"",defaultBody:"{}",expectedHttpStatus:"",expectedCode:""});
   }
   async function saveService(event:FormEvent){
     event.preventDefault();if(!serviceEditor)return;
@@ -79,7 +79,7 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
     if(serviceDraft.expectedHttpStatus&&!(Number(serviceDraft.expectedHttpStatus)>=100&&Number(serviceDraft.expectedHttpStatus)<=599)){setModalError("Expected HTTP Status tidak valid.");return;}
     setBusy(true);setModalError("");
     try{
-      await api("save",{kind:"sim_service",id:serviceEditor.service?.id,name,parentId:serviceDraft.providerId,data:{method:serviceDraft.method,path,channelId:serviceDraft.channelId.trim(),deviceId:serviceDraft.deviceId.trim(),partnerId:serviceDraft.partnerId.trim(),externalId:serviceDraft.externalId.trim(),defaultBody:bodyText,serviceCode:serviceDraft.serviceCode.trim(),expectedHttpStatus:serviceDraft.expectedHttpStatus?Number(serviceDraft.expectedHttpStatus):null,expectedCode:serviceDraft.expectedCode.trim()}});
+      await api("save",{kind:"sim_service",id:serviceEditor.service?.id,name,parentId:serviceDraft.providerId,data:{method:serviceDraft.method,path,channelId:serviceDraft.channelId.trim(),deviceId:serviceDraft.deviceId.trim(),partnerId:serviceDraft.partnerId.trim(),externalId:serviceDraft.externalId.trim(),defaultBody:bodyText,expectedHttpStatus:serviceDraft.expectedHttpStatus?Number(serviceDraft.expectedHttpStatus):null,expectedCode:serviceDraft.expectedCode.trim()}});
       await reload();setServiceEditor(null);setNotice("API Service Client Simulator disimpan.");
     }catch(e){setModalError((e as Error).message);}finally{setBusy(false);}
   }
@@ -144,7 +144,7 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
               </div>
               <div className="signing-pair wide">
                 <label className="form-field"><span>Signature Service Mode</span><select value={serviceMode} onChange={e=>patch("signatureServiceMode",e.target.value)}><option value="FUNCTION">FUNCTION — dihitung di AutoSNAP</option><option value="HIT_API">HIT_API — layanan signing lain</option><option value="NONE">NONE — tanpa signature</option></select></label>
-                {serviceMode==="HIT_API"?field("signatureServiceUrl","URL Signature Service *",false,false,"Hasilnya menjadi X-SIGNATURE request service."):<span/>}
+                {serviceMode==="HIT_API"?field("signatureServiceUrl","URL Signature Service *",false,false,"HTTPS lengkap atau path relatif ke Base URL. Contoh: https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service"):<span/>}
               </div>
               <label className="form-field"><span>RSA Encoding</span><select value={String(draft.data.rsaEncoding??"base64")} onChange={e=>patch("rsaEncoding",e.target.value)}><option value="base64">Base64</option><option value="hex">Hex</option></select><small className="helper">Bawaan Base64.</small></label>
               <label className="form-field"><span>HMAC Encoding</span><select value={String(draft.data.hmacEncoding??"hex")} onChange={e=>patch("hmacEncoding",e.target.value)}><option value="hex">Hex</option><option value="base64">Base64</option></select><small className="helper">Bank Sumut SNAP Batubara memakai Base64. Hex dibalas 401 Unauthorized Signature.</small></label>
@@ -181,9 +181,8 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
             <label className="form-field"><span>X-DEVICE-ID override</span><input value={serviceDraft.deviceId} onChange={e=>setServiceDraft({...serviceDraft,deviceId:e.target.value})}/></label>
             <label className="form-field"><span>X-PARTNER-ID override</span><input value={serviceDraft.partnerId} onChange={e=>setServiceDraft({...serviceDraft,partnerId:e.target.value})}/></label>
             <label className="form-field"><span>X-EXTERNAL-ID override</span><input value={serviceDraft.externalId} onChange={e=>setServiceDraft({...serviceDraft,externalId:e.target.value})}/></label>
-            <label className="form-field"><span>Expected HTTP Status</span><input value={serviceDraft.expectedHttpStatus} onChange={e=>setServiceDraft({...serviceDraft,expectedHttpStatus:e.target.value})}/></label>
-            <label className="form-field"><span>Kode Service SNAP</span><input inputMode="numeric" maxLength={2} value={serviceDraft.serviceCode} onChange={e=>setServiceDraft({...serviceDraft,serviceCode:e.target.value})} placeholder="27"/><small className="helper">Dua digit resmi, misalnya 27 untuk Create VA. Dipakai menyusun 4012701, bukan tebakan.</small></label>
-            <label className="form-field"><span>Expected SNAP Response Code</span><input value={serviceDraft.expectedCode} onChange={e=>setServiceDraft({...serviceDraft,expectedCode:e.target.value})}/></label>
+            <label className="form-field"><span>Expected HTTP Status</span><input value={serviceDraft.expectedHttpStatus} onChange={e=>setServiceDraft({...serviceDraft,expectedHttpStatus:e.target.value})}/><small className="helper">Opsional untuk catatan. HTTP yang divalidasi Client Simulator mengikuti skenario yang dipilih.</small></label>
+            <label className="form-field"><span>Expected SNAP Response Code</span><input inputMode="numeric" maxLength={7} value={serviceDraft.expectedCode} onChange={e=>setServiceDraft({...serviceDraft,expectedCode:e.target.value})} placeholder="2002700"/><small className="helper">Opsional. Jika diisi, hasil dibandingkan dengan kode SNAP ini. Jika kosong, validasi memakai HTTP status skenario.</small></label>
           </div>
         </details>
       </div>

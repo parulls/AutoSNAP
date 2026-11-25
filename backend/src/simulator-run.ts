@@ -11,6 +11,7 @@ import {
   getXSignatureAccessTokenFunction,
   getXSignatureServiceFunction,
   hitApiSignature,
+  resolveSignerUrl,
   snapUtilityKind,
   snapUtilityRequest,
   toAspiPrivateKey,
@@ -71,7 +72,7 @@ async function resolveAccessTokenSignature(provider:RecordRow,mode:SignatureMode
     const encoding=encodingOf(provider.data.rsaEncoding,"base64");
     return {signature:getXSignatureAccessTokenFunction(privateKey,clientKey,timestamp,encoding),httpStatus:null,response:null,mode};
   }
-  const url=value(provider,"signatureAccessTokenUrl");
+  const url=resolveSignerUrl(value(provider,"signatureAccessTokenUrl"),value(provider,"baseUrl"));
   if(!url)throw {error:"URL Signature Access Token (HIT_API) wajib diisi.",status:400};
   const signaturePrivateKey=signatureAuthMaterial(provider);
   if(aspiSignatureTarget(url,"auth")){
@@ -98,8 +99,8 @@ async function resolveServiceSignature(provider:RecordRow,mode:SignatureMode,inp
     const encoding=encodingOf(provider.data.hmacEncoding,"hex");
     return {signature:getXSignatureServiceFunction(secret,input.method,input.relative,input.token,input.body,input.timestamp,encoding),httpStatus:null,response:null,mode};
   }
-  const url=value(provider,"signatureServiceUrl");
-  if(!url)throw {error:"URL Signature Service (HIT_API) wajib diisi.",status:400};
+  const url=resolveSignerUrl(value(provider,"signatureServiceUrl"),value(provider,"baseUrl"));
+  if(!url)throw {error:"URL Signature Service (HIT_API) wajib diisi. Isi URL lengkap HTTPS atau path relatif ke Base URL penyedia.",status:400};
   if(aspiSignatureTarget(url,"service")){
     const secret=decrypt(value(provider,"clientSecret"));
     if(!secret)throw {error:"Signature Service ASPI membutuhkan Client Secret penyedia.",status:400};
@@ -227,8 +228,8 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   if(!value(snapUser,"email")&&!value(snapUser,"username"))throw {error:"User SNAP belum punya email login portal ASPI.",status:400};
   if(!value(snapUser,"password"))throw {error:"User SNAP belum punya password portal ASPI.",status:400};
   const signer={user:snapUser,gateway};
-  const accessViaAspi=accessMode==="HIT_API"&&!!aspiSignatureTarget(value(provider,"signatureAccessTokenUrl"),"auth");
-  const serviceViaAspi=serviceMode==="HIT_API"&&!!aspiSignatureTarget(value(provider,"signatureServiceUrl"),"service");
+  const accessViaAspi=accessMode==="HIT_API"&&!!aspiSignatureTarget(resolveSignerUrl(value(provider,"signatureAccessTokenUrl"),value(provider,"baseUrl"))||"","auth");
+  const serviceViaAspi=serviceMode==="HIT_API"&&!!aspiSignatureTarget(resolveSignerUrl(value(provider,"signatureServiceUrl"),value(provider,"baseUrl"))||"","service");
   const steps:Record<string,unknown>[]=[];
   const runId=randomUUID();
   const activityName=aspiServiceName;

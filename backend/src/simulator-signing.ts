@@ -112,10 +112,25 @@ export function aspiSignatureTarget(raw:string,kind:"auth"|"service"){
   return null;
 }
 
+/** Join a relative signature URL to the provider Base URL so HIT_API accepts the same path style as Access Token. */
+export function resolveSignerUrl(raw:string,baseUrl=""){
+  const trimmed=String(raw??"").trim();
+  if(!trimmed)return "";
+  try{return new URL(trimmed).toString();}catch{/* relative path or host without scheme */}
+  const base=String(baseUrl??"").trim();
+  if(!base)throw {error:"URL layanan signature harus lengkap (https://...). Isi Base URL penyedia jika memakai path relatif.",status:400};
+  try{
+    const root=base.endsWith("/")?base:`${base}/`;
+    return new URL(trimmed.replace(/^\//,""),root).toString();
+  }catch{
+    throw {error:"URL layanan signature tidak valid. Contoh: https://dev.banksumut.co.id/snapgov/api/v1.0/utilities/signature-service",status:400};
+  }
+}
+
 /** HTTPS-only HIT_API URL. Private hosts stay blocked. A saved public URL is allowed unless an allowlist narrows it. */
 export function assertSafeSignerUrl(raw:string){
   let url:URL;
-  try{url=new URL(raw);}catch{throw {error:"URL layanan signature tidak valid.",status:400};}
+  try{url=new URL(raw);}catch{throw {error:"URL layanan signature tidak valid. Gunakan alamat HTTPS lengkap, misalnya https://dev.banksumut.co.id/.../signature-service",status:400};}
   if(url.protocol!=="https:")throw {error:"URL layanan signature wajib HTTPS.",status:400};
   if(url.username||url.password)throw {error:"URL layanan signature tidak boleh berisi kredensial.",status:400};
   const host=url.hostname.toLowerCase();

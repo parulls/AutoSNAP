@@ -75,7 +75,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   function snapUserLabel(user:Item){
     const display=value(user,"displayUsername").trim();
     if(display&&!display.includes("@"))return display;
-    const name=user.name.trim();
+    const name=user.name.trim().replace(/\s*\([^)]*@[^)]*\)\s*/g,"").trim();
     if(name&&!name.includes("@"))return name;
     return "Username belum diisi";
   }
@@ -189,7 +189,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       {provider&&!services.length&&<p className="helper">Penyedia ini belum mempunyai API Service. Tambahkan API Service melalui Master Data → API Service Client Simulator.{onOpenMasterData&&<> <button type="button" className="text-button" onClick={onOpenMasterData}>Buka API Service Client Simulator</button></>}</p>}
       <h3>Service Name ASPI</h3>
       <label className="form-field wide"><span>Service Name ASPI</span><input readOnly aria-label="Service Name ASPI" value={aspiServiceName} placeholder="Pilih penyedia, API Service, dan skenario."/></label>
-      {expectation&&<section aria-label="Expected Result"><h3>Expected Result</h3><dl className="expected-result"><div><dt>HTTP Status</dt><dd>{expectation.http}</dd></div><div><dt>SNAP Code</dt><dd>{expectation.ready&&expectation.code?expectation.code:`${expectation.pattern} · konfigurasi belum lengkap`}</dd></div><div><dt>Response Message</dt><dd>{expectation.message||"—"}</dd></div></dl><p className="helper">{selectedScenario?selectedScenario.summary:"Pilih skenario pengujian terlebih dahulu."}</p></section>}
+      {expectation&&<section aria-label="Expected Result"><h3>Expected Result</h3><dl className="expected-result"><div><dt>HTTP Status</dt><dd>{expectation.http}</dd></div><div><dt>SNAP Code</dt><dd>{expectation.code||`${expectation.pattern} · opsional`}</dd></div><div><dt>Response Message</dt><dd>{expectation.message||"—"}</dd></div></dl><p className="helper">{selectedScenario?selectedScenario.summary:"Pilih skenario pengujian terlebih dahulu."}</p></section>}
       {!selectedScenario&&<p className="helper">Pilih skenario pengujian terlebih dahulu.</p>}
       {provider&&service&&<>
         <h3>Konfigurasi request</h3>

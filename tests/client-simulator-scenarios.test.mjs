@@ -14,18 +14,26 @@ function message(error) {
   return error && typeof error === "object" && "error" in error ? error.error : error?.message;
 }
 
-test("five scenarios resolve service codes and isolate one request field", async () => {
+test("five scenarios use optional SNAP codes and isolate one request field", async () => {
   const scenarios = await load("client-simulator-scenarios.js");
   const { evaluateTest, finalOutcome } = await load("test-evaluation.js");
   assert.deepEqual(scenarios.CLIENT_SIMULATOR_SCENARIOS.map(item => item.label), ["Positif", "Access Token Invalid", "Unauthorized . Signature", "Unauthorized . Unknown Client", "Cannot use the same X-EXTERNAL-ID"]);
   assert.throws(() => scenarios.clientSimulatorScenario("SALDO"), error => message(error).includes("tidak valid"));
-  const service = { serviceCode: "27" };
-  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("POSITIVE"), service).expectedCode, "2002700");
-  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_ACCESS_TOKEN"), service).expectedCode, "4012701");
-  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_SIGNATURE"), service).expectedMessage, "Unauthorized Signature");
-  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("UNKNOWN_CLIENT"), service).expectedMessage, "Unauthorized Client");
-  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("DUPLICATE_EXTERNAL_ID"), service).expectedCode, "4092701");
-  assert.throws(() => scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_ACCESS_TOKEN"), {}), error => message(error).includes("tidak ditebak"));
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("POSITIVE"), {}).expectedHttp, 200);
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("POSITIVE"), {}).expectedCode, null);
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("POSITIVE"), { expectedCode: "2002700" }).expectedCode, "2002700");
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_ACCESS_TOKEN"), {}).expectedHttp, 401);
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_ACCESS_TOKEN"), {}).expectedCode, null);
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_ACCESS_TOKEN"), { expectedCode: "4012701" }).expectedCode, "4012701");
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_SIGNATURE"), {}).expectedMessage, "Unauthorized Signature");
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("UNKNOWN_CLIENT"), {}).expectedMessage, "Unauthorized Client");
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("DUPLICATE_EXTERNAL_ID"), {}).expectedHttp, 409);
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("DUPLICATE_EXTERNAL_ID"), { expectedCode: "4092701" }).expectedCode, "4092701");
+  const httpOnlyPositive = evaluateTest({ httpStatus: 200, expectedHttpStatus: 200, httpSource: "target_api" });
+  assert.equal(httpOnlyPositive.status, "COMPLETED");
+  assert.equal(finalOutcome(httpOnlyPositive.evaluation, true), "PASSED");
+  const httpFailPositive = evaluateTest({ httpStatus: 401, expectedHttpStatus: 200, httpSource: "target_api" });
+  assert.equal(httpFailPositive.status, "FAILED");
   assert.notEqual(scenarios.replacementAccessToken("real-token"), "real-token");
   const signature = "abcdefA";
   assert.notEqual(scenarios.corruptSignature(signature), signature);
