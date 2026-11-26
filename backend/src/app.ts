@@ -10,7 +10,7 @@ import { DatabaseService, type RecordRow, type RunRow } from "./database.service
 import { RunEngine, isoJakarta, checkHeaders, type HitResult } from "./run-engine";
 import { PortalEngine } from "./portal-engine";
 import { decrypt, encrypt, redact, secretFields, sha256 } from "./security";
-import { contentDispositionAttachment, evidencePdfFilenameForRun, resolveRegisteredServiceName, uniqueEvidenceZipEntryNames } from "./evidence-filename";
+import { contentDispositionAttachment, evidencePdfFilenameForRun, resolveEvidencePdfBaseName, uniqueEvidenceZipEntryNames } from "./evidence-filename";
 import { BALANCE_PATH,balanceResponseChecks, mockBalance, object, validateBalanceRequest, validateHeaderProfile, type UseCase } from "./balance";
 import { AspiFormResolver } from "./aspi-form-resolver";
 import { AspiSessionManager } from "./aspi-session-manager";
@@ -360,7 +360,7 @@ export class AutoSnapController {
       if(!cached)return this.fail(res,clientError("Sebagian PDF belum tersimpan; ZIP tidak dibuat agar bukti tidak terlewat.",409));
       let pdf:Buffer;
       try{({pdf}=this.loadStoredOfficialPdf(cached));}catch(error){return this.fail(res,error);}
-      prepared.push({activityId,serviceName:resolveRegisteredServiceName(request,activity)||`Service-${index+1}`,pdf});
+      prepared.push({activityId,serviceName:resolveEvidencePdfBaseName(request,activity)||`Service-${index+1}`,pdf});
     }
     const names=uniqueEvidenceZipEntryNames(prepared.map(item=>item.serviceName));
     const entries=prepared.map((item,index)=>({name:names[index],data:item.pdf}));

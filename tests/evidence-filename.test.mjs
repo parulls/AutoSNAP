@@ -9,10 +9,11 @@ async function load(name) {
   return import(pathToFileURL(join(root, "backend", "dist", name)).href);
 }
 
-test("evidence PDF filenames use registered API Service name only", async () => {
+test("evidence PDF filenames: Client Simulator uses Penyedia - Service - Skenario; Dev Site uses service name only", async () => {
   const {
     sanitizeEvidenceFilenameBase,
     resolveRegisteredServiceName,
+    resolveEvidencePdfBaseName,
     evidencePdfFilename,
     evidencePdfFilenameForRun,
     uniqueEvidenceZipEntryNames,
@@ -26,19 +27,21 @@ test("evidence PDF filenames use registered API Service name only", async () => 
   assert.equal(sanitizeEvidenceFilenameBase(""), "API Service");
 
   const clientSim = {
-    identity: { serviceName: "Create VA", providerName: "Bank SUMUT", scenarioName: "Positif" },
+    mode: "client_sim",
+    identity: { serviceName: "Create VA", providerName: "Bank SUMUT", scenarioName: "Positif", aspiServiceName: "Bank SUMUT - Create VA - Positif" },
     aspiServiceName: "Bank SUMUT - Create VA - Positif",
     activityName: "Bank SUMUT - Create VA - Positif",
   };
   assert.equal(resolveRegisteredServiceName(clientSim), "Create VA");
-  assert.equal(evidencePdfFilenameForRun(clientSim, { service: "Bank SUMUT - Create VA - Positif", activityId: "abc" }), "Create VA.pdf");
+  assert.equal(resolveEvidencePdfBaseName(clientSim, { service: "Bank SUMUT - Create VA - Positif", activityId: "abc" }), "Bank SUMUT - Create VA - Positif");
+  assert.equal(evidencePdfFilenameForRun(clientSim, { service: "Bank SUMUT - Create VA - Positif", activityId: "abc" }), "Bank SUMUT - Create VA - Positif.pdf");
 
   const devSite = { context: { service: "API Bank Statement", environment: "Sandbox" } };
   assert.equal(evidencePdfFilenameForRun(devSite), "API Bank Statement.pdf");
 
   assert.deepEqual(uniqueEvidenceZipEntryNames(["Create VA", "Create VA", "Transfer"]), ["Create VA.pdf", "Create VA (2).pdf", "Transfer.pdf"]);
 
-  const disposition = contentDispositionAttachment("Create VA.pdf");
-  assert.match(disposition, /filename="Create VA\.pdf"/);
-  assert.match(disposition, /filename\*=UTF-8''Create%20VA\.pdf/);
+  const disposition = contentDispositionAttachment("Bank SUMUT - Create VA - Positif.pdf");
+  assert.match(disposition, /filename="Bank SUMUT - Create VA - Positif\.pdf"/);
+  assert.match(disposition, /filename\*=UTF-8''Bank%20SUMUT%20-%20Create%20VA%20-%20Positif\.pdf/);
 });
