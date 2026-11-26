@@ -10,6 +10,7 @@ import { DatabaseService, type RecordRow, type RunRow } from "./database.service
 import { RunEngine, isoJakarta, checkHeaders, type HitResult } from "./run-engine";
 import { PortalEngine } from "./portal-engine";
 import { decrypt, encrypt, redact, secretFields, sha256 } from "./security";
+import { contentDispositionAttachment, evidencePdfFilenameForRun, resolveRegisteredServiceName, uniqueEvidenceZipEntryNames } from "./evidence-filename";
 import { BALANCE_PATH,balanceResponseChecks, mockBalance, object, validateBalanceRequest, validateHeaderProfile, type UseCase } from "./balance";
 import { AspiFormResolver } from "./aspi-form-resolver";
 import { AspiSessionManager } from "./aspi-session-manager";
@@ -331,10 +332,9 @@ export class AutoSnapController {
     let pdf:Buffer,hash:string,fingerprint:string;
     try{({pdf,hash,fingerprint}=this.loadStoredOfficialPdf(cached));}catch(error){return this.fail(res,error);}
     if(!cached.content_sha256)await this.db.query("UPDATE autosnap_evidence_pdfs SET content_sha256=$1 WHERE run_id=$2 AND activity_id=$3",[hash,runId,activityId]).catch(()=>undefined);
-    const service=String(activity.service??"ASPI").replace(/[^A-Za-z0-9_-]+/g,"-").slice(0,60);
-    const filename=`ASPI-${service||"Activity"}-${activityId}.pdf`;
+    const filename=evidencePdfFilenameForRun(request,activity);
     res.setHeader("Content-Type","application/pdf");
-    res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);
+    res.setHeader("Content-Disposition",contentDispositionAttachment(filename));
     res.setHeader("Content-Length",String(pdf.length));
     res.setHeader("X-Content-SHA256",hash);
     res.setHeader("X-Content-Fingerprint",fingerprint);
@@ -347,19 +347,21 @@ export class AutoSnapController {
     if(!this.canDownloadEvidence(operator,run))return this.fail(res,clientError("Anda tidak memiliki privilege untuk mengunduh bukti ini.",403));
     const request=object(run.request_json)?run.request_json:{},activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
     if(!activities.length)return this.fail(res,clientError("History ini belum memiliki bukti aktivitas ASPI.",409));
-    const entries:{name:string;data:Buffer}[]=[];
+    const prepared:{activityId:string;serviceName:string;pdf:Buffer}[]=[];
     for(const [index,activity] of activities.entries()){
       const activityId=String(activity.activityId??"");
       if(!activityId)continue;
-      const service=String(activity.service??`Service-${index+1}`),cached=await this.db.one<{pdf_data:Buffer;content_sha256:string|null;byte_size:number;verification_status:string|null}>("SELECT pdf_data,content_sha256,byte_size,verification_status FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id=$2",[runId,activityId]);
+      const cached=await this.db.one<{pdf_data:Buffer;content_sha256:string|null;byte_size:number;verification_status:string|null}>("SELECT pdf_data,content_sha256,byte_size,verification_status FROM autosnap_evidence_pdfs WHERE run_id=$1 AND activity_id=$2",[runId,activityId]);
       if(!cached)return this.fail(res,clientError("Sebagian PDF belum tersimpan; ZIP tidak dibuat agar bukti tidak terlewat.",409));
       let pdf:Buffer;
       try{({pdf}=this.loadStoredOfficialPdf(cached));}catch(error){return this.fail(res,error);}
-      entries.push({name:`${String(index+1).padStart(2,"0")}-${service}.pdf`,data:pdf});
+      prepared.push({activityId,serviceName:resolveRegisteredServiceName(request,activity)||`Service-${index+1}`,pdf});
     }
-    const zip=createZip(entries),filename=`ASPI-Evidence-${runId.replace(/[^A-Za-z0-9_-]+/g,"-")}.zip`;
+    const names=uniqueEvidenceZipEntryNames(prepared.map(item=>item.serviceName));
+    const entries=prepared.map((item,index)=>({name:names[index],data:item.pdf}));
+    const zip=createZip(entries),filename=`evidence-${runId.replace(/[^A-Za-z0-9_-]+/g,"-").slice(0,40)}.zip`;
     if(zip.length>50*1024*1024)return this.fail(res,clientError("Ukuran gabungan bukti melebihi 50 MB.",413));
-    res.setHeader("Content-Type","application/zip");res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);res.setHeader("Content-Length",String(zip.length));
+    res.setHeader("Content-Type","application/zip");res.setHeader("Content-Disposition",contentDispositionAttachment(filename));res.setHeader("Content-Length",String(zip.length));
     return res.send(zip);
   }
   private async retryAspiEvidence(res:Response,input:Input,operator:Operator,pdfCapture:PdfCaptureProfile={kind:"chrome"}){

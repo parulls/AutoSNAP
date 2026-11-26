@@ -81,7 +81,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     assert.match(await result.innerText(),/Validasi HTTP|HTTP Only/);assert.match(await result.locator("pre").innerText(),/2002800/);
     await result.screenshot({path:".next/completed-http-result.png"});
     await page.locator(".history-card tbody").getByText("COMPLETED",{exact:true}).waitFor();
-    await page.getByRole("button",{name:"Detail validasi",exact:true}).click();await page.locator(".run-modal").getByText("Outcome: COMPLETED",{exact:true}).waitFor();await page.locator(".run-modal").getByRole("button",{name:"Tutup",exact:true}).click();
+    await page.getByRole("button",{name:"Detail validasi",exact:true}).click();await page.locator(".run-modal").getByText("Outcome: COMPLETED",{exact:true}).waitFor();await page.locator(".run-modal .modal-footer").getByRole("button",{name:"Tutup",exact:true}).click();
     await page.getByRole("navigation").getByRole("button",{name:"Dashboard",exact:true}).click();await page.locator(".dashboard-history .status-badge.completed, .dashboard-grid .status-badge.completed").filter({hasText:"COMPLETED"}).first().waitFor();assert.deepEqual(errors,[]);
   }finally{await browser?.close();server.kill();}
 });

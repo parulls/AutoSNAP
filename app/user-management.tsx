@@ -30,7 +30,7 @@ export default function UserManagement({state,api,reload,setError,setNotice}:{st
   }
   const showPrivilegeEditor=canUpdate&&form.role!=="admin"&&(target==="new"||(target&&target.id!==state.user?.id)||isAdmin);
   return <section className="card master-card">
-    <div className="section-header"><div><h2>Akun AutoSNAP</h2><p>Kelola akun sesuai privilege. Admin terakhir dilindungi; privilege diri sendiri tidak dapat dinaikkan tanpa kewenangan.</p></div>{canCreate&&<button className="primary-button" onClick={()=>open("new")}>Tambah Akun</button>}</div>
+    <div className="section-header"><div><h2>User AutoSNAP</h2><p>Kelola user sesuai privilege.</p></div>{canCreate&&<button className="primary-button" onClick={()=>open("new")}>Tambah Akun</button>}</div>
     <div className="table-wrap"><table><thead><tr><th>USER</th><th>ROLE</th><th>PRIVILEGE</th><th>STATUS</th><th>AKSI</th></tr></thead><tbody>{(state.operators??[]).map(user=><tr key={user.id}>
       <td><strong>{user.username}</strong>{user.id===state.user?.id&&<span className="cell-caption">Akun Anda</span>}</td>
       <td>{user.role==="admin"?"Admin":"Petugas"}</td><td><div className="privilege-list">{normalizePrivileges(user.privileges,user.role).map(key=><span key={key}>{privilegeOptions.find(item=>item.key===key)?.label??key}</span>)}</div></td><td><span className={`status-badge ${user.active?"passed":"skipped"}`}>{user.active?"Aktif":"Menunggu aktivasi / nonaktif"}</span></td>

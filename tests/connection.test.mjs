@@ -107,7 +107,7 @@ test("finished progress lines must not keep form locked when own process already
   const Progress=component("app/testing-progress.tsx");
   // Mirrors the bug: log already has finished/PASSED while running=false and formReady=true.
   const html=renderToStaticMarkup(createElement(Progress,{progress:{status:"completed",stage:"finished",steps:[{stage:"finished",status:"completed",at:"2026-11-17T02:00:05Z",detail:"PASSED"}]},running:false,formReady:true,accountBusy:false,onCancel:async()=>{},onClose:()=>{}}));
-  assert.match(html,/Proses selesai — form siap digunakan/);
+  assert.match(html,/Proses selesai - form siap digunakan/);
   assert.match(html,/>Tutup</);
   assert.doesNotMatch(html,/Proses berjalan|Menunggu form|Menghentikan/);
 });

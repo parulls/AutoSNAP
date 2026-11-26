@@ -84,7 +84,7 @@ test("client simulator uses a scenario name and API services live in master data
     await dialog.getByLabel("Penyedia Client Simulator").selectOption("prov");
     await dialog.getByText("https://dev.banksumut.co.id").waitFor();
     await dialog.getByLabel("Nama API Service *").fill("Create VA");
-    await dialog.getByLabel("Relative Path *").fill("/api/v1.0/transfer-va/create-va");
+    await dialog.getByLabel("Endpoint *").fill("/api/v1.0/transfer-va/create-va");
     await dialog.getByRole("button", { name: "Simpan", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
     await page.getByRole("cell", { name: "Create VA", exact: true }).waitFor();
@@ -97,7 +97,7 @@ test("client simulator uses a scenario name and API services live in master data
     assert.equal(await page.getByRole("button", { name: "Tambah API Service", exact: true }).count(), 0);
     await page.setViewportSize({ width: 1280, height: 800 });
     assert.equal(await page.getByText("menekan Send satu kali").count(), 0);
-    await page.getByText("Pilih User SNAP, penyedia, API Service, dan skenario pengujian.").waitFor();
+    await page.getByText("Pilih User SNAP, penyedia, API Service, dan skenario.").waitFor();
     const userOptions = await page.getByLabel("User SNAP").locator("option").allTextContents();
     assert.equal(userOptions.includes("ulitesting"), true);
     assert.equal(userOptions.some(option => option.includes("@")), false);
@@ -117,7 +117,7 @@ test("client simulator uses a scenario name and API services live in master data
     await page.getByRole("region", { name: "Expected Result" }).getByText("Access Token Invalid", { exact: true }).waitFor();
     await page.screenshot({ path: join(tmpdir(), "autosnap-client-sim-desktop.png"), fullPage: true });
     await page.getByLabel("Skenario Pengujian").selectOption("DUPLICATE_EXTERNAL_ID");
-    await page.getByText("Skenario ini mengirim satu baseline langsung ke bank lalu satu request duplikat lewat ASPI dengan External ID yang sama.").waitFor();
+    await page.getByText("Satu baseline ke bank, lalu satu request ASPI dengan External ID yang sama.").waitFor();
     await page.getByRole("button", { name: "Reset Form", exact: true }).click();
     assert.equal(await page.getByLabel("Skenario Pengujian").inputValue(), "");
     assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "");

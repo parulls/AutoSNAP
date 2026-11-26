@@ -262,7 +262,7 @@ export default function Dashboard({
           <button type="button" className="secondary-button" disabled={!offset || history.loading} onClick={() => setOffset(Math.max(0, offset - 15))}>
             Sebelumnya
           </button>
-          <span>{history.total ? `${offset + 1}–${Math.min(offset + recent.length, history.total)} dari ${history.total}` : "0 hasil"}</span>
+          <span>{history.total ? `${offset + 1}-${Math.min(offset + recent.length, history.total)} dari ${history.total}` : "0 hasil"}</span>
           <button type="button" className="secondary-button" disabled={offset + 15 >= history.total || history.loading} onClick={() => setOffset(offset + 15)}>
             Berikutnya
           </button>

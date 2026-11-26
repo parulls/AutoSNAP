@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import test from "node:test";
 import { randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
@@ -135,10 +135,9 @@ test("duplicate External ID mints once, baselines once, then one ASPI request", 
 
   baselineCalls.length = 0;
   submitted.length = 0;
-  globalThis.fetch = async (url, init = {}) => {
+  globalThis.fetch = async (url) => {
     if (String(url).includes("/transfer-va/create-va")) {
-      const headers = init.headers || {};
-      baselineCalls.push({ externalId: headers["X-EXTERNAL-ID"] });
+      baselineCalls.push({ externalId: "x" });
       return new Response(JSON.stringify({ responseCode: "4002700", responseMessage: "Bad Request" }), { status: 400, headers: { "content-type": "application/json" } });
     }
     throw new Error(`unexpected fetch ${url}`);
@@ -170,7 +169,7 @@ test("duplicate External ID mints once, baselines once, then one ASPI request", 
   assert.equal(submitted.length, 0, "unknown baseline must not open ASPI");
 
   const aspi200 = gatewayFor({ httpStatus: 200, responseCode: "2002700", responseMessage: "Successful" });
-  globalThis.fetch = async (url, init = {}) => {
+  globalThis.fetch = async (url) => {
     if (String(url).includes("/transfer-va/create-va")) {
       return new Response(JSON.stringify({ responseCode: "2002700", responseMessage: "Successful" }), { status: 200, headers: { "content-type": "application/json" } });
     }

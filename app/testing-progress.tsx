@@ -30,7 +30,7 @@ export default function TestingProgress({progress,running,formReady,accountBusy=
     :progress.status==="unknown"
       ?"Status belum dapat dipastikan"
       :formReady
-        ?"Proses selesai — form siap digunakan."
+        ?"Proses selesai - form siap digunakan."
         :accountBusy
           ?"Pengujian selesai, tetapi form masih terkunci karena akun ASPI dipakai proses lain."
           :`Menunggu form ${product} siap digunakan kembali…`;
@@ -52,9 +52,9 @@ export default function TestingProgress({progress,running,formReady,accountBusy=
         {canClose&&<button type="button" className="close-button" onClick={onClose} aria-label="Tutup jendela log" title={formReady?"Tutup":"Tutup log (form masih terkunci)"}><UiIcon name="close"/></button>}
       </div>
       <div className="testing-terminal" role="log" aria-live="polite" aria-relevant="additions" tabIndex={0}>
-        <div className="terminal-heading">AutoSNAP — execution log</div>
+        <div className="terminal-heading">AutoSNAP - execution log</div>
         {!progress.steps.length&&<div className="terminal-pending">Menunggu log backend…</div>}
-        {progress.steps.map((step,index)=><div key={`${index}-${step.at??""}`} className={`terminal-line ${step.status}`}><time>{step.at?new Date(step.at).toLocaleTimeString("id-ID",{timeZone:"Asia/Jakarta",hour12:false}):"--:--:--"}</time><span className="terminal-level">[{step.status.toUpperCase()}]</span><span>{labels[step.stage]??step.stage}{step.detail?` — ${step.detail}`:""}</span></div>)}
+        {progress.steps.map((step,index)=><div key={`${index}-${step.at??""}`} className={`terminal-line ${step.status}`}><time>{step.at?new Date(step.at).toLocaleTimeString("id-ID",{timeZone:"Asia/Jakarta",hour12:false}):"--:--:--"}</time><span className="terminal-level">[{step.status.toUpperCase()}]</span><span>{labels[step.stage]??step.stage}{step.detail?` - ${step.detail}`:""}</span></div>)}
         {cancelError&&<div className="terminal-line failed">[CANCEL ERROR] {cancelError}</div>}
         {!ownActive&&accountBusy&&<div className="terminal-line failed">[LOCKED] Form {product} masih terkunci: akun ASPI yang sama sedang dipakai proses lain.</div>}
         <div ref={end}/>
