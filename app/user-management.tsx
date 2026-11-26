@@ -4,6 +4,7 @@ import { FormEvent, useState } from "react";
 import type { Api, Operator, State } from "./model";
 import PasswordInput from "./password-input";
 import { can, normalizePrivileges, privilegeOptions } from "./privileges";
+import UiIcon from "./ui-icon";
 
 export default function UserManagement({state,api,reload,setError,setNotice}:{state:State;api:Api;reload:()=>Promise<void>;setError:(s:string)=>void;setNotice:(s:string)=>void}){
   const [target,setTarget]=useState<Operator|"new"|null>(null),[busy,setBusy]=useState(false),[modalError,setModalError]=useState("");
@@ -36,17 +37,20 @@ export default function UserManagement({state,api,reload,setError,setNotice}:{st
       <td>{user.role==="admin"?"Admin":"Petugas"}</td><td><div className="privilege-list">{normalizePrivileges(user.privileges,user.role).map(key=><span key={key}>{privilegeOptions.find(item=>item.key===key)?.label??key}</span>)}</div></td><td><span className={`status-badge ${user.active?"passed":"skipped"}`}>{user.active?"Aktif":"Menunggu aktivasi / nonaktif"}</span></td>
       <td><div className="inline-actions">{(canUpdate||user.id===state.user?.id)&&<button disabled={busy} onClick={()=>open(user)}>Kelola</button>}{canUpdate&&isAdmin&&user.id!==state.user?.id&&<button disabled={busy} onClick={()=>change(user,"active")}>{user.active?"Nonaktifkan":"Aktifkan"}</button>}{canDelete&&user.id!==state.user?.id&&<button disabled={busy} className="danger-action" onClick={()=>change(user,"delete")}>Hapus</button>}</div></td>
     </tr>)}</tbody></table></div>
-    {target&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save}>
-      <div className="section-header"><div><h2>{target==="new"?"Tambah Akun":`Kelola Akun — ${target.username}`}</h2><p>Perbaiki isian yang ditandai sebelum menyimpan.</p></div></div>
+    {target&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save} role="dialog" aria-modal="true">
+      <div className="modal-header"><div><h2>{target==="new"?"Tambah Akun":`Kelola Akun — ${target.username}`}</h2></div><button type="button" className="close-button" aria-label="Tutup" title="Tutup" disabled={busy} onClick={()=>{setTarget(null);setModalError("");}}><UiIcon name="close"/></button></div>
+      <div className="modal-body">
       {modalError&&<div className="form-error" role="alert">{modalError}</div>}
       <div className="form-grid">
         {target==="new"&&<><label className="form-field"><span>Username AutoSNAP *</span><input required minLength={3} maxLength={40} autoComplete="off" value={form.username} onChange={e=>setForm({...form,username:e.target.value})}/></label>{isAdmin&&<label className="form-field"><span>Peran</span><select value={form.role} onChange={e=>setForm({...form,role:e.target.value})}><option value="petugas">Petugas</option><option value="admin">Admin</option></select></label>}</>}
         <label className="form-field wide"><span>Email AutoSNAP *</span><input type="email" required maxLength={254} autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label>
-        {showPrivilegeEditor&&<fieldset className="privilege-field wide"><legend>Privilege</legend><div className="privilege-options">{assignable.map(item=><label key={item.key}><input type="checkbox" checked={form.privileges.includes(item.key)} onChange={()=>togglePrivilege(item.key)}/><span>{item.label}</span></label>)}</div><small className="helper">Centang memberi akses penuh ke modul itu. History Semua Pengguna menambah riwayat pengguna lain; tanpa itu hanya riwayat sendiri. Backend menolak privilege yang tidak Anda miliki.</small></fieldset>}
+        {showPrivilegeEditor&&<fieldset className="privilege-field wide"><legend>Privilege</legend><div className="privilege-options">{assignable.map(item=><label key={item.key}><input type="checkbox" checked={form.privileges.includes(item.key)} onChange={()=>togglePrivilege(item.key)}/><span>{item.label}</span></label>)}</div></fieldset>}
         {target!=="new"&&target.id===state.user?.id&&<label className="form-field wide"><span>Password saat ini *</span><PasswordInput required autoComplete="current-password" value={form.currentPassword} onChange={e=>setForm({...form,currentPassword:e.target.value})}/></label>}
-        <label className="form-field wide"><span>{target==="new"?"Password":"Password baru"}{target==="new"?" *":""}</span><PasswordInput required={target==="new"} {...(form.password||target==="new"?{minLength:12}:{})} maxLength={256} autoComplete="new-password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small className="helper">Minimal 12 karakter. Kosongkan saat edit jika tidak mengubah password.</small></label>
+        <label className="form-field wide"><span>{target==="new"?"Password *":"Password baru"}</span><PasswordInput required={target==="new"} {...(form.password||target==="new"?{minLength:12}:{})} maxLength={256} autoComplete="new-password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/></label>
       </div>
-      <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>{setTarget(null);setModalError("");}}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
+      <p className="helper form-footnote">* wajib diisi</p>
+      </div>
+      <div className="modal-footer"><button type="button" className="secondary-button" disabled={busy} onClick={()=>{setTarget(null);setModalError("");}}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
     </form></div>}
   </section>;
 }

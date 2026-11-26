@@ -281,7 +281,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       <EvaluationNotice run={latest}/>
       <pre className="response-code">{JSON.stringify(latest?.response??{message:"Hasil testing akan muncul setelah pengujian dijalankan."},null,2)}</pre>
       {latest&&<div className="inline-actions">
-        <button type="button" className="text-button" onClick={()=>setSelectedRun(latest)}>Detail Testing</button>
+        <button type="button" className="text-button" onClick={()=>setSelectedRun(latest)}>Detail</button>
         {pdfsOf(latest).some(item=>item.pdfReady)&&<button type="button" className="text-button" onClick={()=>{const evidence=pdfsOf(latest).find(item=>item.pdfReady);if(evidence)openPdfPreview(latest,evidence.activityId,evidence.fileName);}}>Preview PDF</button>}
         {pendingEvidence(latest).map(item=><button type="button" className="text-button" key={item.activityId} disabled={formLocked||reprocessingId===`${latest.id}:${item.activityId}`} onClick={()=>void retryEvidence(latest,item.activityId)}>{reprocessingId===`${latest.id}:${item.activityId}`?"Mengambil bukti...":"Proses Ulang Bukti"}</button>)}
       </div>}
@@ -307,8 +307,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
             <td>{run.http_status??"—"} / {pdf.required?`${pdf.ready}/${pdf.required}`:"—"}</td>
             <td>{run.duration_ms??0} ms</td>
             <td><div className="inline-actions">
-              <button type="button" className="text-button" onClick={()=>setSelectedRun(run)}>Detail Testing</button>
-              <button type="button" className="text-button" onClick={()=>downloadJson(run)}>JSON</button>
+              <button type="button" className="text-button" onClick={()=>setSelectedRun(run)}>Detail</button>
               {evidence&&<button type="button" className="text-button" disabled={!!downloadingId} onClick={()=>openPdfPreview(run,evidence.activityId,evidence.fileName)}>Preview PDF</button>}
               {evidence&&<button type="button" className="text-button" disabled={downloadingId===`${run.id}:${evidence.activityId}`} onClick={()=>void downloadPdf(run,evidence.activityId,evidence.fileName)}>{downloadingId===`${run.id}:${evidence.activityId}`?"Mengunduh...":"Download PDF"}</button>}
               {pendingEvidence(run).map(item=><button type="button" className="text-button" key={item.activityId} disabled={running||reprocessingId===`${run.id}:${item.activityId}`} onClick={()=>void retryEvidence(run,item.activityId)}>{reprocessingId===`${run.id}:${item.activityId}`?"Mengambil bukti...":"Proses Ulang Bukti"}</button>)}
@@ -351,7 +350,7 @@ function ClientSimulatorDetailModal({run,running,reprocessingId,downloadingId,on
   const errors=request&&Array.isArray(request.evidenceErrors)?request.evidenceErrors:[];
   const activityIds=pdfs.filter(item=>officialActivity(item.activityId)).map(item=>item.activityId);
   return <div className="modal-backdrop" onClick={event=>{if(event.target===event.currentTarget)onClose();}}><div className="card edit-modal run-modal" role="dialog" aria-modal="true" aria-labelledby="sim-detail-title" onClick={event=>event.stopPropagation()}>
-    <div className="modal-header"><div><h2 id="sim-detail-title">Detail Testing</h2><p>{title}</p></div><button type="button" className="close-button" aria-label="Tutup" onClick={onClose}><UiIcon name="close"/></button></div>
+    <div className="modal-header"><div><h2 id="sim-detail-title">Detail</h2><p>{title}</p></div><button type="button" className="close-button" aria-label="Tutup" onClick={onClose}><UiIcon name="close"/></button></div>
     <div className="modal-body">
       <EvaluationNotice run={run}/>
       <section className="detail-summary" aria-label="Ringkasan pengujian">
@@ -368,7 +367,7 @@ function ClientSimulatorDetailModal({run,running,reprocessingId,downloadingId,on
         </dl>
       </section>
       {errors.length>0&&<div className="validation-box"><strong>Bukti belum tersedia</strong><p>{errors.map(item=>typeof item==="string"?item:object(item)?String(item.error??""):"").filter(Boolean).join(" · ")}</p></div>}
-      <div className="inline-actions">{pending.map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={running||!!reprocessingId} onClick={()=>onRetryEvidence(item.activityId)}>{reprocessingId===`${run.id}:${item.activityId}`?"Mengambil bukti...":`Proses Ulang Bukti ${item.activityId.slice(0,8)}`}</button>)}{pdfs.filter(item=>item.pdfReady&&officialActivity(item.activityId)).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={!!downloadingId} onClick={()=>onPreview(item.activityId,item.fileName)}>View PDF</button>)}{pdfs.filter(item=>item.pdfReady&&officialActivity(item.activityId)).map(item=><button type="button" className="secondary-button" key={`dl-${item.activityId}`} disabled={downloadingId===`${run.id}:${item.activityId}`} onClick={()=>onDownloadPdf(item.activityId,item.fileName)}>{downloadingId===`${run.id}:${item.activityId}`?"Mengunduh...":"Download PDF"}</button>)}</div>
+      <div className="inline-actions">{pending.map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={running||!!reprocessingId} onClick={()=>onRetryEvidence(item.activityId)}>{reprocessingId===`${run.id}:${item.activityId}`?"Mengambil bukti...":"Proses Ulang Bukti"}</button>)}{pdfs.filter(item=>item.pdfReady&&officialActivity(item.activityId)).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={!!downloadingId} onClick={()=>onPreview(item.activityId,item.fileName)}>View PDF</button>)}{pdfs.filter(item=>item.pdfReady&&officialActivity(item.activityId)).map(item=><button type="button" className="secondary-button" key={`dl-${item.activityId}`} disabled={downloadingId===`${run.id}:${item.activityId}`} onClick={()=>onDownloadPdf(item.activityId,item.fileName)}>{downloadingId===`${run.id}:${item.activityId}`?"Mengunduh...":"Download PDF"}</button>)}</div>
       <details className="json-fold"><summary>Request JSON</summary><pre className="snippet-code">{JSON.stringify(run.request,null,2)}</pre></details>
       <details className="json-fold"><summary>Response JSON</summary><pre className="snippet-code">{JSON.stringify(run.response,null,2)}</pre></details>
     </div>

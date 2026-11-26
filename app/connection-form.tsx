@@ -19,7 +19,7 @@ export default function ConnectionForm({client,environment,user,users=[],api,rel
   }));
   const [busy,setBusy]=useState(false),[error,setError]=useState("");
   const set=(key:keyof typeof form,entry:string)=>setForm(current=>({...current,[key]:entry}));
-  const field=(key:keyof typeof form,label:string,hint="",multiline=false,secret=false)=><label className={`form-field${multiline?" wide":""}`}><span>{label}</span>{multiline?<textarea rows={4} value={form[key]} onChange={e=>set(key,e.target.value)} spellCheck={false} autoComplete="off"/>:secret?<PasswordInput value={form[key]} onChange={e=>set(key,e.target.value)} autoComplete="off"/>:<input type="text" value={form[key]} onChange={e=>set(key,e.target.value)} autoComplete="off"/>}{hint&&<small className="helper">{hint}</small>}</label>;
+  const field=(key:keyof typeof form,label:string,multiline=false,secret=false)=><label className={`form-field${multiline?" wide":""}`}><span>{label}</span>{multiline?<textarea rows={4} required={label.endsWith("*")} value={form[key]} onChange={e=>set(key,e.target.value)} spellCheck={false} autoComplete="off"/>:secret?<PasswordInput value={form[key]} onChange={e=>set(key,e.target.value)} autoComplete="off"/>:<input type="text" required={label.endsWith("*")} value={form[key]} onChange={e=>set(key,e.target.value)} autoComplete="off"/>}</label>;
   async function save(event:FormEvent){
     event.preventDefault();setBusy(true);setError("");
     try{
@@ -30,28 +30,27 @@ export default function ConnectionForm({client,environment,user,users=[],api,rel
     }catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
   return <div className="modal-backdrop"><form className="card edit-modal" onSubmit={save} aria-label="Dev Site Client" aria-modal="true" role="dialog">
-    <div className="modal-header"><div><h2>{environment?"Edit":"Tambah"} Dev Site Client</h2><p>Target otomatis ASPI Sandbox.</p></div><button type="button" className="close-button" aria-label="Tutup" title="Tutup" disabled={busy} onClick={onClose}><UiIcon name="close"/></button></div>
+    <div className="modal-header"><div><h2>{environment?"Edit":"Tambah"} Dev Site Client</h2></div><button type="button" className="close-button" aria-label="Tutup" title="Tutup" disabled={busy} onClick={onClose}><UiIcon name="close"/></button></div>
     <div className="modal-body">
       {error&&<div className="form-error" role="alert">{error}</div>}
       <div className="form-grid">
         <label className="form-field"><span>User SNAP *</span><select required value={form.userId} onChange={e=>set("userId",e.target.value)}><option value="">Pilih User SNAP</option>{users.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
         <label className="form-field"><span>Nama Dev Site Client *</span><input required maxLength={120} value={form.name} onChange={e=>set("name",e.target.value)}/></label>
-        <p className="helper wide">Mode pengujian selalu ASPI Sandbox (portal). Mock Lokal dan Live Bank Sumut tidak tersedia untuk Dev Site Client baru.</p>
-        {field("clientId","Client ID")}
-        {field("clientSecret","Client Secret",value(client,"clientSecret")?"Sudah tersimpan. Kosongkan untuk mempertahankan.":"Diperlukan untuk signature saat hit API.",false,true)}
-        {field("privateKey","Private Key client",value(client,"privateKey")?"Sudah tersimpan terenkripsi. Kosongkan untuk mempertahankan.":"Base64 satu baris, tanpa BEGIN/END. Nilai ini diisi ke Private_Key pada signature-auth.",true)}
-        <label className="form-field"><span>CHANNEL-ID *</span><input required maxLength={5} value={form.channelId} onChange={e=>set("channelId",e.target.value)}/><small className="helper">Default resmi 95221. Bisa diubah di Master Data.</small></label>
-        <label className="form-field"><span>Sumber X-PARTNER-ID</span><select value={form.partnerIdSource} onChange={e=>set("partnerIdSource",e.target.value)}><option value="client_id">Mengikuti Client ID</option><option value="custom">Client Key / Partner ID tersendiri</option></select></label>
-        {form.partnerIdSource==="custom"&&field("partnerId","X-PARTNER-ID / Client Key","Harus unik.")}
+        {field("clientId","Client ID *")}
+        {field("clientSecret","Client Secret",false,true)}
+        {field("privateKey","Private Key",true)}
+        <label className="form-field"><span>CHANNEL-ID *</span><input required maxLength={5} value={form.channelId} onChange={e=>set("channelId",e.target.value)}/></label>
+        <label className="form-field"><span>Sumber X-PARTNER-ID</span><select value={form.partnerIdSource} onChange={e=>set("partnerIdSource",e.target.value)}><option value="client_id">Mengikuti Client ID</option><option value="custom">Custom</option></select></label>
+        {form.partnerIdSource==="custom"&&field("partnerId","X-PARTNER-ID *")}
       </div>
       <details className="advanced-settings"><summary>Header opsional</summary><div className="form-grid">
-        {field("deviceId","X-DEVICE-ID (opsional)")}
-        {field("origin","ORIGIN (opsional)")}
-        {field("ipAddress","X-IP-ADDRESS (opsional)")}
-        {field("latitude","X-LATITUDE (opsional)")}
-        {field("longitude","X-LONGITUDE (opsional)")}
+        {field("deviceId","X-DEVICE-ID")}
+        {field("origin","ORIGIN")}
+        {field("ipAddress","X-IP-ADDRESS")}
+        {field("latitude","X-LATITUDE")}
+        {field("longitude","X-LONGITUDE")}
       </div></details>
-      <p className="helper">URL Keamanan, timestamp, access token, dan signature diurus otomatis ke Aplikasi Pengujian ASPI.</p>
+      <p className="helper form-footnote">* wajib diisi</p>
     </div>
     <div className="modal-footer"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
   </form></div>;
