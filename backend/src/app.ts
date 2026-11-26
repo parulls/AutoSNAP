@@ -593,7 +593,20 @@ export class AutoSnapController {
         data.clientId=resolved;
         delete data.clientKey;
       }
-      if(!String(data.partnerId??"").trim())return this.fail(res,clientError("X-PARTNER-ID penyedia wajib diisi."));
+      const partner=String(data.partnerId??"").trim();
+      if(!partner)return this.fail(res,clientError("X-PARTNER-ID penyedia wajib diisi."));
+      if(!/^[A-Za-z0-9._-]{1,36}$/.test(partner))return this.fail(res,clientError("X-PARTNER-ID maksimal 36 karakter tanpa spasi."));
+      if(rows.some(row=>row.kind==="sim_provider"&&row.id!==id&&String(row.data.partnerId??"").trim()===partner))return this.fail(res,clientError("X-PARTNER-ID sudah dipakai penyedia lain.",409));
+      data.partnerId=partner;
+      const channelId=String(data.channelId??"").trim();
+      const deviceId=String(data.deviceId??"").trim();
+      if(!channelId)return this.fail(res,clientError("CHANNEL-ID penyedia wajib diisi."));
+      if(channelId.length>5)return this.fail(res,clientError("CHANNEL-ID maksimal 5 karakter."));
+      if(!deviceId)return this.fail(res,clientError("X-DEVICE-ID penyedia wajib diisi."));
+      data.channelId=channelId;
+      data.deviceId=deviceId;
+      for(const field of ["origin","ipAddress","latitude","longitude"] as const)if(field in data)data[field]=String(data[field]??"").trim();
+      const headerErrors=validateHeaderProfile(data);if(headerErrors.length)return this.fail(res,clientError(headerErrors.join(" ")));
       try{data.signatureAccessTokenMode=normalizeSignatureMode(data.signatureAccessTokenMode??"FUNCTION");data.signatureServiceMode=normalizeSignatureMode(data.signatureServiceMode??"FUNCTION");}catch(error){return this.fail(res,error);}
       if(data.signatureAccessTokenMode==="HIT_API"&&!String(data.signatureAccessTokenUrl??"").trim())return this.fail(res,clientError("Endpoint Signature Authentication wajib untuk mode HIT_API."));
       if(data.signatureServiceMode==="HIT_API"&&!String(data.signatureServiceUrl??"").trim())return this.fail(res,clientError("Endpoint Signature Service wajib untuk mode HIT_API."));
@@ -612,7 +625,7 @@ export class AutoSnapController {
       if(!Number.isFinite(offset)||Math.abs(offset)>14*60)return this.fail(res,clientError("Offset timezone timestamp tidak valid."));
       data.timestampConfig={offsetMinutes:Math.trunc(offset),includeMillis:ts.includeMillis===true};
       // Never mix Client Simulator provider config with Dev Site Endpoint ASPI fields.
-      delete data.portalUrl;delete data.config;
+      delete data.portalUrl;delete data.config;delete data.allowPrivateKeyToSigner;
     }
     if(kind==="sim_service"){
       if(/[\u0000-\u001F\u007F]/.test(name))return this.fail(res,clientError("Nama API Service tidak boleh berisi baris baru atau karakter kontrol."));
@@ -620,6 +633,18 @@ export class AutoSnapController {
       const path=String(data.path??data.serviceUrl??"").trim();
       if(!path.startsWith("/")||path.startsWith("//"))return this.fail(res,clientError("Service URL / Relative Path harus diawali / tanpa protokol."));
       data.path=path;
+      for(const field of ["channelId","deviceId","partnerId","externalId"] as const){
+        if(!(field in data))continue;
+        const text=String(data[field]??"").trim();
+        if(!text){delete data[field];continue;}
+        data[field]=text;
+      }
+      if(data.channelId&&String(data.channelId).length>5)return this.fail(res,clientError("CHANNEL-ID maksimal 5 karakter."));
+      if(data.partnerId&&!/^[A-Za-z0-9._-]{1,36}$/.test(String(data.partnerId)))return this.fail(res,clientError("X-PARTNER-ID maksimal 36 karakter tanpa spasi."));
+      if(data.externalId&&/[\r\n]/.test(String(data.externalId)))return this.fail(res,clientError("X-EXTERNAL-ID harus teks tanpa baris baru."));
+      const overrideHeaders:Record<string,unknown>={};
+      for(const field of ["channelId","deviceId","origin","ipAddress","latitude","longitude"] as const)if(data[field])overrideHeaders[field]=data[field];
+      const headerErrors=validateHeaderProfile(overrideHeaders);if(headerErrors.length)return this.fail(res,clientError(headerErrors.join(" ")));
       if(data.defaultBody||data.requestBody){
         try{const body=String(data.defaultBody??data.requestBody);if(body.trim()&&!object(JSON.parse(body)))throw Error();data.defaultBody=body;}catch{return this.fail(res,clientError("Default request body harus object JSON valid."));}
       }

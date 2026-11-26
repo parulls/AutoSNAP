@@ -30,7 +30,7 @@ test("client simulator uses a scenario name and API services live in master data
     const records = [
       { id: "snap", kind: "snap_user", name: "QA SNAP", parentId: null, partnerId: null, data: { email: "qa@example.test", displayUsername: "ulitesting" }, createdAt: now, updatedAt: now },
       { id: "prov", kind: "sim_provider", name: "Bank SUMUT", parentId: null, partnerId: null, data: { baseUrl: "https://dev.banksumut.co.id", clientId: "key", partnerId: "9296", channelId: "0001", deviceId: "device-1", signatureAccessTokenMode: "FUNCTION", signatureServiceMode: "FUNCTION" }, createdAt: now, updatedAt: now },
-      { id: "other", kind: "sim_provider", name: "Bank ABC", parentId: null, partnerId: null, data: { baseUrl: "https://example.test", clientId: "key", partnerId: "9296" }, createdAt: now, updatedAt: now },
+      { id: "other", kind: "sim_provider", name: "Bank ABC", parentId: null, partnerId: null, data: { baseUrl: "https://example.test", clientId: "key", partnerId: "abc-1", channelId: "0002", deviceId: "device-abc" }, createdAt: now, updatedAt: now },
     ];
     let saved;
     let releaseRun = () => {};
