@@ -4,10 +4,10 @@ import {useEffect,useState} from "react";
 import type {Api,HistoryFilters,Run} from "./model";
 import type {HistoryRange} from "./history-period";
 
-type Summary={total:number;dev:number;simulator:number;passed:number;completed:number;failed:number;errors:number;cancelled:number};
+type Summary={total:number;dev:number;simulator:number;passed:number;completed:number;failed:number;errors:number;cancelled:number;running:number};
 type OperatorStat={operator_id:string|null;name:string;username:string;role:string;total:number;passed:number;failed:number;completed:number};
 type HistoryData={runs:Run[];total:number;summary:Summary;byOperator:OperatorStat[];scope:string};
-const empty:HistoryData={runs:[],total:0,summary:{total:0,dev:0,simulator:0,passed:0,completed:0,failed:0,errors:0,cancelled:0},byOperator:[],scope:"mine"};
+const empty:HistoryData={runs:[],total:0,summary:{total:0,dev:0,simulator:0,passed:0,completed:0,failed:0,errors:0,cancelled:0,running:0},byOperator:[],scope:"mine"};
 
 export function useHistory(api:Api,range:HistoryRange,mode:string,search:string,offset:number,limit:number,revision:unknown,filters:HistoryFilters={}){
   const [result,setResult]=useState<{key:string;data:HistoryData;error:string}|null>(null);

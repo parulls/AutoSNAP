@@ -141,11 +141,13 @@ tbody tr:hover { background:#f8fafc80; }
 .privilege-options input { width:16px; min-width:16px; height:16px; min-height:0; margin:0; }
 .dashboard-page { display:grid; gap:18px; }
 .dashboard-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px; }
-.metric-card { display:grid; gap:7px; text-align:left; color:var(--text-primary); }
+.metric-card { display:flex; flex-direction:column; justify-content:space-between; gap:8px; min-height:112px; text-align:left; color:var(--text-primary); }
 .metric-card:hover { border-color:#bfdbfe; box-shadow:0 3px 14px #2563eb0a; }
-.metric-card>span:first-child { color:var(--text-secondary); font-size:13px; }
-.metric-card>strong { font-size:28px; line-height:1.2; font-weight:600; font-variant-numeric:tabular-nums; }
-.metric-card .status-badge { width:max-content; }
+.metric-card.is-active { border-color:#93c5fd; background:var(--primary-soft); }
+.metric-card>span:first-child { color:var(--text-secondary); font-size:12px; font-weight:600; letter-spacing:.02em; line-height:1.35; min-height:32px; }
+.metric-card>strong { font-size:28px; line-height:1.15; font-weight:600; font-variant-numeric:tabular-nums; }
+.metric-card .status-badge { width:max-content; margin-top:auto; }
+.status-badge.cancelled { border-color:#e2e8f0; background:#f8fafc; color:#475569; }
 .quick-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
 .quick-actions>button { display:flex; align-items:center; gap:12px; padding:16px; border:1px solid var(--border); border-radius:8px; background:white; color:var(--text-primary); text-align:left; }
 .quick-actions>button:hover { border-color:#bfdbfe; background:var(--primary-soft); }

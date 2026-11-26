@@ -140,7 +140,7 @@ export class AutoSnapController {
       if(action==="logout"){
         const token=req.headers.cookie?.split(";").map(x=>x.trim()).find(x=>x.startsWith("autosnap_session="))?.slice("autosnap_session=".length);
         if(token)await this.db.query("DELETE FROM autosnap_sessions WHERE hash=$1",[sha256(token)]);
-        res.clearCookie("autosnap_session",{path:"/"});return res.json({ok:true});
+        res.clearCookie("autosnap_session",{httpOnly:true,sameSite:"strict",secure:process.env.NODE_ENV==="production"||req.headers["x-autosnap-proto"]==="https",path:"/"});return res.json({ok:true});
       }
       if(action==="cancelRun"){
         await this.enforceRateLimit(`cancel:${user.id}`,30,60_000);
@@ -154,7 +154,10 @@ export class AutoSnapController {
         const progress=await this.db.one("SELECT id,status,stage,steps,updated_at FROM autosnap_test_progress WHERE id=$1 AND user_id=$2",[String(input.id??""),user.id]);
         return progress?res.json(progress):this.fail(res,clientError("Progress testing tidak ditemukan.",404));
       }
-      if(action==="getHistory")return res.json(await readHistory(this.db,user,input));
+      if(action==="getHistory"){
+        await this.enforceRateLimit(`history:${user.id}`,120,60_000);
+        return res.json(await readHistory(this.db,user,input));
+      }
       if(action==="deleteEndpointConfiguration"){
         if(!can(user,"master_data"))return this.fail(res,clientError("Anda tidak memiliki privilege Master Data.",403));
         const records=await this.allRecords(),endpoint=get(records,input.id,"endpoint");
@@ -324,6 +327,7 @@ export class AutoSnapController {
     const run=await this.loadAccessibleRun(runId,operator);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
     if(!this.canDownloadEvidence(operator,run))return this.fail(res,clientError("Anda tidak memiliki privilege untuk mengunduh bukti ini.",403));
+    try{this.requireCrossUserConfirm(run,operator,input,"Unduh PDF");}catch(error){return this.fail(res,error);}
     const request=object(run.request_json)?run.request_json:{},activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
     const activity=activities.find(item=>String(item.activityId??"")===activityId);
     if(!activity)return this.fail(res,clientError("Aktivitas ASPI tidak terdaftar pada history ini.",404));
@@ -345,6 +349,7 @@ export class AutoSnapController {
     const runId=String(input.id??""),run=await this.loadAccessibleRun(runId,operator);
     if(!run)return this.fail(res,clientError("History testing tidak ditemukan.",404));
     if(!this.canDownloadEvidence(operator,run))return this.fail(res,clientError("Anda tidak memiliki privilege untuk mengunduh bukti ini.",403));
+    try{this.requireCrossUserConfirm(run,operator,input,"Unduh ZIP bukti");}catch(error){return this.fail(res,error);}
     const request=object(run.request_json)?run.request_json:{},activities=Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object):[];
     if(!activities.length)return this.fail(res,clientError("History ini belum memiliki bukti aktivitas ASPI.",409));
     const prepared:{activityId:string;serviceName:string;pdf:Buffer}[]=[];
@@ -516,6 +521,10 @@ export class AutoSnapController {
     if(old&&old.kind!==kind)return this.fail(res,clientError("Jenis data tidak dapat diubah."));
     if(kind==="endpoint"&&parentId)return this.fail(res,clientError("Dev Site Endpoint adalah akar konfigurasi; parent harus kosong."));
     if(kind==="sim_provider"&&parentId)return this.fail(res,clientError("Penyedia Client Simulator adalah akar; parent harus kosong."));
+    // Keep Dev Site and Client Simulator master-data trees isolated.
+    if(kind==="service"&&parentId&&get(rows,parentId,"sim_provider"))return this.fail(res,clientError("API Service Dev Site tidak dapat digantungkan pada Penyedia Client Simulator."));
+    if(kind==="sim_service"&&parentId&&get(rows,parentId,"endpoint"))return this.fail(res,clientError("API Service Client Simulator tidak dapat digantungkan pada Dev Site Endpoint."));
+    if(kind==="template"&&parentId&&!get(rows,parentId,"endpoint"))return this.fail(res,clientError("Template hanya untuk Dev Site Endpoint."));
     if(parentKinds[kind]&&!get(rows,parentId,parentKinds[kind]))return this.fail(res,clientError(`Pilih ${parentKinds[kind]} induk yang valid.`));
     const incoming=input.data&&typeof input.data==="object"&&!Array.isArray(input.data)?input.data as Record<string,unknown>:{};
     const data:Record<string,unknown>={...(old?.data??{}),...incoming};
@@ -552,8 +561,10 @@ export class AutoSnapController {
     if(kind==="service"&&data.requestBody)try{if(!object(JSON.parse(String(data.requestBody))))throw Error();}catch{return this.fail(res,clientError("Default Request Body harus object JSON valid."));}
     if(kind==="service")Object.assign(data,annotateServiceData(data));
     if(kind==="environment"){
+      // New environments are Dev Site only. Legacy "Client Simulator" category rows remain readable.
       if(!["Dev Site","Client Simulator"].includes(String(data.category)))return this.fail(res,clientError("Kategori environment tidak valid."));
-      // Dev Site Client is always portal/ASPI Sandbox. Mock remains only for Client Simulator category legacy rows.
+      if(String(data.category)==="Client Simulator"&&!old)return this.fail(res,clientError("Environment Client Simulator legacy tidak dapat dibuat lagi. Gunakan Penyedia Client Simulator."));
+      // Dev Site Client is always portal/ASPI Sandbox.
       if(String(data.category)==="Dev Site"){
         data.mode="portal";
         data.executionMode="portal";

@@ -4,12 +4,12 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import type { Api, HistoryFilters, Item, Run, State } from "./model";
 import HistoryFilter from "./history-filter";
 import { rangeForPeriod } from "./history-period";
-import { useHistory } from "./use-history";
+import { operatorLabel, useHistory } from "./use-history";
 import { can } from "./privileges";
 import TestingProgress, { type TestProgress } from "./testing-progress";
 import PdfPreview from "./pdf-preview";
 import UiIcon from "./ui-icon";
-import { ApiError } from "./api-client";
+import { ApiError, fetchState } from "./api-client";
 import { buildClientSimulatorServiceName, thrownMessage } from "./client-simulator-name";
 import { CLIENT_SIMULATOR_SCENARIOS, clientSimulatorScenario, presentScenarioExpectation } from "./client-simulator-scenarios";
 import { evidencePdfFilenameForRun } from "./evidence-filename";
@@ -41,13 +41,20 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   const [timestamp,setTimestamp]=useState(()=>buildTimestamp(offsetMinutes,defaultMillis,new Date(Date.now()+120_000)));
   const [body,setBody]=useState("{}");
   const [partnerId,setPartnerId]=useState(""),[externalId,setExternalId]=useState(""),[deviceId,setDeviceId]=useState(""),[channelId,setChannelId]=useState("");
+  const [headerTouched,setHeaderTouched]=useState({partnerId:false,deviceId:false,channelId:false,externalId:false,body:false});
+  const appliedDefaults=useRef({partnerId:"",deviceId:"",channelId:"",externalId:"",body:"{}"});
   const [busy,setBusy]=useState(false),[running,setRunning]=useState(false),[refreshing,setRefreshing]=useState(false),[progress,setProgress]=useState<TestProgress|null>(null);
   const progressIdRef=useRef("");
   const [resultId,setResultId]=useState<string|null>(null);
   const [historyRange,setHistoryRange]=useState(()=>rangeForPeriod("today"));
   const [historyFilters,setHistoryFilters]=useState<HistoryFilters>({scope:canViewAll?"all":"mine"});
   const [historyQuery,setHistoryQuery]=useState(""),[offset,setOffset]=useState(0);
-  const [selectedRun,setSelectedRun]=useState<Run|null>(null),[downloadingId,setDownloadingId]=useState(""),[preview,setPreview]=useState<{runId:string;activityId:string;fileName:string}|null>(null),[testingError,setTestingError]=useState<{summary:string;technical:string;suggestion:string}|null>(null),[reprocessingId,setReprocessingId]=useState("");
+  const [selectedRun,setSelectedRun]=useState<Run|null>(null),[downloadingId,setDownloadingId]=useState(""),[preview,setPreview]=useState<{runId:string;activityId:string;fileName:string;confirmCrossUser?:boolean}|null>(null),[testingError,setTestingError]=useState<{summary:string;technical:string;suggestion:string}|null>(null),[reprocessingId,setReprocessingId]=useState("");
+  const confirmCrossUser=(run:Run,action:string)=>{
+    if(!run.operator_id||run.operator_id===state.user?.id)return true;
+    if(!canViewAll){setError("Anda tidak berwenang mengakses History pengguna lain.");return false;}
+    return window.confirm(`${action} milik ${operatorLabel(run).text}. Tindakan akan dicatat pada audit log. Lanjutkan?`);
+  };
   const retryLock=useRef(false);
   const formLocked=running||refreshing;
   useEffect(()=>{
@@ -58,22 +65,35 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   },[selectedRun,testingError,running]);
   const historyData=useHistory(api,historyRange,"simulator",historyQuery,offset,20,state.runs,historyFilters);
 
-  function loadDefaults(nextProvider?:Item,nextService?:Item){
+  function defaultsFrom(nextProvider?:Item,nextService?:Item){
+    const p=nextProvider??provider,s=nextService??service;
+    return {
+      partnerId:value(s,"partnerId")||value(p,"partnerId"),
+      externalId:value(s,"externalId"),
+      deviceId:value(s,"deviceId")||value(p,"deviceId"),
+      channelId:value(s,"channelId")||value(p,"channelId"),
+      body:value(s,"defaultBody")||value(s,"requestBody")||"{}",
+    };
+  }
+  function loadDefaults(nextProvider?:Item,nextService?:Item,force=true){
     const p=nextProvider??provider,s=nextService??service;
     const cfg=object(p?.data.timestampConfig)?p!.data.timestampConfig as {offsetMinutes?:number;includeMillis?:boolean}:{};
     const millis=cfg.includeMillis===true;
     const offset=Number(cfg.offsetMinutes??420);
+    const next=defaultsFrom(p,s);
     setIncludeMillis(millis);
     setTimestamp(()=>buildTimestamp(offset,millis,new Date(Date.now()+120_000)));
-    setPartnerId(value(s,"partnerId")||value(p,"partnerId"));
-    setExternalId(value(s,"externalId"));
-    setDeviceId(value(s,"deviceId")||value(p,"deviceId"));
-    setChannelId(value(s,"channelId")||value(p,"channelId"));
-    setBody(value(s,"defaultBody")||value(s,"requestBody")||"{}");
+    if(force||!headerTouched.partnerId||partnerId===appliedDefaults.current.partnerId)setPartnerId(next.partnerId);
+    if(force||!headerTouched.externalId||externalId===appliedDefaults.current.externalId)setExternalId(next.externalId);
+    if(force||!headerTouched.deviceId||deviceId===appliedDefaults.current.deviceId)setDeviceId(next.deviceId);
+    if(force||!headerTouched.channelId||channelId===appliedDefaults.current.channelId)setChannelId(next.channelId);
+    if(force||!headerTouched.body||body===appliedDefaults.current.body)setBody(next.body);
+    appliedDefaults.current=next;
+    if(force)setHeaderTouched({partnerId:false,deviceId:false,channelId:false,externalId:false,body:false});
   }
   function resetRequest(){
     if(running)return;
-    setScenarioId("");setScenarioAttempted(false);setConfirmDuplicate(false);loadDefaults(provider,service);
+    setScenarioId("");setScenarioAttempted(false);setConfirmDuplicate(false);loadDefaults(provider,service,true);
   }
   function snapUserLabel(user:Item){
     const display=value(user,"displayUsername").trim();
@@ -93,9 +113,11 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     if(chosen.id==="DUPLICATE_EXTERNAL_ID"&&!confirmDuplicate){setError("Konfirmasi diperlukan sebelum baseline bank dan uji duplikat lewat ASPI.");return;}
     try{buildClientSimulatorServiceName(provider.name,service.name,chosen.label);}catch(error){setError(thrownMessage(error));return;}
     if(!channelId.trim()){setError("CHANNEL-ID wajib diisi. Form ASPI mengirim header ini.");return;}
+    if(!deviceId.trim()){setError("X-DEVICE-ID wajib diisi. Bank Sumut menolak request tanpa header ini.");return;}
+    if(!partnerId.trim()){setError("X-PARTNER-ID wajib diisi pada penyedia atau API Service.");return;}
     const progressId=crypto.randomUUID();
     progressIdRef.current=progressId;
-    setBusy(true);setRunning(true);setError("");setProgress({status:"queued",stage:"preparing",steps:[]});
+    setBusy(true);setRunning(true);setResultId(null);setError("");setProgress({status:"queued",stage:"preparing",steps:[]});
     let polling=true,pollBusy=false;
     const timer=setInterval(async()=>{
       if(!polling||pollBusy)return;
@@ -121,11 +143,15 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
 
   async function refreshPage(){
     if(running||refreshing)return;
-    setRefreshing(true);setTestingError(null);setError("");setNotice("");
+    setRefreshing(true);setResultId(null);setSelectedRun(null);setTestingError(null);setError("");setNotice("");
     try{
       // Reload Master Data + History + PDF status. Never re-run the API request.
+      const next=await fetchState();
       await reload();
       historyData.refresh();
+      const nextProvider=next.records.find(item=>item.id===providerId&&item.kind==="sim_provider");
+      const nextService=next.records.find(item=>item.id===serviceId&&item.kind==="sim_service"&&item.parentId===providerId);
+      if(nextProvider||nextService)loadDefaults(nextProvider,nextService,false);
     }finally{setRefreshing(false);}
   }
 
@@ -162,9 +188,10 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     return request&&Array.isArray(request.aspiActivities)?request.aspiActivities.filter(object).map(item=>({activityId:String(item.activityId??""),service:String(item.service??"ASPI"),fileName:evidencePdfFilenameForRun(request,item),pdfReady:item.pdfReady===true})).filter(item=>item.activityId):[];
   }
   async function downloadPdf(run:Run,activityId:string,fileName:string){
+    if(!confirmCrossUser(run,"Unduh PDF"))return;
     setDownloadingId(`${run.id}:${activityId}`);setError("");
     try{
-      const response=await fetch("/api/autosnap",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"downloadAspiActivityPdf",id:run.id,activityId}),signal:AbortSignal.timeout(1000000)});
+      const response=await fetch("/api/autosnap",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"downloadAspiActivityPdf",id:run.id,activityId,confirmCrossUser:run.operator_id!==state.user?.id}),signal:AbortSignal.timeout(1000000)});
       if(!response.ok){const error=await response.json().catch(()=>({error:`HTTP ${response.status}`}));throw Error(String(error.error));}
       const type=response.headers.get("content-type")??"";
       if(/json|html/i.test(type))throw Error("File yang diterima bukan PDF resmi ASPI yang valid.");
@@ -175,6 +202,10 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       link.href=url;link.download=fileName;document.body.appendChild(link);link.click();link.remove();
       window.setTimeout(()=>URL.revokeObjectURL(url),60000);
     }catch(e){setError((e as Error).message);}finally{setDownloadingId("");}
+  }
+  function openPdfPreview(run:Run,activityId:string,fileName:string){
+    if(!confirmCrossUser(run,"Preview PDF"))return;
+    setPreview({runId:run.id,activityId,fileName,confirmCrossUser:run.operator_id!==state.user?.id});
   }
   function downloadJson(run:Run){
     const blob=new Blob([JSON.stringify({request:run.request,response:run.response},null,2)],{type:"application/json"});
@@ -189,8 +220,9 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     try{aspiServiceName=buildClientSimulatorServiceName(provider.name,service.name,selectedScenario.label);}catch(error){scenarioError=thrownMessage(error);}
   }else if(scenarioAttempted&&!selectedScenario)scenarioError="Pilih skenario pengujian terlebih dahulu.";
   const expectation=selectedScenario&&service?presentScenarioExpectation(selectedScenario.id,service.data):null;
-  const historyRuns=historyData.runs.filter(r=>r.mode==="client_sim"||r.mode==="mock");
-  const latest=(resultId?historyRuns.find(run=>run.id===resultId):undefined)??historyRuns[0]??null;
+  const historyRuns=historyData.runs.filter(r=>r.mode==="client_sim");
+  // Session-only: Hasil Testing never falls back to History.
+  const latest=resultId?historyRuns.find(run=>run.id===resultId)??state.runs.find(run=>run.id===resultId&&run.mode==="client_sim")??null:null;
   const latestPdf=latest?countsOf(latest):{ready:0,required:0};
 
   return <div className="testing-page">
@@ -225,11 +257,11 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
             </div>
             <small className="helper">Timestamp dikirim minimal 2 menit di depan waktu server bank.</small>
           </div>
-          <label className="form-field"><span>X-PARTNER-ID</span><input disabled={formLocked} value={partnerId} onChange={e=>setPartnerId(e.target.value)}/></label>
-          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={formLocked||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Dibuat otomatis saat dijalankan":externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis" title={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Baseline bank lalu request ASPI memakai External ID yang sama.":undefined}/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">External ID baru: baseline bank, lalu duplikat lewat ASPI.</small>}</label>
-          <label className="form-field"><span>X-DEVICE-ID</span><input disabled={formLocked} value={deviceId} onChange={e=>setDeviceId(e.target.value)}/></label>
-          <label className="form-field"><span>CHANNEL-ID</span><input disabled={formLocked} value={channelId} onChange={e=>setChannelId(e.target.value)}/></label>
-          <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={8} spellCheck={false} disabled={formLocked} value={body} onChange={e=>setBody(e.target.value)}/><small className="helper">Dari API Service {service.name}; hanya untuk pengujian ini.</small></label>
+          <label className="form-field"><span>X-PARTNER-ID</span><input disabled={formLocked} value={partnerId} onChange={e=>{setHeaderTouched(old=>({...old,partnerId:true}));setPartnerId(e.target.value);}}/><small className="helper">Dari API Service, atau Penyedia jika kosong.</small></label>
+          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={formLocked||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Dibuat otomatis saat dijalankan":externalId} onChange={e=>{setHeaderTouched(old=>({...old,externalId:true}));setExternalId(e.target.value);}} placeholder="Kosongkan untuk generate otomatis" title={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Baseline bank lalu request ASPI memakai External ID yang sama.":undefined}/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">External ID baru: baseline bank, lalu duplikat lewat ASPI.</small>}</label>
+          <label className="form-field"><span>X-DEVICE-ID</span><input disabled={formLocked} value={deviceId} onChange={e=>{setHeaderTouched(old=>({...old,deviceId:true}));setDeviceId(e.target.value);}}/><small className="helper">Dari API Service, atau Penyedia jika kosong.</small></label>
+          <label className="form-field"><span>CHANNEL-ID</span><input disabled={formLocked} value={channelId} onChange={e=>{setHeaderTouched(old=>({...old,channelId:true}));setChannelId(e.target.value);}}/><small className="helper">Dari API Service, atau Penyedia jika kosong.</small></label>
+          <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={8} spellCheck={false} disabled={formLocked} value={body} onChange={e=>{setHeaderTouched(old=>({...old,body:true}));setBody(e.target.value);}}/><small className="helper">Dari API Service {service.name}; hanya untuk pengujian ini.</small></label>
         </div>
         {scenarioId==="DUPLICATE_EXTERNAL_ID"&&<label className="check-row wide"><input type="checkbox" checked={confirmDuplicate} disabled={formLocked} onChange={e=>setConfirmDuplicate(e.target.checked)}/><span>Konfirmasi<small className="helper">Satu baseline ke bank, lalu satu request ASPI dengan External ID yang sama.</small></span></label>}
         {(scenarioId==="INVALID_ACCESS_TOKEN"||scenarioId==="INVALID_SIGNATURE"||scenarioId==="UNKNOWN_CLIENT")&&<p className="helper">Mutasi hanya pada request API Service.</p>}
@@ -240,17 +272,17 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     </form>
 
     <section className="card response-card" aria-live="polite">
-      <div className="section-header"><div><h2>Hasil Testing</h2><p>{latest?new Date(latest.created_at).toLocaleString("id-ID"):"Hasil muncul setelah testing dijalankan."}</p></div>{latest&&<span className={`status-badge ${latest.status.toLowerCase()}`}>{latest.status}</span>}</div>
+      <div className="section-header"><div><h2>Hasil Testing</h2><p>{latest?new Date(latest.created_at).toLocaleString("id-ID"):"Hasil testing akan muncul setelah pengujian dijalankan."}</p></div>{latest&&<span className={`status-badge ${latest.status.toLowerCase()}`}>{latest.status}</span>}</div>
       <div className="response-summary">
         <div><span>HTTP Status</span><strong>{latest?.http_status??"—"}</strong></div>
         <div><span>SNAP Code</span><strong>{latest?.response_code??"—"}</strong></div>
         <div><span>PDF ASPI</span><strong>{latest?`${latestPdf.ready}/${latestPdf.required||"—"}`:"—"}</strong></div>
       </div>
       <EvaluationNotice run={latest}/>
-      <pre className="response-code">{JSON.stringify(latest?.response??{message:"Belum ada hasil untuk pilihan ini."},null,2)}</pre>
+      <pre className="response-code">{JSON.stringify(latest?.response??{message:"Hasil testing akan muncul setelah pengujian dijalankan."},null,2)}</pre>
       {latest&&<div className="inline-actions">
         <button type="button" className="text-button" onClick={()=>setSelectedRun(latest)}>Detail Testing</button>
-        {pdfsOf(latest).some(item=>item.pdfReady)&&<button type="button" className="text-button" onClick={()=>{const evidence=pdfsOf(latest).find(item=>item.pdfReady);if(evidence)setPreview({runId:latest.id,activityId:evidence.activityId,fileName:evidence.fileName});}}>Download PDF</button>}
+        {pdfsOf(latest).some(item=>item.pdfReady)&&<button type="button" className="text-button" onClick={()=>{const evidence=pdfsOf(latest).find(item=>item.pdfReady);if(evidence)openPdfPreview(latest,evidence.activityId,evidence.fileName);}}>Preview PDF</button>}
         {pendingEvidence(latest).map(item=><button type="button" className="text-button" key={item.activityId} disabled={formLocked||reprocessingId===`${latest.id}:${item.activityId}`} onClick={()=>void retryEvidence(latest,item.activityId)}>{reprocessingId===`${latest.id}:${item.activityId}`?"Mengambil bukti...":"Proses Ulang Bukti"}</button>)}
       </div>}
     </section>
@@ -277,7 +309,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
             <td><div className="inline-actions">
               <button type="button" className="text-button" onClick={()=>setSelectedRun(run)}>Detail Testing</button>
               <button type="button" className="text-button" onClick={()=>downloadJson(run)}>JSON</button>
-              {evidence&&<button type="button" className="text-button" disabled={!!downloadingId} onClick={()=>setPreview({runId:run.id,activityId:evidence.activityId,fileName:evidence.fileName})}>Download PDF</button>}
+              {evidence&&<button type="button" className="text-button" disabled={!!downloadingId} onClick={()=>openPdfPreview(run,evidence.activityId,evidence.fileName)}>Preview PDF</button>}
               {evidence&&<button type="button" className="text-button" disabled={downloadingId===`${run.id}:${evidence.activityId}`} onClick={()=>void downloadPdf(run,evidence.activityId,evidence.fileName)}>{downloadingId===`${run.id}:${evidence.activityId}`?"Mengunduh...":"Download PDF"}</button>}
               {pendingEvidence(run).map(item=><button type="button" className="text-button" key={item.activityId} disabled={running||reprocessingId===`${run.id}:${item.activityId}`} onClick={()=>void retryEvidence(run,item.activityId)}>{reprocessingId===`${run.id}:${item.activityId}`?"Mengambil bukti...":"Proses Ulang Bukti"}</button>)}
             </div></td>
@@ -287,7 +319,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       <div className="history-pagination"><button className="secondary-button" disabled={!offset||historyData.loading} onClick={()=>setOffset(Math.max(0,offset-20))}>Sebelumnya</button><span>{historyData.total?`${offset+1}-${Math.min(offset+historyRuns.length,historyData.total)} dari ${historyData.total}`:"0 hasil"}</span><button className="secondary-button" disabled={offset+20>=historyData.total||historyData.loading} onClick={()=>setOffset(offset+20)}>Berikutnya</button></div>
     </section>
 
-    {preview&&<PdfPreview runId={preview.runId} activityId={preview.activityId} fileName={preview.fileName} onClose={()=>setPreview(null)}/>}
+    {preview&&<PdfPreview runId={preview.runId} activityId={preview.activityId} fileName={preview.fileName} confirmCrossUser={preview.confirmCrossUser===true} onClose={()=>setPreview(null)}/>}
     {testingError&&<div className="modal-backdrop error-layer"><section className="card edit-modal error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="sim-error-title"><div className="modal-header"><div><h2 id="sim-error-title">{testingError.summary}</h2></div><button type="button" className="close-button" aria-label="Tutup" title="Tutup" onClick={()=>setTestingError(null)}><UiIcon name="close"/></button></div><div className="modal-body"><dl><div><dt>Detail</dt><dd>{testingError.technical}</dd></div><div><dt>Saran</dt><dd>{testingError.suggestion}</dd></div></dl></div></section></div>}
     {selectedRun&&<ClientSimulatorDetailModal
       run={selectedRun}
@@ -296,7 +328,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       downloadingId={downloadingId}
       onClose={()=>setSelectedRun(null)}
       onRetryEvidence={(activityId)=>void retryEvidence(selectedRun,activityId)}
-      onPreview={(activityId,fileName)=>setPreview({runId:selectedRun.id,activityId,fileName})}
+      onPreview={(activityId,fileName)=>openPdfPreview(selectedRun,activityId,fileName)}
       onDownloadPdf={(activityId,fileName)=>void downloadPdf(selectedRun,activityId,fileName)}
       onDownloadJson={()=>downloadJson(selectedRun)}
       pdfs={pdfsOf(selectedRun)}

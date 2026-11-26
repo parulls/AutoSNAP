@@ -51,14 +51,18 @@ export async function readHistory(db:DatabaseService,viewerInput:string|HistoryV
   }
 
   if(mode==="dev_site")where+=" AND r.mode<>'mock' AND r.mode<>'client_sim'";
-  if(mode==="simulator")where+=" AND r.mode IN ('mock','client_sim')";
+  if(mode==="simulator")where+=" AND r.mode='client_sim'";
 
   const status=String(input.status??"").trim().toUpperCase();
-  const allowedStatus=new Set(["PASSED","COMPLETED","FAILED","AUTOMATION_ERROR","VALIDATION_ERROR","CANCELLED"]);
+  const allowedStatus=new Set(["PASSED","COMPLETED","FAILED","AUTOMATION_ERROR","VALIDATION_ERROR","CANCELLED","RUNNING","ERROR"]);
   if(status){
     if(!allowedStatus.has(status))throw {status:400,error:"Status history tidak valid."};
-    params.push(status);
-    where+=` AND UPPER(r.status)=$${params.length}`;
+    if(status==="ERROR"){
+      where+=` AND UPPER(r.status) IN ('AUTOMATION_ERROR','VALIDATION_ERROR')`;
+    }else{
+      params.push(status);
+      where+=` AND UPPER(r.status)=$${params.length}`;
+    }
   }
 
   if(canViewAll){
@@ -104,14 +108,13 @@ export async function readHistory(db:DatabaseService,viewerInput:string|HistoryV
     where+=` AND concat_ws(' ',r.status,r.response_code,r.notes,r.request_json->>'activityName',r.request_json->'context'->>'service',r.request_json->'service'->>'name',r.request_json->'context'->>'environment',r.request_json->'provider'->>'name',r.request_json->'context'->>'endpoint',COALESCE(r.request_json->'operator'->>'name',u.name),COALESCE(r.request_json->'operator'->>'username',u.username)) ILIKE $${params.length}`;
   }
 
-  const known="('PASSED','COMPLETED','FAILED','AUTOMATION_ERROR','VALIDATION_ERROR','CANCELLED','RUNNING','Passed','Failed','Cancelled','NOT_EVALUATED','PASSED_HTTP')";
   const from=`FROM autosnap_runs r LEFT JOIN autosnap_users u ON u.id=r.operator_id WHERE ${where}`;
   type Row=RunRow&{op_name:string|null;op_username:string|null;op_role:string|null;op_active:boolean|null};
   const [rows,summary,byOperator]=await Promise.all([
     db.query<Row>(`SELECT r.*,u.name AS op_name,u.username AS op_username,u.role AS op_role,u.active AS op_active ${from} ORDER BY r.created_at DESC,r.id DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,[...params,limit,offset]),
-    db.one<{total:number;dev:number;simulator:number;passed:number;completed:number;failed:number;errors:number;cancelled:number}>(`SELECT COUNT(*)::int AS total,COUNT(*) FILTER (WHERE r.mode<>'mock' AND r.mode<>'client_sim')::int AS dev,COUNT(*) FILTER (WHERE r.mode IN ('mock','client_sim'))::int AS simulator,COUNT(*) FILTER (WHERE r.status IN ('PASSED','Passed'))::int AS passed,COUNT(*) FILTER (WHERE r.status='COMPLETED')::int AS completed,COUNT(*) FILTER (WHERE r.status IN ('FAILED','Failed'))::int AS failed,COUNT(*) FILTER (WHERE r.status IN ('AUTOMATION_ERROR','VALIDATION_ERROR') OR r.status NOT IN ${known})::int AS errors,COUNT(*) FILTER (WHERE r.status IN ('CANCELLED','Cancelled'))::int AS cancelled ${from}`,params),
+    db.one<{total:number;dev:number;simulator:number;passed:number;completed:number;failed:number;errors:number;cancelled:number;running:number}>(`SELECT COUNT(*)::int AS total,COUNT(*) FILTER (WHERE r.mode<>'mock' AND r.mode<>'client_sim')::int AS dev,COUNT(*) FILTER (WHERE r.mode='client_sim')::int AS simulator,COUNT(*) FILTER (WHERE UPPER(r.status)='PASSED')::int AS passed,COUNT(*) FILTER (WHERE UPPER(r.status)='COMPLETED')::int AS completed,COUNT(*) FILTER (WHERE UPPER(r.status)='FAILED')::int AS failed,COUNT(*) FILTER (WHERE UPPER(r.status) IN ('AUTOMATION_ERROR','VALIDATION_ERROR'))::int AS errors,COUNT(*) FILTER (WHERE UPPER(r.status)='CANCELLED')::int AS cancelled,COUNT(*) FILTER (WHERE UPPER(r.status)='RUNNING')::int AS running ${from}`,params),
     canViewAll
-      ? db.query<{operator_id:string|null;name:string;username:string;role:string;total:number;passed:number;failed:number;completed:number}>(`SELECT r.operator_id,COALESCE(MAX(r.request_json->'operator'->>'name'),MAX(u.name),'Tidak diketahui') AS name,COALESCE(MAX(r.request_json->'operator'->>'username'),MAX(u.username),'-') AS username,COALESCE(MAX(r.request_json->'operator'->>'role'),MAX(CASE WHEN u.role='tester' THEN 'petugas' ELSE u.role END),'unknown') AS role,COUNT(*)::int AS total,COUNT(*) FILTER (WHERE r.status IN ('PASSED','Passed'))::int AS passed,COUNT(*) FILTER (WHERE r.status IN ('FAILED','Failed'))::int AS failed,COUNT(*) FILTER (WHERE r.status='COMPLETED')::int AS completed ${from} GROUP BY r.operator_id ORDER BY total DESC,name ASC LIMIT 50`,params)
+      ? db.query<{operator_id:string|null;name:string;username:string;role:string;total:number;passed:number;failed:number;completed:number}>(`SELECT r.operator_id,COALESCE(MAX(r.request_json->'operator'->>'name'),MAX(u.name),'Tidak diketahui') AS name,COALESCE(MAX(r.request_json->'operator'->>'username'),MAX(u.username),'-') AS username,COALESCE(MAX(r.request_json->'operator'->>'role'),MAX(CASE WHEN u.role='tester' THEN 'petugas' ELSE u.role END),'unknown') AS role,COUNT(*)::int AS total,COUNT(*) FILTER (WHERE UPPER(r.status)='PASSED')::int AS passed,COUNT(*) FILTER (WHERE UPPER(r.status)='FAILED')::int AS failed,COUNT(*) FILTER (WHERE UPPER(r.status)='COMPLETED')::int AS completed ${from} GROUP BY r.operator_id ORDER BY total DESC,name ASC LIMIT 50`,params)
       : Promise.resolve([]),
   ]);
 

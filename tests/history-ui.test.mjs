@@ -23,7 +23,7 @@ test("Refresh keeps valid form choices, reloads history filters, and both pages 
       const body=route.request().method()==="POST"?route.request().postDataJSON():{},action=body.action;
       let data;
       if(!action)data={user:{id:"operator",username:"qa",role:"admin",active:true},records,runs:ran?[run]:[],scenarios:[]};
-      else if(action==="getHistory"){historyRequests.push(body);data={runs:ran?[run]:[],total:ran?1:0,summary:{total:ran?1:0,dev:ran?1:0,simulator:0,passed:ran?1:0,failed:0,errors:0,cancelled:0}};}
+      else if(action==="getHistory"){historyRequests.push(body);data={runs:ran?[run]:[],total:ran?1:0,summary:{total:ran?1:0,dev:ran?1:0,simulator:0,passed:ran?1:0,failed:0,errors:0,cancelled:0,running:0}};}
       else if(action==="run"){
         runCalls++;
         if(timeoutRun){await route.fulfill({status:504,contentType:"application/json",body:JSON.stringify({error:"Batas waktu menunggu backend tercapai. Periksa History Testing.",code:"UPSTREAM_TIMEOUT"})});return;}
