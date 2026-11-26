@@ -31,6 +31,7 @@ export type SimulatorOverrides={
   partnerId?:string;externalId?:string;deviceId?:string;channelId?:string;
   body?:string;timestamp?:string;includeMillis?:boolean;offsetMinutes?:number;
   regenerateExternalId?:boolean;expectedHttpStatus?:string|number|null;expectedCode?:string|null;
+  expectedMessage?:string|null;method?:string;path?:string;scenarioName?:string;
 };
 
 function timestampConfig(provider:RecordRow,overrides:SimulatorOverrides):TimestampConfig{
@@ -175,16 +176,19 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const providerName=normalizeClientSimulatorComponent(provider.name,"Nama penyedia");
   const registeredServiceName=normalizeClientSimulatorComponent(service.name,"Nama service");
   const scenario=clientSimulatorScenario(input.scenarioId);
-  const scenarioName=scenario.label;
-  const expectation=resolveScenarioExpectation(scenario,service.data);
-  const aspiServiceName=buildClientSimulatorServiceName(providerName,registeredServiceName,scenarioName);
   const overrides=(input.overrides&&typeof input.overrides==="object"&&!Array.isArray(input.overrides)?input.overrides:{}) as SimulatorOverrides;
+  const customName=String(overrides.scenarioName??"").trim();
+  const scenarioName=scenario.id==="CUSTOM"
+    ?normalizeClientSimulatorComponent(customName||scenario.label,"Nama skenario")
+    :scenario.label;
+  const expectation=resolveScenarioExpectation(scenario,service.data,scenario.id==="CUSTOM"?overrides:null);
+  const aspiServiceName=buildClientSimulatorServiceName(providerName,registeredServiceName,scenarioName);
   const expectedHttp=expectation.expectedHttp;
   const expectedCode=expectation.expectedCode;
   const expectedMessage=expectation.expectedMessage;
-  const method=String(service.data.method??"POST").toUpperCase();
+  const method=String((scenario.id==="CUSTOM"&&overrides.method?overrides.method:service.data.method)??"POST").toUpperCase();
   if(!methods.has(method))throw {error:"Method HTTP service tidak valid.",status:400};
-  const relative=String(service.data.path??service.data.serviceUrl??"").trim();
+  const relative=String((scenario.id==="CUSTOM"&&overrides.path?overrides.path:service.data.path??service.data.serviceUrl)??"").trim();
   if(!relative.startsWith("/")||relative.startsWith("//"))throw {error:"Service URL harus relative path diawali /.",status:400};
   const baseUrl=value(provider,"baseUrl");
   try{if(new URL(baseUrl).protocol!=="https:")throw new Error();}catch{throw {error:"Base URL penyedia wajib HTTPS.",status:400};}
@@ -238,11 +242,12 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   let baselinePhase:string|null=duplicateReuse?"BASELINE_NOT_SENT":null;
   const identity={providerId:provider.id,providerName,serviceId:service.id,serviceName:registeredServiceName,scenarioId:scenario.id,scenarioName,aspiServiceName};
   const evaluationPolicy={expectedHttp,expectedCode,expectedMessage,mutation:scenario.mutation};
+  const customConfig=scenario.id==="CUSTOM"?{scenarioName,method,path:relative,expectedHttp,expectedCode,expectedMessage,headers:{partnerId,channelId,deviceId}}:null;
   try{
   await db.query(
     `INSERT INTO autosnap_runs (id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19)`,
-    [runId,operator.id,provider.id,provider.id,provider.id,snapUser.id,service.id,provider.id,scenario.id,"client_sim","RUNNING",null,null,expectedCode,0,JSON.stringify({mode:"client_sim",progressId:typeof input.progressId==="string"?input.progressId:null,activityName,aspiServiceName,scenarioId:scenario.id,scenarioName,identity,evaluationPolicy,scenario:{id:scenario.id,label:scenario.label,mutation:scenario.mutation,mutationApplied:false},dispatch,baselinePhase:duplicateReuse?"BASELINE_NOT_SENT":null,aspiPhase:"ASPI_NOT_SENT",idempotency:{externalId,serviceId:service.id,partnerId,timestamp},body:redact(JSON.parse(minified||"{}")),operator:{id:operator.id,name:operator.name,username:operator.username,role:operator.role}}),JSON.stringify({}),`${activityName}. Send belum dikirim.`,openedAt]
+    [runId,operator.id,provider.id,provider.id,provider.id,snapUser.id,service.id,provider.id,scenario.id,"client_sim","RUNNING",null,null,expectedCode,0,JSON.stringify({mode:"client_sim",progressId:typeof input.progressId==="string"?input.progressId:null,activityName,aspiServiceName,scenarioId:scenario.id,scenarioName,identity,evaluationPolicy,customConfig,scenario:{id:scenario.id,label:scenario.label,mutation:scenario.mutation,mutationApplied:false},dispatch,baselinePhase:duplicateReuse?"BASELINE_NOT_SENT":null,aspiPhase:"ASPI_NOT_SENT",idempotency:{externalId,serviceId:service.id,partnerId,timestamp},body:redact(JSON.parse(minified||"{}")),operator:{id:operator.id,name:operator.name,username:operator.username,role:operator.role}}),JSON.stringify({}),`${activityName}. Send belum dikirim.`,openedAt]
   );
   durable=true;
 
@@ -420,6 +425,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     scenarioId:scenario.id,
     scenarioName,
     scenario:{id:scenario.id,label:scenario.label,mutation:scenario.mutation,mutationApplied:true},
+    customConfig:customConfig?{...customConfig,headers:{...customConfig.headers,externalId}}:null,
     identity,
     evaluationPolicy,
     actual:{httpStatus,responseCode,responseMessage,httpSource},

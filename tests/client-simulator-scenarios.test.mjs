@@ -17,11 +17,14 @@ function message(error) {
 test("five scenarios use optional SNAP codes and isolate one request field", async () => {
   const scenarios = await load("client-simulator-scenarios.js");
   const { evaluateTest, finalOutcome } = await load("test-evaluation.js");
-  assert.deepEqual(scenarios.CLIENT_SIMULATOR_SCENARIOS.map(item => item.label), ["Positif", "Access Token Invalid", "Unauthorized . Signature", "Unauthorized . Unknown Client", "Cannot use the same X-EXTERNAL-ID"]);
+  assert.deepEqual(scenarios.CLIENT_SIMULATOR_SCENARIOS.map(item => item.label), ["Lainnya", "Positif", "Access Token Invalid", "Unauthorized . Signature", "Unauthorized . Unknown Client", "Cannot use the same X-EXTERNAL-ID"]);
+  assert.deepEqual(scenarios.CLIENT_SIMULATOR_UI_SCENARIOS.map(item => item.id), ["CUSTOM", "INVALID_ACCESS_TOKEN", "INVALID_SIGNATURE", "UNKNOWN_CLIENT", "DUPLICATE_EXTERNAL_ID"]);
   assert.throws(() => scenarios.clientSimulatorScenario("SALDO"), error => message(error).includes("tidak valid"));
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("POSITIVE"), {}).expectedHttp, 200);
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("POSITIVE"), {}).expectedCode, null);
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("POSITIVE"), { expectedCode: "2002700" }).expectedCode, "2002700");
+  assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("CUSTOM"), {}, { expectedHttpStatus: 201, expectedCode: "2012700", expectedMessage: "Created" }).expectedHttp, 201);
+  assert.throws(() => scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("CUSTOM"), {}, {}), error => message(error).includes("Expected HTTP"));
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_ACCESS_TOKEN"), {}).expectedHttp, 401);
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_ACCESS_TOKEN"), {}).expectedCode, null);
   assert.equal(scenarios.resolveScenarioExpectation(scenarios.clientSimulatorScenario("INVALID_ACCESS_TOKEN"), { expectedCode: "4012701" }).expectedCode, "4012701");

@@ -41,18 +41,23 @@ export default function DevSiteClientDetail({ site, records, users, api, busy, c
   const [loading, setLoading] = useState(false);
   const [listError, setListError] = useState("");
   const [catalog, setCatalog] = useState<Item[]>([]);
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [catalogBusy, setCatalogBusy] = useState(false);
   const [selectedLink, setSelectedLink] = useState("");
 
   useEffect(() => {
     let active = true;
     const timer = window.setTimeout(() => {
       setLoading(true);
+      // Empty linkedIds → empty linked table (never dump the full catalog as "owned" services).
       void api("listMasterData", {
         kind: "service",
         page,
         pageSize,
         search,
-        linkedOnly: linkedIds.length > 0,
+        linkedOnly: true,
         linkedServiceIds: linkedIds,
       }).then((result) => {
         if (!active) return;
@@ -74,16 +79,21 @@ export default function DevSiteClientDetail({ site, records, users, api, busy, c
   useEffect(() => {
     let active = true;
     const timer = window.setTimeout(() => {
-      void api("listMasterData", { kind: "service", page: 1, pageSize: 50, search: "" }).then((result) => {
+      setCatalogBusy(true);
+      void api("listMasterData", { kind: "service", page: catalogPage, pageSize: 20, search: catalogSearch }).then((result) => {
         if (!active) return;
         setCatalog(Array.isArray(result.items) ? result.items as Item[] : []);
+        setCatalogTotal(Number(result.total ?? 0));
+        setCatalogBusy(false);
       }).catch(() => {
         if (!active) return;
         setCatalog([]);
+        setCatalogTotal(0);
+        setCatalogBusy(false);
       });
-    }, 0);
+    }, 150);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [site.id, api]);
+  }, [site.id, api, catalogPage, catalogSearch]);
 
   async function linkSelected() {
     if (!selectedLink) return;
@@ -135,33 +145,35 @@ export default function DevSiteClientDetail({ site, records, users, api, busy, c
           columns={["NAMA", "METHOD / PATH", "DIPERBARUI", "AKSI"]}
           busy={loading}
           error={listError}
-          empty={linkedIds.length ? "Tidak ada API Service yang cocok." : "Belum ada API Service. Tambah baru atau tautkan dari katalog (data lama tanpa tautan menampilkan seluruh katalog)."}
+          empty={linkedIds.length ? "Tidak ada API Service yang cocok." : "Belum ada API Service ditautkan ke Client ini. Tambah baru atau tautkan dari katalog."}
           hasRows={items.length > 0}
           search={
             <div className="form-grid">
               <label className="form-field"><span>Cari API Service</span><input aria-label="Cari API Service Client" value={search} onChange={(e) => { setPage(1); setSearch(e.target.value); }} placeholder="Nama, method, atau path" /></label>
               {canMutate && (
-                <label className="form-field"><span>Tautkan dari katalog</span>
-                  <div className="inline-actions" style={{ marginTop: 4 }}>
-                    <select aria-label="Pilih API Service katalog" value={selectedLink} onChange={(e) => setSelectedLink(e.target.value)} disabled={busy || !available.length}>
-                      <option value="">{available.length ? "Pilih API Service" : "Semua sudah ditautkan"}</option>
+                <label className="form-field wide"><span>Tautkan dari katalog</span>
+                  <div className="catalog-link-row">
+                    <input aria-label="Cari katalog API Service" value={catalogSearch} onChange={(e) => { setCatalogPage(1); setCatalogSearch(e.target.value); }} placeholder="Cari katalog…" disabled={busy} />
+                    <select aria-label="Pilih API Service katalog" value={selectedLink} onChange={(e) => setSelectedLink(e.target.value)} disabled={busy || catalogBusy || !available.length}>
+                      <option value="">{catalogBusy ? "Memuat katalog…" : available.length ? "Pilih API Service" : (catalogTotal ? "Semua di halaman ini sudah ditautkan" : "Katalog kosong")}</option>
                       {available.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                     </select>
-                    <IconButton action="link" showLabel label="Tautkan" disabled={busy || !selectedLink} onClick={() => void linkSelected()} />
+                    <IconButton action="link" tone="success" showLabel label="Tautkan" disabled={busy || !selectedLink} onClick={() => void linkSelected()} />
                   </div>
+                  <PaginationBar page={catalogPage} pageSize={20} total={catalogTotal} busy={catalogBusy} onPageChange={setCatalogPage} />
                 </label>
               )}
             </div>
           }
           footer={
-            <>
+            <div className="table-footer-bar">
               <PaginationBar page={page} pageSize={pageSize} total={total} busy={loading} onPageChange={setPage} onPageSizeChange={(size) => { setPage(1); setPageSize(size); }} />
               {canMutate && (
                 <div className="table-footer-actions">
                   <IconButton action="add" tone="primary" showLabel label="Tambah API Service" disabled={busy} onClick={() => onImportService()} />
                 </div>
               )}
-            </>
+            </div>
           }
         >
           {items.map((item) => {

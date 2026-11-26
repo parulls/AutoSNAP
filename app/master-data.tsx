@@ -36,18 +36,29 @@ export default function MasterData({ state, api, reload, setError, setNotice, in
   const [total, setTotal] = useState(0);
   const [items, setItems] = useState<Item[]>([]);
   const [listBusy, setListBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [listError, setListError] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Item | null>(null);
+  const [refProviders, setRefProviders] = useState<Item[]>([]);
+  const [refServices, setRefServices] = useState<Item[]>([]);
+  const [detailSite, setDetailSite] = useState<Item | null>(null);
 
   const moduleAccess = kind === "sim_provider" || kind === "sim_service" ? can(state.user, "client_simulator") || can(state.user, "master_data") : can(state.user, "master_data");
   const canCreate = moduleAccess, canUpdate = moduleAccess, canDelete = moduleAccess;
   const canMutate = canCreate || canUpdate;
+  // Full records for forms (credentials / connection). Tables use listMasterData only.
   const users = state.records.filter((x) => x.kind === "snap_user");
-  const providers = state.records.filter((x) => x.kind === "sim_provider");
-  const services = state.records.filter((x) => x.kind === "service");
-  const detailSite = detailSiteId
-    ? (items.find((item) => item.id === detailSiteId) || state.records.find((item) => item.id === detailSiteId && item.kind === "environment") || null)
-    : null;
+  const providers = refProviders.length ? refProviders : state.records.filter((x) => x.kind === "sim_provider");
+  const services = refServices.length ? refServices : state.records.filter((x) => x.kind === "service");
+
+  async function loadRefs() {
+    const [providerRes, serviceRes] = await Promise.all([
+      api("listMasterData", { kind: "sim_provider", page: 1, pageSize: 50, options: true, optionLimit: 200 }),
+      api("listMasterData", { kind: "service", page: 1, pageSize: 50, options: true, optionLimit: 200 }),
+    ]);
+    setRefProviders(Array.isArray(providerRes.items) ? providerRes.items as Item[] : []);
+    setRefServices(Array.isArray(serviceRes.items) ? serviceRes.items as Item[] : []);
+  }
 
   async function loadList() {
     setListBusy(true); setListError("");
@@ -67,6 +78,25 @@ export default function MasterData({ state, api, reload, setError, setNotice, in
       setTotal(0);
     } finally {
       setListBusy(false);
+    }
+  }
+
+  async function refreshPage() {
+    if (refreshing || busy) return;
+    setRefreshing(true); setError(""); setNotice("");
+    try {
+      await reload();
+      await Promise.all([loadList(), loadRefs()]);
+      if (detailSiteId) {
+        const siteRes = await api("listMasterData", { kind: "dev_site", page: 1, pageSize: 50, search: "" }) as { items?: Item[] };
+        const found = (siteRes.items ?? []).find((item) => item.id === detailSiteId);
+        if (found) setDetailSite(found);
+      }
+      setNotice("Master Data diperbarui.");
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -96,6 +126,30 @@ export default function MasterData({ state, api, reload, setError, setNotice, in
     }, 0);
     return () => { active = false; window.clearTimeout(timer); };
   }, [kind, page, pageSize, search, providerFilter, api]);
+
+  useEffect(() => {
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void loadRefs().catch(() => { if (active) { setRefProviders([]); setRefServices([]); } });
+    }, 0);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [api]);
+
+  useEffect(() => {
+    let active = true;
+    const timer = window.setTimeout(() => {
+      if (!detailSiteId) {
+        if (active) setDetailSite(null);
+        return;
+      }
+      void api("listMasterData", { kind: "dev_site", page: 1, pageSize: 50, search: "" }).then((result) => {
+        if (!active) return;
+        const found = (Array.isArray(result.items) ? result.items as Item[] : []).find((item) => item.id === detailSiteId) || null;
+        setDetailSite(found);
+      }).catch(() => { if (active) setDetailSite(null); });
+    }, 0);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [detailSiteId, api, items]);
 
   function openAdd() {
     if (kind === "endpoint") setImporting({});
@@ -215,9 +269,9 @@ export default function MasterData({ state, api, reload, setError, setNotice, in
     : ["NAMA", "DETAIL", "DIPERBARUI", ...(canMutate ? ["AKSI"] : [])];
 
   return <section className="card master-card">
-    <div className="section-header">
+    <div className="section-header master-toolbar">
       <div><h2>Master Data</h2><p>Kelola User SNAP, Dev Site Client, Dev Site Endpoint, Penyedia Client Simulator, dan API Service Client Simulator.</p></div>
-      <IconButton action="refresh" showLabel label="Muat ulang" disabled={listBusy || busy} onClick={() => void loadList()} />
+      <button type="button" className="secondary-button" disabled={refreshing || listBusy || busy} onClick={() => void refreshPage()}>{refreshing ? "Memuat..." : "Refresh"}</button>
     </div>
     {importing && <DocumentationImport users={users} endpoint={importing.endpoint} service={importing.service} api={api} reload={async () => { await reload(); await loadList(); }} onClose={() => setImporting(null)} linkEnvironmentId={detailSite?.id} />}
     <div className="tabs" role="tablist">{(Object.keys(labels) as Kind[]).map((key) => <button key={key} role="tab" aria-selected={kind === key} className={kind === key ? "active" : ""} onClick={() => { setKind(key); setEditing(null); setConnection(null); setServiceEditor(null); setDetailSiteId(""); setSearch(""); setProviderFilter(""); setPage(1); }}>{labels[key]}</button>)}</div>
@@ -254,14 +308,14 @@ export default function MasterData({ state, api, reload, setError, setNotice, in
         </div>
       }
       footer={
-        <>
-          <PaginationBar page={page} pageSize={pageSize} total={total} busy={listBusy} onPageChange={setPage} onPageSizeChange={(size) => { setPage(1); setPageSize(size); }} />
+        <div className="table-footer-bar">
+          <PaginationBar page={page} pageSize={pageSize} total={total} busy={listBusy || refreshing} onPageChange={setPage} onPageSizeChange={(size) => { setPage(1); setPageSize(size); }} />
           {canCreate && (
             <div className="table-footer-actions">
-              <IconButton action="add" tone="primary" showLabel label={`Tambah ${labels[kind]}`} disabled={addDisabled} onClick={openAdd} />
+              <IconButton action="add" tone="primary" showLabel label={`Tambah ${labels[kind]}`} disabled={addDisabled || refreshing} onClick={openAdd} />
             </div>
           )}
-        </>
+        </div>
       }
     >
       {kind === "sim_service"

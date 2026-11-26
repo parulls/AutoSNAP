@@ -17,9 +17,18 @@ test("listMasterData clamps pageSize and supports soft-link filter", () => {
   assert.match(src, /linkedOnly/);
   assert.match(src, /linkedServiceIds/);
   assert.match(src, /sim_service/);
+  assert.match(src, /options === true/);
   assert.match(app, /action==="listMasterData"/);
   assert.match(app, /action==="linkClientServices"/);
   assert.match(app, /appendServiceIds/);
+});
+
+test("Client detail uses linkedOnly empty state and catalog pagination", () => {
+  const detail = readFileSync(join(root, "app/dev-site-client-detail.tsx"), "utf8");
+  assert.match(detail, /linkedOnly:\s*true/);
+  assert.match(detail, /catalogSearch/);
+  assert.match(detail, /Belum ada API Service ditautkan/);
+  assert.doesNotMatch(detail, /pageSize:\s*50,\s*search:\s*""/);
 });
 
 test("Master Data FE uses listMasterData, IconButton, and client detail", () => {

@@ -95,6 +95,23 @@ export async function listMasterData(db: DatabaseService, viewer: Viewer, input:
     )`;
   }
 
+  // Compact option lists for dropdowns (id+name) — not a substitute for paginated tables.
+  if (input.options === true) {
+    const optionLimit = Math.min(200, Math.max(1, Number(input.optionLimit) || 200));
+    params.push(optionLimit);
+    const rows = await db.query<RecordRow>(
+      `SELECT id, kind, name, parent_id, partner_id, data, created_at, updated_at FROM autosnap_records WHERE ${where} ORDER BY name ASC, updated_at DESC LIMIT $${params.length}`,
+      params,
+    );
+    return {
+      items: rows.map((row) => ({ id: row.id, kind: row.kind, name: row.name, parentId: row.parent_id, partnerId: row.partner_id, data: {}, createdAt: row.created_at, updatedAt: row.updated_at })),
+      total: rows.length,
+      page: 1,
+      pageSize: optionLimit,
+      options: true,
+    };
+  }
+
   const totalRow = await db.one<{ n: string }>(`SELECT COUNT(*)::text AS n FROM autosnap_records WHERE ${where}`, params);
   const total = Number(totalRow?.n ?? 0);
   const offset = (page - 1) * pageSize;

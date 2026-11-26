@@ -35,6 +35,8 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   const snapUsers=state.records.filter(r=>r.kind==="snap_user");
   const canViewAll=can(state.user,"history","view_all");
   const [providerId,setProviderId]=useState(""),[serviceId,setServiceId]=useState(""),[snapUserId,setSnapUserId]=useState(""),[scenarioId,setScenarioId]=useState(""),[scenarioAttempted,setScenarioAttempted]=useState(false),[confirmDuplicate,setConfirmDuplicate]=useState(false);
+  const [customDraft,setCustomDraft]=useState({scenarioName:"",method:"POST",path:"",expectedHttpStatus:"",expectedCode:"",expectedMessage:""});
+  const [showCustomAdvanced,setShowCustomAdvanced]=useState(false);
   const provider=providers.find(p=>p.id===providerId);
   const services=allServices.filter(s=>s.parentId===providerId);
   const service=services.find(s=>s.id===serviceId);
@@ -100,10 +102,18 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     setBody(next.body);
     appliedDefaults.current=next;
     setHeaderTouched({partnerId:false,deviceId:false,channelId:false,externalId:false,body:false});
+    setCustomDraft({
+      scenarioName:s?.name?`Lainnya - ${s.name}`:"Lainnya",
+      method:value(s,"method")||"POST",
+      path:value(s,"path")||value(s,"serviceUrl")||"",
+      expectedHttpStatus:String(s?.data.expectedHttpStatus??""),
+      expectedCode:String(s?.data.expectedCode??s?.data.expectedSnapCode??""),
+      expectedMessage:String(s?.data.expectedMessage??""),
+    });
   }
   function resetRequest(){
     if(running)return;
-    setScenarioId("");setScenarioAttempted(false);setConfirmDuplicate(false);loadDefaults(provider,service);
+    setScenarioId("");setScenarioAttempted(false);setConfirmDuplicate(false);setShowCustomAdvanced(false);loadDefaults(provider,service);
   }
   function snapUserLabel(user:Item){
     const display=value(user,"displayUsername").trim();
@@ -121,7 +131,18 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     const chosen=clientSimulatorScenario(scenarioId);
     if(!chosen){setError("Pilih skenario pengujian terlebih dahulu.");return;}
     if(chosen.id==="DUPLICATE_EXTERNAL_ID"&&!confirmDuplicate){setError("Konfirmasi diperlukan sebelum baseline bank dan uji duplikat lewat ASPI.");return;}
-    try{buildClientSimulatorServiceName(provider.name,service.name,chosen.label);}catch(error){setError(thrownMessage(error));return;}
+    const scenarioLabel=chosen.id==="CUSTOM"?(customDraft.scenarioName.trim()||chosen.label):chosen.label;
+    try{buildClientSimulatorServiceName(provider.name,service.name,scenarioLabel);}catch(error){setError(thrownMessage(error));return;}
+    if(chosen.id==="CUSTOM"){
+      const method=(customDraft.method||"POST").toUpperCase();
+      const path=customDraft.path.trim();
+      const http=Number(customDraft.expectedHttpStatus);
+      if(!["GET","POST","PUT","PATCH","DELETE","HEAD"].includes(method)){setError("Method HTTP Lainnya tidak valid.");return;}
+      if(!path.startsWith("/")||path.startsWith("//")){setError("Service Endpoint Lainnya harus diawali /.");return;}
+      if(!(Number.isInteger(http)&&http>=100&&http<=599)){setError("Expected HTTP Status Lainnya wajib 100–599.");return;}
+      if(customDraft.expectedCode.trim()&&!/^\d{7}$/.test(customDraft.expectedCode.trim())){setError("Expected SNAP Code Lainnya harus 7 digit.");return;}
+      try{const parsed=JSON.parse(shownBody.trim()||"{}");if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))throw Error();}catch{setError("Request Body harus object JSON yang valid.");return;}
+    }
     if(!shownChannelId.trim()){setError("CHANNEL-ID wajib diisi. Form ASPI mengirim header ini.");return;}
     if(!shownDeviceId.trim()){setError("X-DEVICE-ID wajib diisi. Bank Sumut menolak request tanpa header ini.");return;}
     if(!shownPartnerId.trim()){setError("X-PARTNER-ID wajib diisi pada penyedia atau API Service.");return;}
@@ -138,7 +159,18 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     try{
       const response=await api("runClientSimulator",{
         progressId,providerId,serviceId,snapUserId,scenarioId,confirmDuplicateExternalId:confirmDuplicate,
-        overrides:{partnerId:shownPartnerId,externalId:shownExternalId,deviceId:shownDeviceId,channelId:shownChannelId,body:shownBody,timestamp,includeMillis,offsetMinutes,regenerateExternalId:scenarioId!=="DUPLICATE_EXTERNAL_ID"&&!shownExternalId.trim()},
+        overrides:{
+          partnerId:shownPartnerId,externalId:shownExternalId,deviceId:shownDeviceId,channelId:shownChannelId,body:shownBody,timestamp,includeMillis,offsetMinutes,
+          regenerateExternalId:scenarioId!=="DUPLICATE_EXTERNAL_ID"&&!shownExternalId.trim(),
+          ...(chosen.id==="CUSTOM"?{
+            scenarioName:scenarioLabel,
+            method:customDraft.method.toUpperCase(),
+            path:customDraft.path.trim(),
+            expectedHttpStatus:Number(customDraft.expectedHttpStatus),
+            expectedCode:customDraft.expectedCode.trim()||null,
+            expectedMessage:customDraft.expectedMessage.trim()||null,
+          }:{}),
+        },
       });
       try{setProgress(await api("getProgress",{id:progressId}) as unknown as TestProgress);}catch{/* the modal already has the last poll */}
       setNotice(`${String(response.activityName??"Client Simulator")} · ${String(response.status??"")} · PDF ${response.pdfReady?"tersimpan":"belum tersimpan"}`);
@@ -235,10 +267,11 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   const selectedScenario=clientSimulatorScenario(scenarioId);
   let aspiServiceName="";
   let scenarioError="";
+  const scenarioLabel=selectedScenario?.id==="CUSTOM"?(customDraft.scenarioName.trim()||selectedScenario.label):selectedScenario?.label??"";
   if(provider&&service&&selectedScenario){
-    try{aspiServiceName=buildClientSimulatorServiceName(provider.name,service.name,selectedScenario.label);}catch(error){scenarioError=thrownMessage(error);}
+    try{aspiServiceName=buildClientSimulatorServiceName(provider.name,service.name,scenarioLabel);}catch(error){scenarioError=thrownMessage(error);}
   }else if(scenarioAttempted&&!selectedScenario)scenarioError="Pilih skenario pengujian terlebih dahulu.";
-  const expectation=selectedScenario&&service?presentScenarioExpectation(selectedScenario.id,service.data):null;
+  const expectation=selectedScenario&&service?presentScenarioExpectation(selectedScenario.id,service.data,selectedScenario.id==="CUSTOM"?customDraft:null):null;
   const historyRuns=historyData.runs.filter(r=>r.mode==="client_sim");
   // Session-only: Hasil Testing never falls back to History.
   const latest=resultId?historyRuns.find(run=>run.id===resultId)??state.runs.find(run=>run.id===resultId&&run.mode==="client_sim")??null:null;
@@ -252,18 +285,35 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
         <label className="form-field"><span>User SNAP</span><select required aria-label="User SNAP" disabled={formLocked} value={snapUserId} onChange={e=>setSnapUserId(e.target.value)}><option value="">Pilih User SNAP</option>{snapUsers.map(user=><option key={user.id} value={user.id}>{snapUserLabel(user)}</option>)}</select></label>
         <label className="form-field"><span>Penyedia Client Simulator</span><select required aria-label="Penyedia Client Simulator" disabled={formLocked} value={providerId} onChange={e=>{const id=e.target.value;const nextProvider=providers.find(x=>x.id===id);setProviderId(id);setServiceId("");loadDefaults(nextProvider,undefined);}}><option value="">Pilih penyedia</option>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <label className="form-field"><span>API Service</span><select required aria-label="API Service" disabled={formLocked||!providerId||!services.length} value={serviceId} onChange={e=>{const id=e.target.value;const nextProvider=providers.find(x=>x.id===providerId);const nextService=services.find(s=>s.id===id);setServiceId(id);loadDefaults(nextProvider,nextService);}}><option value="">{services.length?"Pilih service":"Belum ada service"}</option>{services.map(s=><option key={s.id} value={s.id}>{s.name} - {value(s,"method")||"POST"} {value(s,"path")||value(s,"serviceUrl")}</option>)}</select></label>
-        <label className="form-field"><span>Skenario Pengujian *</span><select aria-label="Skenario Pengujian" aria-invalid={scenarioError?true:undefined} disabled={formLocked} value={scenarioId} onChange={e=>{setScenarioId(e.target.value);setConfirmDuplicate(false);}}><option value="">Pilih Skenario</option>{CLIENT_SIMULATOR_SCENARIOS.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>{scenarioError&&<small className="field-error" role="alert">{scenarioError}</small>}</label>
+        <label className="form-field"><span>Skenario Pengujian *</span><select aria-label="Skenario Pengujian" aria-invalid={scenarioError?true:undefined} disabled={formLocked} value={scenarioId} onChange={e=>{const next=e.target.value;setScenarioId(next);setConfirmDuplicate(false);if(next==="CUSTOM"){loadDefaults(provider,service);setShowCustomAdvanced(false);}}}>
+          <option value="">Pilih Skenario</option>
+          {CLIENT_SIMULATOR_SCENARIOS.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}
+        </select>{scenarioError&&<small className="field-error" role="alert">{scenarioError}</small>}</label>
       </div>
       {provider&&!services.length&&<p className="helper">Penyedia ini belum mempunyai API Service. Tambahkan API Service melalui Master Data → API Service Client Simulator.{onOpenMasterData&&<> <button type="button" className="text-button" onClick={onOpenMasterData}>Buka API Service Client Simulator</button></>}</p>}
       <h3>Service Name ASPI</h3>
       <label className="form-field wide"><span>Service Name ASPI</span><input readOnly aria-label="Service Name ASPI" value={aspiServiceName} placeholder="Pilih penyedia, API Service, dan skenario."/></label>
-      {expectation&&<section aria-label="Expected Result"><h3>Expected Result</h3><dl className="expected-result"><div><dt>HTTP Status</dt><dd>{expectation.http}</dd></div><div><dt>SNAP Code</dt><dd>{expectation.code||`${expectation.pattern} · opsional`}</dd></div><div><dt>Response Message</dt><dd>{expectation.message||"—"}</dd></div></dl><p className="helper">{selectedScenario?selectedScenario.summary:"Pilih skenario pengujian terlebih dahulu."}</p></section>}
+      {scenarioId==="CUSTOM"&&service&&<>
+        <h3>Konfigurasi Lainnya</h3>
+        <p className="helper">Nilai awal diambil dari Master Data. Expected response diisi operator — tidak diasumsikan HTTP 200.</p>
+        <div className="form-grid">
+          <label className="form-field wide"><span>Nama Skenario *</span><input aria-label="Nama Skenario" disabled={formLocked} maxLength={120} value={customDraft.scenarioName} onChange={e=>setCustomDraft(old=>({...old,scenarioName:e.target.value}))}/></label>
+          <label className="form-field"><span>HTTP Method *</span><select aria-label="HTTP Method Lainnya" disabled={formLocked} value={customDraft.method} onChange={e=>setCustomDraft(old=>({...old,method:e.target.value}))}><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>HEAD</option></select></label>
+          <label className="form-field"><span>Service Endpoint *</span><input aria-label="Service Endpoint Lainnya" disabled={formLocked} value={customDraft.path} onChange={e=>setCustomDraft(old=>({...old,path:e.target.value}))} placeholder="/api/v1.0/..."/></label>
+          <label className="form-field"><span>Expected HTTP Status *</span><input aria-label="Expected HTTP Status Lainnya" inputMode="numeric" disabled={formLocked} value={customDraft.expectedHttpStatus} onChange={e=>setCustomDraft(old=>({...old,expectedHttpStatus:e.target.value}))} placeholder="200"/></label>
+          <label className="form-field"><span>Expected SNAP Code</span><input aria-label="Expected SNAP Code Lainnya" inputMode="numeric" maxLength={7} disabled={formLocked} value={customDraft.expectedCode} onChange={e=>setCustomDraft(old=>({...old,expectedCode:e.target.value}))} placeholder="200xxxx"/></label>
+          <label className="form-field wide"><span>Expected Response Message</span><input aria-label="Expected Response Message Lainnya" disabled={formLocked} value={customDraft.expectedMessage} onChange={e=>setCustomDraft(old=>({...old,expectedMessage:e.target.value}))}/></label>
+        </div>
+      </>}
+      {expectation&&scenarioId!=="CUSTOM"&&<section aria-label="Expected Result"><h3>Expected Result</h3><dl className="expected-result"><div><dt>HTTP Status</dt><dd>{expectation.http}</dd></div><div><dt>SNAP Code</dt><dd>{expectation.code||`${expectation.pattern} · opsional`}</dd></div><div><dt>Response Message</dt><dd>{expectation.message||"—"}</dd></div></dl><p className="helper">{selectedScenario?selectedScenario.summary:"Pilih skenario pengujian terlebih dahulu."}</p></section>}
+      {expectation&&scenarioId==="CUSTOM"&&<section aria-label="Expected Result"><h3>Expected Result</h3><dl className="expected-result"><div><dt>HTTP Status</dt><dd>{expectation.http??"—"}</dd></div><div><dt>SNAP Code</dt><dd>{expectation.code||"opsional"}</dd></div><div><dt>Response Message</dt><dd>{expectation.message||"—"}</dd></div></dl><p className="helper">{selectedScenario?.summary}</p></section>}
       {!selectedScenario&&<p className="helper">Pilih skenario pengujian terlebih dahulu.</p>}
       {provider&&<>
         <h3>Konfigurasi request</h3>
         <div className="form-grid">
           <label className="form-field"><span>Access Token URI</span><input readOnly value={accessTokenUri}/></label>
-          <label className="form-field"><span>Service URI</span><input readOnly value={service?serviceUri:"Pilih API Service"}/></label>
+          <label className="form-field"><span>Service URI</span><input readOnly aria-label="Service URI" value={scenarioId==="CUSTOM"?(provider&&customDraft.path?`${value(provider,"baseUrl").replace(/\/$/,"")}${customDraft.path}`:"Isi Service Endpoint di atas"):(service?serviceUri:"Pilih API Service")}/></label>
+          {(scenarioId!=="CUSTOM"||showCustomAdvanced)&&(
           <div className="timestamp-field wide">
             <label className="form-field"><span>X-TIMESTAMP</span><input disabled={formLocked} value={timestamp} onChange={e=>setTimestamp(e.target.value)} spellCheck={false}/></label>
             <div className="timestamp-controls">
@@ -275,6 +325,8 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
               <label className="timestamp-millis"><input type="checkbox" disabled={formLocked} checked={includeMillis} onChange={e=>{setIncludeMillis(e.target.checked);setTimestamp(buildTimestamp(offsetMinutes,e.target.checked,new Date(Date.now()+120_000)));}}/><span>Milidetik</span></label>
             </div>
           </div>
+          )}
+          {scenarioId==="CUSTOM"&&<div className="wide"><button type="button" className="text-button" disabled={formLocked} onClick={()=>setShowCustomAdvanced(v=>!v)}>{showCustomAdvanced?"Sembunyikan":"Tampilkan"} pengaturan timestamp</button></div>}
           <label className="form-field"><span>X-PARTNER-ID</span><input aria-label="X-PARTNER-ID" disabled={formLocked} value={shownPartnerId} onChange={e=>{setHeaderTouched(old=>({...old,partnerId:true}));setPartnerId(e.target.value);}}/></label>
           <label className="form-field"><span>X-EXTERNAL-ID</span><input aria-label="X-EXTERNAL-ID" readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={formLocked||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Dibuat otomatis saat dijalankan":shownExternalId} onChange={e=>{setHeaderTouched(old=>({...old,externalId:true}));setExternalId(e.target.value);}} placeholder="Kosongkan untuk generate otomatis" title={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Baseline bank lalu request ASPI memakai External ID yang sama.":undefined}/></label>
           <label className="form-field"><span>X-DEVICE-ID</span><input aria-label="X-DEVICE-ID" disabled={formLocked} value={shownDeviceId} onChange={e=>{setHeaderTouched(old=>({...old,deviceId:true}));setDeviceId(e.target.value);}}/></label>

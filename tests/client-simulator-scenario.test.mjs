@@ -67,7 +67,7 @@ test("scenario name is rebuilt from database records and does not send a new tra
   const submitted = [];
   const gateway = { submit: async (_user, form) => { submitted.push(form); return { httpStatus: 200, response: { responseCode: "2002700" }, responseText: "", activity: null, pdf: null, pdfError: null, steps: [] }; } };
 
-  await assert.rejects(runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap" }, gateway), error => message(error) === "Skenario pengujian tidak valid. Pilih salah satu dari lima skenario.");
+  await assert.rejects(runClientSimulator(db, [provider, service, user], operator, { providerId: "prov", serviceId: "svc", snapUserId: "snap" }, gateway), error => /Skenario pengujian tidak valid/.test(message(error)));
   assert.equal(calls.length, 0);
   await assert.rejects(runClientSimulator(db, [provider, other, user], operator, { providerId: "prov", serviceId: "other", snapUserId: "snap", scenarioName: "Positive Case" }, gateway), error => /tidak milik penyedia/.test(message(error)));
 

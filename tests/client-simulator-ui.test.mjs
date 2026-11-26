@@ -63,12 +63,13 @@ test("client simulator uses a scenario name and API services live in master data
         data = { ok: true };
       } else if (input.action === "runClientSimulator") {
         runs += 1;
-        assert.equal(input.scenarioId, "POSITIVE");
+        assert.equal(input.scenarioId, "CUSTOM");
         assert.equal(input.scenarioName, undefined);
         assert.equal(input.aspiServiceName, undefined);
         assert.equal(input.testType, undefined);
+        assert.equal(Number(input.overrides?.expectedHttpStatus), 200);
         if (runs === 1) await holdRun;
-        data = { ok: true, status: "COMPLETED", activityName: "Bank SUMUT - Create VA Updated - Positif", pdfReady: false };
+        data = { ok: true, status: "COMPLETED", activityName: "Bank SUMUT - Create VA Updated - Lainnya - Create VA Updated", pdfReady: false };
       } else if (input.action === "cancelRun") {
         cancelSeen = true;
         data = { ok: true };
@@ -111,7 +112,7 @@ test("client simulator uses a scenario name and API services live in master data
     assert.equal(userOptions.includes("ulitesting"), true);
     assert.equal(userOptions.some(option => option.includes("@")), false);
     const scenarioOptions = await page.getByLabel("Skenario Pengujian").locator("option").allTextContents();
-    assert.deepEqual(scenarioOptions, ["Pilih Skenario", "Positif", "Access Token Invalid", "Unauthorized . Signature", "Unauthorized . Unknown Client", "Cannot use the same X-EXTERNAL-ID"]);
+    assert.deepEqual(scenarioOptions, ["Pilih Skenario", "Lainnya", "Access Token Invalid", "Unauthorized . Signature", "Unauthorized . Unknown Client", "Cannot use the same X-EXTERNAL-ID"]);
     await page.getByLabel("User SNAP").selectOption("snap");
     await page.getByLabel("Penyedia Client Simulator").selectOption("prov");
     assert.equal(await page.getByLabel("X-DEVICE-ID").inputValue(), "device-1");
@@ -123,9 +124,9 @@ test("client simulator uses a scenario name and API services live in master data
     assert.equal(await page.getByLabel("X-PARTNER-ID").inputValue(), "9296");
     await page.getByRole("button", { name: "Jalankan Testing", exact: true }).click();
     await page.locator(".field-error", { hasText: "Pilih skenario pengujian terlebih dahulu." }).waitFor();
-    await page.getByLabel("Skenario Pengujian").selectOption("POSITIVE");
-    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Positif");
-    await page.getByText("200xx00 · opsional").waitFor();
+    await page.getByLabel("Skenario Pengujian").selectOption("CUSTOM");
+    assert.match(await page.getByLabel("Service Name ASPI").inputValue(), /Bank SUMUT - Create VA Updated - /);
+    await page.getByLabel("Expected HTTP Status Lainnya").fill("200");
     await page.getByLabel("Skenario Pengujian").selectOption("INVALID_ACCESS_TOKEN");
     assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Access Token Invalid");
     await page.getByText("401xx01 · opsional").waitFor();
@@ -148,8 +149,9 @@ test("client simulator uses a scenario name and API services live in master data
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.getByLabel("Penyedia Client Simulator").selectOption("prov");
     await page.getByLabel("API Service").selectOption("svc");
-    await page.getByLabel("Skenario Pengujian").selectOption("POSITIVE");
-    assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Positif");
+    await page.getByLabel("Skenario Pengujian").selectOption("CUSTOM");
+    await page.getByLabel("Expected HTTP Status Lainnya").fill("200");
+    assert.match(await page.getByLabel("Service Name ASPI").inputValue(), /Bank SUMUT - Create VA Updated - /);
     await page.getByRole("button", { name: "Jalankan Testing", exact: true }).click();
     await page.getByRole("button", { name: "Cancel Testing", exact: true }).click();
     for (let i = 0; i < 30 && !cancelSeen; i++) await new Promise(resolve => setTimeout(resolve, 50));

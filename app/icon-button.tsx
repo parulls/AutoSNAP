@@ -9,7 +9,7 @@ const labels: Record<IconAction, string> = {
   add: "Tambah",
   edit: "Edit",
   delete: "Hapus",
-  refresh: "Muat ulang",
+  refresh: "Refresh",
   detail: "Detail",
   search: "Cari",
   link: "Tautkan",
@@ -30,13 +30,13 @@ const icons: Record<IconAction, Parameters<typeof UiIcon>[0]["name"]> = {
 type Props = ButtonHTMLAttributes<HTMLButtonElement> & {
   action: IconAction;
   label?: string;
-  tone?: "default" | "primary" | "danger";
+  tone?: "default" | "primary" | "danger" | "success";
   showLabel?: boolean;
 };
 
 export default function IconButton({ action, label, tone = "default", showLabel = false, className = "", title, "aria-label": ariaLabel, ...rest }: Props) {
   const text = label ?? labels[action];
-  const toneClass = tone === "primary" ? "icon-button primary" : tone === "danger" ? "icon-button danger" : "icon-button";
+  const toneClass = tone === "primary" ? "icon-button primary" : tone === "danger" ? "icon-button danger" : tone === "success" ? "icon-button success" : "icon-button";
   return (
     <button
       type="button"
