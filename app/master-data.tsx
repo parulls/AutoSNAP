@@ -62,8 +62,11 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
       };
       const data=item?(()=>{
         const base=String(item.data.baseUrl??"");
-        return {...item.data,clientSecret:"",privateKey:"",signatureAuthPrivateKey:"",accessTokenUrl:toPath(item.data.accessTokenUrl,base),signatureAccessTokenUrl:toPath(item.data.signatureAccessTokenUrl,base),signatureServiceUrl:toPath(item.data.signatureServiceUrl,base)};
-      })():{baseUrl:"",clientKey:"",clientSecret:"",privateKey:"",signatureAuthPrivateKey:"",accessTokenUrl:"/api/v1.0/access-token/b2b",signatureAccessTokenMode:"FUNCTION",signatureServiceMode:"FUNCTION",rsaEncoding:"base64",hmacEncoding:"base64",timestampConfig:{offsetMinutes:420,includeMillis:false},channelId:"",deviceId:"",partnerId:"",origin:"",ipAddress:"",latitude:"",longitude:"",allowPrivateKeyToSigner:false};
+        const clientId=String(item.data.clientId??item.data.clientKey??"");
+        const next:Record<string,unknown>={...item.data,clientId,clientSecret:"",privateKey:"",signatureAuthPrivateKey:"",accessTokenUrl:toPath(item.data.accessTokenUrl,base),signatureAccessTokenUrl:toPath(item.data.signatureAccessTokenUrl,base),signatureServiceUrl:toPath(item.data.signatureServiceUrl,base)};
+        delete next.clientKey;
+        return next;
+      })():{baseUrl:"",clientId:"",clientSecret:"",privateKey:"",signatureAuthPrivateKey:"",accessTokenUrl:"/api/v1.0/access-token/b2b",signatureAccessTokenMode:"FUNCTION",signatureServiceMode:"FUNCTION",rsaEncoding:"base64",hmacEncoding:"base64",timestampConfig:{offsetMinutes:420,includeMillis:false},channelId:"",deviceId:"",partnerId:"",origin:"",ipAddress:"",latitude:"",longitude:"",allowPrivateKeyToSigner:false};
       setDraft({name:item?.name??"",parentId:"",data});
       return;
     }
@@ -163,7 +166,7 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
         {kind==="snap_user"&&<>{field("displayUsername","Username User SNAP",false,false,"Nama yang tampil di dropdown Client Simulator. Bukan email.")}{field("email","Email SNAP")}{field("password","Password SNAP",false,true)}<p className="helper wide">Email dan password tetap dipakai untuk login portal ASPI. Saat edit, kosongkan password untuk mempertahankan nilai tersimpan.</p></>}
         {kind==="sim_provider"&&<>
           {field("baseUrl","Base URL (HTTPS) *",false,false,"Diisi sekali. Endpoint Access Token dan Signature digabung ke alamat ini. Contoh Bank Sumut: https://dev.banksumut.co.id atau https://dev.banksumut.co.id/snapgov.")}
-          {field("clientKey","Client Key / Client ID *")}
+          {field("clientId","Client ID *")}
           {field("clientSecret",newProvider&&needsSecret?"Client Secret *":"Client Secret",false,true,needsSecret?"Wajib untuk FUNCTION dan HIT_API Signature Service. Kosongkan saat edit jika tidak diubah.":"Opsional selama Signature Service bukan FUNCTION atau HIT_API.")}
           {field("privateKey",newProvider&&needsPrivateKey?"Private Key PEM *":"Private Key PEM",true,false,accessMode==="HIT_API"?"Teks PEM lengkap. Saat HIT_API, PEM ini diubah otomatis menjadi base64 satu baris untuk Private_Key signature-auth. Kosongkan saat edit jika tidak diubah.":needsPrivateKey?"Teks PEM lengkap, termasuk BEGIN/END. Dipakai saat Signature Access Token dihitung di AutoSNAP. Kosongkan saat edit jika tidak diubah.":"Tidak dipakai selama Signature Access Token bukan FUNCTION atau HIT_API.")}
           <details className="advanced-settings wide" open={hitApiSigning||undefined}>
@@ -184,7 +187,7 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
               <label className="form-field"><span>HMAC Encoding</span><select value={String(draft.data.hmacEncoding??"base64")} onChange={e=>patch("hmacEncoding",e.target.value)}><option value="base64">Base64</option><option value="hex">Hex</option></select><small className="helper">Bank Sumut SNAP Batubara memakai Base64. Hex dibalas 401 Unauthorized Signature. Hanya untuk mode FUNCTION.</small></label>
               <label className="form-field"><span>Offset timezone (menit)</span><input type="number" value={Number(ts.offsetMinutes??420)} onChange={e=>patch("timestampConfig",{...ts,offsetMinutes:Number(e.target.value)})}/><small className="helper">420 = WIB (UTC+7).</small></label>
               <label className="form-field"><span>Milidetik timestamp</span><select value={ts.includeMillis?"1":"0"} onChange={e=>patch("timestampConfig",{...ts,includeMillis:e.target.value==="1"})}><option value="0">Tanpa milidetik</option><option value="1">Dengan milidetik</option></select></label>
-              {field("partnerId","Default X-PARTNER-ID",false,false,"Kosong berarti memakai Client Key.")}
+              {field("partnerId","Default X-PARTNER-ID *",false,false,"Wajib diisi. Tidak memakai Client ID sebagai pengganti.")}
               {field("channelId","Default CHANNEL-ID")}
               {field("deviceId","Default X-DEVICE-ID",false,false,"Bank Sumut menolak request tanpa header ini. Koleksi SNAP Batubara memakai h2hBatubara.")}
               {field("origin","ORIGIN")}
@@ -205,11 +208,11 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
         <label className="form-field"><span>Nama API Service *</span><input required maxLength={120} value={serviceDraft.name} onChange={e=>setServiceDraft({...serviceDraft,name:e.target.value})}/></label>
         <label className="form-field"><span>HTTP Method *</span><select required aria-label="HTTP Method" value={serviceDraft.method} onChange={e=>setServiceDraft({...serviceDraft,method:e.target.value})}><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
         <label className="form-field wide"><span>Relative Path *</span><input required value={serviceDraft.path} onChange={e=>setServiceDraft({...serviceDraft,path:e.target.value})} placeholder="/api/v1.0/..."/><small className="helper">Path relatif, diawali /. Disambung ke Base URL penyedia saat Client Simulator mengirim request.</small></label>
-        {serviceProvider&&<p className="helper wide">Base URL {value(serviceProvider,"baseUrl")||"—"} · CHANNEL-ID {value(serviceProvider,"channelId")||"—"} · X-DEVICE-ID {value(serviceProvider,"deviceId")||"—"} · X-PARTNER-ID {value(serviceProvider,"partnerId")||value(serviceProvider,"clientKey")||"—"}</p>}
+        {serviceProvider&&<p className="helper wide">Base URL {value(serviceProvider,"baseUrl")||"—"} · Client ID {value(serviceProvider,"clientId")||value(serviceProvider,"clientKey")||"—"} · CHANNEL-ID {value(serviceProvider,"channelId")||"—"} · X-DEVICE-ID {value(serviceProvider,"deviceId")||"—"} · X-PARTNER-ID {value(serviceProvider,"partnerId")||"—"}</p>}
         <label className="form-field wide"><span>Default Request Body JSON</span><textarea rows={8} spellCheck={false} value={serviceDraft.defaultBody} onChange={e=>setServiceDraft({...serviceDraft,defaultBody:e.target.value})}/><small className="helper">Inilah body yang dikirim Client Simulator. GET/HEAD tidak mengirim body. Kosongkan dengan {"{}"} jika tidak ada payload.</small></label>
         <details className="advanced-settings wide">
           <summary>Override dan expected response</summary>
-          <p className="helper">Kosong berarti memakai nilai penyedia. X-PARTNER-ID kosong memakai Client Key. Expected yang diisi di sini menjadi aturan validasi, bukan tebakan dari nama skenario.</p>
+          <p className="helper">Kosong berarti memakai nilai penyedia. X-PARTNER-ID wajib diisi di penyedia atau service. Expected yang diisi di sini menjadi aturan validasi, bukan tebakan dari nama skenario.</p>
           <div className="form-grid">
             <label className="form-field"><span>CHANNEL-ID override</span><input value={serviceDraft.channelId} onChange={e=>setServiceDraft({...serviceDraft,channelId:e.target.value})}/></label>
             <label className="form-field"><span>X-DEVICE-ID override</span><input value={serviceDraft.deviceId} onChange={e=>setServiceDraft({...serviceDraft,deviceId:e.target.value})}/></label>

@@ -47,6 +47,13 @@ const value=(row:RecordRow|undefined,key:string)=>String(row?.data[key]??"");
 const codeFor=(raw:string|null|undefined,code:string)=>raw?.replace("xx",/^\d{2}$/.test(code)?code:"00")??null;
 function publicRecord(row:RecordRow){
   const data={...row.data};
+  if(row.kind==="sim_provider"){
+    const clientId=String(data.clientId??"").trim();
+    const legacyKey=String(data.clientKey??"").trim();
+    if(!clientId&&legacyKey)data.clientId=legacyKey;
+    else if(clientId&&legacyKey&&clientId!==legacyKey)data.clientIdConflict=true;
+    else if(clientId&&legacyKey&&clientId===legacyKey)delete data.clientKey;
+  }
   for(const field of secretFields)if(data[field])data[field]="••••••••";
   return {id:row.id,kind:row.kind,name:row.name,parentId:row.parent_id,partnerId:row.partner_id,data,createdAt:row.created_at,updatedAt:row.updated_at};
 }
@@ -559,7 +566,16 @@ export class AutoSnapController {
     }
     if(kind==="sim_provider"){
       try{if(new URL(String(data.baseUrl??"")).protocol!=="https:")return this.fail(res,clientError("Base URL penyedia wajib HTTPS."));}catch{return this.fail(res,clientError("Base URL penyedia wajib HTTPS."));}
-      if(!String(data.clientKey??data.clientId??"").trim())return this.fail(res,clientError("Client Key / Client ID penyedia wajib diisi."));
+      {
+        const clientId=String(data.clientId??"").trim();
+        const legacyKey=String(data.clientKey??"").trim();
+        if(clientId&&legacyKey&&clientId!==legacyKey)return this.fail(res,clientError("Client ID dan Client Key lama berbeda. Simpan ulang dengan satu nilai Client ID yang benar."));
+        const resolved=clientId||legacyKey;
+        if(!resolved)return this.fail(res,clientError("Client ID penyedia wajib diisi."));
+        data.clientId=resolved;
+        delete data.clientKey;
+      }
+      if(!String(data.partnerId??"").trim())return this.fail(res,clientError("X-PARTNER-ID penyedia wajib diisi."));
       try{data.signatureAccessTokenMode=normalizeSignatureMode(data.signatureAccessTokenMode??"FUNCTION");data.signatureServiceMode=normalizeSignatureMode(data.signatureServiceMode??"FUNCTION");}catch(error){return this.fail(res,error);}
       if(data.signatureAccessTokenMode==="HIT_API"&&!String(data.signatureAccessTokenUrl??"").trim())return this.fail(res,clientError("Endpoint Signature Authentication wajib untuk mode HIT_API."));
       if(data.signatureServiceMode==="HIT_API"&&!String(data.signatureServiceUrl??"").trim())return this.fail(res,clientError("Endpoint Signature Service wajib untuk mode HIT_API."));

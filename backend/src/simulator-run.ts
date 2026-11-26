@@ -5,7 +5,7 @@ import { decrypt, redact } from "./security";
 import { inspectPdfProvenance, pdfContentSha256, pdfEvidenceFingerprint, validateAspiDownloadPdf } from "./aspi-evidence";
 import { ASPI_SERVICE_NAME_MAX, buildClientSimulatorServiceName, buildSimulatorActivityEvidence, clientSimulatorDispatchOutcome, clientSimulatorServiceLabel, evaluateClientSimulator, normalizeClientSimulatorComponent, officialActivityId, type ClientSimulatorFormInput, type ClientSimulatorPortalResult } from "./aspi-client-simulator";
 import { finalOutcome, isHttpResponse } from "./test-evaluation";
-import { DUPLICATE_EXTERNAL_ID_ASPI_MISMATCH, DUPLICATE_EXTERNAL_ID_MISSING, DUPLICATE_EXTERNAL_ID_NOT_ENFORCED, DUPLICATE_EXTERNAL_ID_SEED_FAILED, bankAcceptedDuplicateSeed, bankRejectedDuplicateExternalId, clientSimulatorScenario, corruptSignature, duplicateExternalIdAllowed, mintClientSimulatorExternalId, priorExternalIdFromRuns, replacementAccessToken, resolveScenarioExpectation, unknownPartnerId } from "./client-simulator-scenarios";
+import { DUPLICATE_BASELINE_FAILED, DUPLICATE_EXTERNAL_ID_ASPI_MISMATCH, clientSimulatorScenario, corruptSignature, duplicateBaselineSucceeded, duplicateExternalIdAllowed, mintClientSimulatorExternalId, replacementAccessToken, resolveProviderClientId, resolveScenarioExpectation, unknownPartnerId } from "./client-simulator-scenarios";
 import {
   aspiSignatureTarget,
   getXSignatureAccessTokenFunction,
@@ -189,31 +189,27 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const baseUrl=value(provider,"baseUrl");
   try{if(new URL(baseUrl).protocol!=="https:")throw new Error();}catch{throw {error:"Base URL penyedia wajib HTTPS.",status:400};}
 
-  const clientKey=value(provider,"clientKey")||value(provider,"clientId");
-  if(!clientKey)throw {error:"Client Key / Client ID penyedia wajib diisi.",status:400};
+  const clientId=resolveProviderClientId(provider.data);
+  if(!clientId)throw {error:"Client ID penyedia wajib diisi.",status:400};
 
   const tsConfig=timestampConfig(provider,overrides);
   const timestamp=ensureFutureTimestamp(tsConfig,overrides.timestamp,"positive");
-  const partnerId=overrides.partnerId?.trim()||value(service,"partnerId")||value(provider,"partnerId")||clientKey;
+  const partnerId=overrides.partnerId?.trim()||value(service,"partnerId")||value(provider,"partnerId");
+  if(!partnerId)throw {error:"X-PARTNER-ID wajib diisi pada penyedia atau API Service. Tidak memakai Client ID sebagai pengganti.",status:400};
   const channelId=overrides.channelId?.trim()||value(service,"channelId")||value(provider,"channelId")||"";
   const deviceId=overrides.deviceId?.trim()||value(service,"deviceId")||value(provider,"deviceId")||"";
   let externalId=overrides.externalId?.trim()||value(service,"externalId")||"";
-  let sourceRunId:string|null=null;
   const externalDay=timestamp.slice(0,10);
   const duplicateReuse=scenario.mutation==="EXTERNAL_ID_REUSE";
   if(duplicateReuse){
-    if(input.confirmDuplicateExternalId!==true)throw {error:"Konfirmasi diperlukan sebelum mengirim ulang X-EXTERNAL-ID dari pengujian sebelumnya.",status:400};
+    if(input.confirmDuplicateExternalId!==true)throw {error:"Konfirmasi diperlukan sebelum menjalankan baseline bank dan uji duplikat lewat ASPI.",status:400};
     if(!duplicateExternalIdAllowed(baseUrl,provider.data.allowDuplicateExternalId===true))throw {error:"Skenario X-EXTERNAL-ID duplikat hanya diizinkan pada environment sandbox atau pengujian.",status:400};
-    const previousRows=await db.query<{id:string;request_json:Record<string,unknown>;http_status:number|null;response_code:string|null;created_at:string}>("SELECT id, request_json, http_status, response_code, created_at FROM autosnap_runs WHERE mode='client_sim' AND environment_id=$1 AND service_id=$2 ORDER BY created_at DESC LIMIT 40",[provider.id,service.id]);
-    const previous=priorExternalIdFromRuns(previousRows.map(row=>({id:row.id,request:row.request_json&&typeof row.request_json==="object"?row.request_json:null,httpStatus:row.http_status,responseCode:row.response_code,createdAt:row.created_at})),{serviceId:service.id,partnerId,day:externalDay});
-    if(!previous)throw {error:DUPLICATE_EXTERNAL_ID_MISSING,status:409};
-    externalId=previous.externalId;
-    sourceRunId=previous.sourceRunId;
-  }else{
-    if(!externalId||overrides.regenerateExternalId===true)externalId=mintClientSimulatorExternalId();
-    const claimedExternal=await db.query("INSERT INTO autosnap_external_ids (environment_id,external_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING external_id",[provider.id,externalId,externalDay]);
-    if(!claimedExternal.length)throw {error:"X-EXTERNAL-ID sudah dipakai pada hari ini. Buat pengujian baru agar ID tidak bertabrakan.",status:409};
+    externalId=mintClientSimulatorExternalId();
+  }else if(!externalId||overrides.regenerateExternalId===true){
+    externalId=mintClientSimulatorExternalId();
   }
+  const claimedExternal=await db.query("INSERT INTO autosnap_external_ids (environment_id,external_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING external_id",[provider.id,externalId,externalDay]);
+  if(!claimedExternal.length)throw {error:"X-EXTERNAL-ID sudah dipakai pada hari ini. Buat pengujian baru agar ID tidak bertabrakan.",status:409};
 
   const bodyText=typeof overrides.body==="string"?overrides.body:typeof service.data.defaultBody==="string"?service.data.defaultBody:typeof service.data.requestBody==="string"?String(service.data.requestBody):"{}";
   if(bodyText.includes("replaced_in_prescript"))throw {error:"Request body masih berisi replaced_in_prescript. Di koleksi SNAP Batubara: partnerServiceId dan prefix_real = 9296, additionalInfo.clientid = 51.",status:400};
@@ -239,19 +235,20 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const started=Date.now();
   let durable=false;
   let dispatch:"NOT_SENT"|"SEND_STARTED"="NOT_SENT";
+  let baselinePhase:string|null=duplicateReuse?"BASELINE_NOT_SENT":null;
   const identity={providerId:provider.id,providerName,serviceId:service.id,serviceName:registeredServiceName,scenarioId:scenario.id,scenarioName,aspiServiceName};
   const evaluationPolicy={expectedHttp,expectedCode,expectedMessage,mutation:scenario.mutation};
   try{
   await db.query(
     `INSERT INTO autosnap_runs (id,operator_id,client_id,project_id,environment_id,user_id,service_id,endpoint_id,scenario_id,mode,status,http_status,response_code,expected_code,duration_ms,request_json,response_json,notes,created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19)`,
-    [runId,operator.id,provider.id,provider.id,provider.id,snapUser.id,service.id,provider.id,scenario.id,"client_sim","RUNNING",null,null,expectedCode,0,JSON.stringify({mode:"client_sim",progressId:typeof input.progressId==="string"?input.progressId:null,activityName,aspiServiceName,scenarioId:scenario.id,scenarioName,identity,evaluationPolicy,scenario:{id:scenario.id,label:scenario.label,mutation:scenario.mutation,mutationApplied:false,sourceRunId},dispatch,idempotency:{externalId,serviceId:service.id,partnerId,timestamp},body:redact(JSON.parse(minified||"{}")),operator:{id:operator.id,name:operator.name,username:operator.username,role:operator.role}}),JSON.stringify({}),`${activityName}. Send belum dikirim.`,openedAt]
+    [runId,operator.id,provider.id,provider.id,provider.id,snapUser.id,service.id,provider.id,scenario.id,"client_sim","RUNNING",null,null,expectedCode,0,JSON.stringify({mode:"client_sim",progressId:typeof input.progressId==="string"?input.progressId:null,activityName,aspiServiceName,scenarioId:scenario.id,scenarioName,identity,evaluationPolicy,scenario:{id:scenario.id,label:scenario.label,mutation:scenario.mutation,mutationApplied:false},dispatch,baselinePhase:duplicateReuse?"BASELINE_NOT_SENT":null,aspiPhase:"ASPI_NOT_SENT",idempotency:{externalId,serviceId:service.id,partnerId,timestamp},body:redact(JSON.parse(minified||"{}")),operator:{id:operator.id,name:operator.name,username:operator.username,role:operator.role}}),JSON.stringify({}),`${activityName}. Send belum dikirim.`,openedAt]
   );
   durable=true;
 
   await cancelled();
   await report("signature_auth","running",accessViaAspi?`${aspiServiceName} — Signature Authentication lewat halaman Keamanan ASPI`:`${aspiServiceName} — Signature Access Token ${accessMode}`);
-  const accessSign=await resolveAccessTokenSignature(provider,accessMode,clientKey,timestamp,signer);
+  const accessSign=await resolveAccessTokenSignature(provider,accessMode,clientId,timestamp,signer);
   steps.push({stage:"signature_access_token",mode:accessSign.mode,httpStatus:accessSign.httpStatus,response:accessSign.response,ok:true});
   await report("signature_auth","completed",`Signature Access Token ${accessSign.mode}`);
 
@@ -259,7 +256,7 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   const tokenPath=normalizeEndpointPath(value(provider,"accessTokenUrl")||"/api/v1.0/access-token/b2b",baseUrl);
   const tokenUrl=joinUrl(baseUrl,tokenPath);
   if(accessMode!=="NONE"||value(provider,"accessTokenUrl")){
-    const tokenHeaders:Record<string,string>={"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientKey};
+    const tokenHeaders:Record<string,string>={"Content-Type":"application/json","X-TIMESTAMP":timestamp,"X-CLIENT-KEY":clientId};
     if(accessSign.signature)tokenHeaders["X-SIGNATURE"]=accessSign.signature;
     const tokenPayload={grantType:"client_credentials",additionalInfo:{}};
     const tokenBody=JSON.stringify(tokenPayload);
@@ -303,45 +300,37 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
 
   let aspiTimestamp=timestamp;
   if(duplicateReuse){
-    // Honest double-hit: lock the External ID at the bank first (not via ASPI), then resend the same ID through ASPI.
-    await report("signature_service","running",`${method} ${relative} — signature untuk seed External ID ke bank`);
-    const seedSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:accessToken,body:signedBody,timestamp},signer);
-    steps.push({stage:"signature_service",mode:seedSign.mode,httpStatus:seedSign.httpStatus,response:seedSign.response,ok:true,purpose:"duplicate_seed"});
-    if(!seedSign.signature)throw {error:"X-SIGNATURE kosong untuk seed External ID. Isi Client Secret dengan mode FUNCTION, atau URL signature HIT_API.",status:400};
-    await report("signature_service","completed",`Signature Service ${seedSign.mode} — seed`);
-    const seedHeaders=buildServiceHeaders(timestamp,seedSign.signature,accessToken,partnerId);
+    await report("signature_service","running",`${method} ${relative} — signature baseline langsung ke bank`);
+    const baselineSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:accessToken,body:signedBody,timestamp},signer);
+    steps.push({stage:"signature_service",mode:baselineSign.mode,httpStatus:baselineSign.httpStatus,response:baselineSign.response,ok:true,purpose:"duplicate_baseline"});
+    if(!baselineSign.signature)throw {error:"X-SIGNATURE kosong untuk baseline External ID. Isi Client Secret dengan mode FUNCTION, atau URL signature HIT_API.",status:400};
+    await report("signature_service","completed",`Signature Service ${baselineSign.mode} — baseline`);
+    const baselineHeaders=buildServiceHeaders(timestamp,baselineSign.signature,accessToken,partnerId);
     await cancelled();
-    await report("api_request","running",`${serviceUrl} — hit #1 seed X-EXTERNAL-ID ${externalId} (sama dengan run ${sourceRunId})`);
-    const seedResult=await httpJson(serviceUrl,method,seedHeaders,method==="GET"||method==="HEAD"?undefined:signedBody);
-    const seedBody=seedResult.body&&typeof seedResult.body==="object"&&!Array.isArray(seedResult.body)?seedResult.body as Record<string,unknown>:{};
-    const seedCode=String(seedBody.responseCode??"");
-    const seedOk=bankAcceptedDuplicateSeed(seedResult.httpStatus,seedCode);
-    const seedAlreadyConflict=bankRejectedDuplicateExternalId(seedResult.httpStatus,seedCode);
-    steps.push({stage:"duplicate_seed",uri:serviceUrl,httpStatus:seedResult.httpStatus,responseCode:seedCode,responseMessage:String(seedBody.responseMessage??""),externalId,sourceRunId,request:{headers:redact(seedHeaders),body:redact(JSON.parse(signedBody||"{}"))},response:redact(seedResult.body),ok:seedOk,alreadyConflict:seedAlreadyConflict});
-    if(!seedOk){
-      await report("api_request","failed",`Seed External ID gagal HTTP ${seedResult.httpStatus}${seedCode?` ${seedCode}`:""}`);
-      throw {error:`${DUPLICATE_EXTERNAL_ID_SEED_FAILED} HTTP ${seedResult.httpStatus}${seedCode?` ${seedCode}`:""}${seedBody.responseMessage?`: ${String(seedBody.responseMessage)}`:""}.`,status:502};
+    baselinePhase="BASELINE_SEND_STARTED";
+    await db.query("UPDATE autosnap_runs SET notes=$1, request_json=request_json || $2::jsonb WHERE id=$3",[`${activityName}. Baseline External ID sedang dikirim langsung ke bank.`,JSON.stringify({baselinePhase,idempotency:{externalId,serviceId:service.id,partnerId,timestamp}}),runId]);
+    await report("api_request","running",`${serviceUrl} — baseline bank X-EXTERNAL-ID ${externalId}`);
+    let baselineResult:{httpStatus:number;body:unknown};
+    try{
+      baselineResult=await httpJson(serviceUrl,method,baselineHeaders,method==="GET"||method==="HEAD"?undefined:signedBody);
+    }catch(error){
+      baselinePhase="BASELINE_UNKNOWN";
+      await db.query("UPDATE autosnap_runs SET status=$1, notes=$2, request_json=request_json || $3::jsonb WHERE id=$4",["AUTOMATION_ERROR",`${activityName}. Baseline External ID status tidak pasti setelah pengiriman dimulai.`,JSON.stringify({baselinePhase,outcome:"AUTOMATION_ERROR"}),runId]).catch(()=>undefined);
+      throw error;
     }
-    if(!seedAlreadyConflict){
-      // Prove the bank actually rejects this same External ID before opening ASPI.
-      const proveTimestamp=ensureFutureTimestamp(tsConfig,undefined,"positive",new Date(Date.now()+30_000));
-      const proveSign=await resolveServiceSignature(provider,serviceMode,{method,relative,token:accessToken,body:signedBody,timestamp:proveTimestamp},signer);
-      if(!proveSign.signature)throw {error:"X-SIGNATURE kosong untuk verifikasi duplikat External ID.",status:400};
-      const proveHeaders=buildServiceHeaders(proveTimestamp,proveSign.signature,accessToken,partnerId);
-      await report("api_request","running",`${serviceUrl} — verifikasi hit langsung #2 dengan X-EXTERNAL-ID ${externalId} yang sama`);
-      const proveResult=await httpJson(serviceUrl,method,proveHeaders,method==="GET"||method==="HEAD"?undefined:signedBody);
-      const proveBody=proveResult.body&&typeof proveResult.body==="object"&&!Array.isArray(proveResult.body)?proveResult.body as Record<string,unknown>:{};
-      const proveCode=String(proveBody.responseCode??"");
-      const proved=bankRejectedDuplicateExternalId(proveResult.httpStatus,proveCode);
-      steps.push({stage:"duplicate_prove",uri:serviceUrl,httpStatus:proveResult.httpStatus,responseCode:proveCode,responseMessage:String(proveBody.responseMessage??""),externalId,request:{headers:redact(proveHeaders)},response:redact(proveResult.body),ok:proved});
-      if(!proved){
-        await report("api_request","failed",`Bank masih HTTP ${proveResult.httpStatus}${proveCode?` ${proveCode}`:""} untuk External ID yang sama`);
-        throw {error:`${DUPLICATE_EXTERNAL_ID_NOT_ENFORCED} Seed External ID=${externalId}. Verifikasi langsung External ID=${externalId}. HTTP ${proveResult.httpStatus}${proveCode?` ${proveCode}`:""}.`,status:502};
-      }
-      await report("api_request","completed",`Verifikasi langsung mendapat HTTP ${proveResult.httpStatus}${proveCode?` ${proveCode}`:""}. Bank menolak External ID yang sama.`);
-    }else{
-      await report("api_request","completed",`Seed sudah Conflict HTTP ${seedResult.httpStatus}${seedCode?` ${seedCode}`:""}. External ID ${externalId} sudah terkunci.`);
+    const baselineBody=baselineResult.body&&typeof baselineResult.body==="object"&&!Array.isArray(baselineResult.body)?baselineResult.body as Record<string,unknown>:{};
+    const baselineCode=String(baselineBody.responseCode??"");
+    const baselineOk=duplicateBaselineSucceeded(baselineResult.httpStatus,baselineCode,service.data);
+    steps.push({stage:"duplicate_baseline",uri:serviceUrl,httpStatus:baselineResult.httpStatus,responseCode:baselineCode,responseMessage:String(baselineBody.responseMessage??""),externalId,request:{headers:redact(baselineHeaders),body:redact(JSON.parse(signedBody||"{}"))},response:redact(baselineResult.body),ok:baselineOk});
+    if(!baselineOk){
+      baselinePhase="BASELINE_FAILED";
+      await db.query("UPDATE autosnap_runs SET status=$1, http_status=$2, response_code=$3, notes=$4, request_json=request_json || $5::jsonb WHERE id=$6",["FAILED",baselineResult.httpStatus,baselineCode||null,`${activityName}. ${DUPLICATE_BASELINE_FAILED}`,JSON.stringify({baselinePhase,steps}),runId]).catch(()=>undefined);
+      await report("api_request","failed",`Baseline gagal HTTP ${baselineResult.httpStatus}${baselineCode?` ${baselineCode}`:""}`);
+      throw {error:`${DUPLICATE_BASELINE_FAILED} HTTP ${baselineResult.httpStatus}${baselineCode?` ${baselineCode}`:""}${baselineBody.responseMessage?`: ${String(baselineBody.responseMessage)}`:""}.`,status:502};
     }
+    baselinePhase="BASELINE_SUCCEEDED";
+    await db.query("UPDATE autosnap_runs SET notes=$1, request_json=request_json || $2::jsonb WHERE id=$3",[`${activityName}. Baseline sukses. External ID terkunci di bank.`,JSON.stringify({baselinePhase,steps}),runId]);
+    await report("api_request","completed",`Baseline HTTP ${baselineResult.httpStatus}${baselineCode?` ${baselineCode}`:""}. External ID ${externalId} terkunci.`);
     aspiTimestamp=ensureFutureTimestamp(tsConfig,undefined,"positive",new Date(Date.now()+60_000));
   }
 
@@ -363,14 +352,15 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     sentSignature=getXSignatureServiceFunction(secret,method,relative,sentToken,signedBody,aspiTimestamp,encodingOf(provider.data.hmacEncoding,"hex"));
   }else if(scenario.mutation==="SIGNATURE")sentSignature=corruptSignature(serviceSign.signature);
   const sentPartner=scenario.mutation==="PARTNER_ID"?unknownPartnerId(partnerId,String(service.data.unknownPartnerId??"")):partnerId;
-  steps.push({stage:"scenario_mutation",mutation:scenario.mutation,applied:true,sourceRunId,remoteSigningProtected:scenario.mutation==="ACCESS_TOKEN"&&remoteSigning,duplicateSeed:duplicateReuse});
+  steps.push({stage:"scenario_mutation",mutation:scenario.mutation,applied:true,remoteSigningProtected:scenario.mutation==="ACCESS_TOKEN"&&remoteSigning,duplicateBaseline:duplicateReuse});
   if(!gateway)throw {error:"Sesi portal ASPI tidak tersedia pada server ini.",status:500};
 
   const serviceHeaders=buildServiceHeaders(aspiTimestamp,sentSignature,sentToken,sentPartner);
   await cancelled();
   dispatch="SEND_STARTED";
-  await db.query("UPDATE autosnap_runs SET notes=$1, request_json=jsonb_set(request_json,'{dispatch}',$2::jsonb,true) WHERE id=$3",[`${activityName}. Send sudah dimulai. Jika proses terputus, transaksi mungkin sudah terkirim dan tidak boleh dikirim ulang.`,JSON.stringify("SEND_STARTED"),runId]);
-  await report("api_request","running",duplicateReuse?`${aspiServiceName} — kirim ulang X-EXTERNAL-ID yang sama lewat ASPI (hasil error yang dievaluasi)`:`${aspiServiceName} — mengisi form ASPI lalu menunggu Download.`);
+  const aspiPhase="ASPI_SEND_STARTED";
+  await db.query("UPDATE autosnap_runs SET notes=$1, request_json=request_json || $2::jsonb WHERE id=$3",[`${activityName}. Send ASPI sudah dimulai. Jika proses terputus, transaksi mungkin sudah terkirim dan tidak boleh dikirim ulang.`,JSON.stringify({dispatch,aspiPhase,baselinePhase}),runId]);
+  await report("api_request","running",duplicateReuse?`${aspiServiceName} — request kedua External ID sama lewat ASPI`:`${aspiServiceName} — mengisi form ASPI lalu menunggu Download.`);
   const portal=await gateway.submit(snapUser,{
     serviceName:aspiServiceName,
     uri:serviceUrl,
@@ -384,19 +374,19 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     body:signedBody,
     authorization:sentToken?`Bearer ${sentToken}`:undefined,
     deviceId:deviceId||undefined,
-    clientKey:clientKey||undefined,
+    clientKey:clientId||undefined,
     origin:origin||undefined,
     ipAddress:ipAddress||undefined,
     latitude:latitude||undefined,
     longitude:longitude||undefined,
   });
-  steps.push({stage:"aspi_client_simulator",form:"https://apidevportal.aspi-indonesia.or.id/client-simulator",activityPage:"https://apidevportal.aspi-indonesia.or.id/client-simulator-activity",externalId,duplicateSeed:duplicateReuse});
+  steps.push({stage:"aspi_client_simulator",form:"https://apidevportal.aspi-indonesia.or.id/client-simulator",activityPage:"https://apidevportal.aspi-indonesia.or.id/client-simulator-activity",externalId,duplicateBaseline:duplicateReuse});
   steps.push(...portal.steps.map(step=>redact(step) as Record<string,unknown>));
   if(duplicateReuse){
     const aspiSend=portal.steps.find(step=>step&&typeof step==="object"&&(step as {stage?:string}).stage==="aspi_send") as {sentExternalId?:string;formExternalId?:string;expectedExternalId?:string}|undefined;
     const sent=String(aspiSend?.sentExternalId??aspiSend?.formExternalId??"").trim();
     if(sent&&sent!==externalId){
-      throw {error:`${DUPLICATE_EXTERNAL_ID_ASPI_MISMATCH} Seed/sumber=${externalId}. Form/ASPI=${sent}.`,status:502};
+      throw {error:`${DUPLICATE_EXTERNAL_ID_ASPI_MISMATCH} Baseline=${externalId}. Form/ASPI=${sent}.`,status:502};
     }
     if(!sent){
       steps.push({stage:"duplicate_aspi_warning",externalId,detail:"Playwright tidak menangkap header X-EXTERNAL-ID outbound; nilai form tetap diverifikasi saat pengisian."});
@@ -429,14 +419,17 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
     snapUser:{id:snapUser.id,name:snapUser.name},
     scenarioId:scenario.id,
     scenarioName,
-    scenario:{id:scenario.id,label:scenario.label,mutation:scenario.mutation,mutationApplied:true,sourceRunId},
+    scenario:{id:scenario.id,label:scenario.label,mutation:scenario.mutation,mutationApplied:true},
     identity,
     evaluationPolicy,
     actual:{httpStatus,responseCode,responseMessage,httpSource},
     timestamp:aspiTimestamp,
     headers:redact(serviceHeaders),
     dispatch:"SENT",
-    idempotency:{externalId,serviceId:service.id,partnerId,timestamp:aspiTimestamp,seedTimestamp:duplicateReuse?timestamp:undefined},
+    baselinePhase,
+    aspiPhase:"ASPI_SENT",
+    idempotency:{externalId,serviceId:service.id,partnerId,timestamp:aspiTimestamp,baselineTimestamp:duplicateReuse?timestamp:undefined},
+    baseline:duplicateReuse?steps.find(step=>step.stage==="duplicate_baseline")??null:null,
     body:redact(JSON.parse(signedBody)),
     uris:{accessToken:tokenUrl,service:serviceUrl,form:"https://apidevportal.aspi-indonesia.or.id/client-simulator",activity:"https://apidevportal.aspi-indonesia.or.id/client-simulator-activity"},
     steps,
@@ -497,8 +490,12 @@ export async function runClientSimulator(db:DatabaseService,records:RecordRow[],
   }catch(error){
     const message=error instanceof Error?error.message:error&&typeof error==="object"&&"error" in error?String((error as {error:unknown}).error):"Client Simulator gagal.";
     if(durable){
-      const outcome=clientSimulatorDispatchOutcome(dispatch,signal?.aborted===true);
-      await db.query("UPDATE autosnap_runs SET status=$1, notes=$2, duration_ms=$3, request_json=request_json || $4::jsonb WHERE id=$5",[outcome,message,Date.now()-started,JSON.stringify({dispatch,outcome}),runId]).catch(()=>undefined);
+      if(baselinePhase==="BASELINE_FAILED"||baselinePhase==="BASELINE_UNKNOWN"){
+        await db.query("UPDATE autosnap_runs SET notes=$1, duration_ms=$2, request_json=request_json || $3::jsonb WHERE id=$4",[message,Date.now()-started,JSON.stringify({baselinePhase,dispatch}),runId]).catch(()=>undefined);
+      }else{
+        const outcome=clientSimulatorDispatchOutcome(dispatch,signal?.aborted===true);
+        await db.query("UPDATE autosnap_runs SET status=$1, notes=$2, duration_ms=$3, request_json=request_json || $4::jsonb WHERE id=$5",[outcome,message,Date.now()-started,JSON.stringify({dispatch,outcome,baselinePhase}),runId]).catch(()=>undefined);
+      }
     }
     await onProgress?.(stage,"failed",message).catch(()=>undefined);
     throw error;

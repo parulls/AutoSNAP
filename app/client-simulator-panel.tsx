@@ -62,7 +62,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     const offset=Number(cfg.offsetMinutes??420);
     setIncludeMillis(millis);
     setTimestamp(()=>buildTimestamp(offset,millis,new Date(Date.now()+120_000)));
-    setPartnerId(value(s,"partnerId")||value(p,"partnerId")||value(p,"clientKey")||value(p,"clientId"));
+    setPartnerId(value(s,"partnerId")||value(p,"partnerId"));
     setExternalId(value(s,"externalId"));
     setDeviceId(value(s,"deviceId")||value(p,"deviceId"));
     setChannelId(value(s,"channelId")||value(p,"channelId"));
@@ -87,7 +87,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     if(!snapUserId){setError("Pilih User SNAP untuk login ke form Client Simulator ASPI.");return;}
     const chosen=clientSimulatorScenario(scenarioId);
     if(!chosen){setError("Pilih skenario pengujian terlebih dahulu.");return;}
-    if(chosen.id==="DUPLICATE_EXTERNAL_ID"&&!confirmDuplicate){setError("Konfirmasi diperlukan sebelum seed External ID ke bank dan uji duplikat lewat ASPI.");return;}
+    if(chosen.id==="DUPLICATE_EXTERNAL_ID"&&!confirmDuplicate){setError("Konfirmasi diperlukan sebelum baseline bank dan uji duplikat lewat ASPI.");return;}
     try{buildClientSimulatorServiceName(provider.name,service.name,chosen.label);}catch(error){setError(thrownMessage(error));return;}
     if(!channelId.trim()){setError("CHANNEL-ID wajib diisi. Form ASPI mengirim header ini.");return;}
     const progressId=crypto.randomUUID();
@@ -207,12 +207,12 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
             <small className="helper">Bank Sumut menolak jam yang tidak di depan servernya. Timestamp yang terlalu dekat dengan waktu sekarang dikirim sebagai sekarang + 2 menit.</small>
           </div>
           <label className="form-field"><span>X-PARTNER-ID</span><input disabled={running} value={partnerId} onChange={e=>setPartnerId(e.target.value)}/></label>
-          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={running||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Dari pengujian sebelumnya (tidak digenerate ulang)":externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis"/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">ID diambil dari pengujian sukses sebelumnya hari ini, lalu dikirim dua kali apa adanya (seed bank + ASPI) tanpa digenerate ulang. Hanya respons error ASPI yang dievaluasi.</small>}</label>
+          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={running||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Dibuat otomatis saat dijalankan":externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis"/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">AutoSNAP membuat External ID baru, mengunci ke bank dengan satu request baseline langsung, lalu mengirim ID yang sama lewat ASPI. Hasil pengujian adalah respons ASPI.</small>}</label>
           <label className="form-field"><span>X-DEVICE-ID</span><input disabled={running} value={deviceId} onChange={e=>setDeviceId(e.target.value)}/></label>
           <label className="form-field"><span>CHANNEL-ID</span><input disabled={running} value={channelId} onChange={e=>setChannelId(e.target.value)}/></label>
           <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={10} spellCheck={false} disabled={running} value={body} onChange={e=>setBody(e.target.value)}/><small className="helper">Diisi dari Request Body API Service {service.name}. Perubahan di sini hanya untuk pengujian kali ini. URI yang diisi: {serviceUri}.</small></label>
         </div>
-        {scenarioId==="DUPLICATE_EXTERNAL_ID"&&<label className="check-row wide"><input type="checkbox" checked={confirmDuplicate} disabled={running} onChange={e=>setConfirmDuplicate(e.target.checked)}/><span>Konfirmasi<small className="helper">Skenario ini memakai X-EXTERNAL-ID pengujian sebelumnya dan mengirim header itu dua kali (seed bank + ASPI).</small></span></label>}
+        {scenarioId==="DUPLICATE_EXTERNAL_ID"&&<label className="check-row wide"><input type="checkbox" checked={confirmDuplicate} disabled={running} onChange={e=>setConfirmDuplicate(e.target.checked)}/><span>Konfirmasi<small className="helper">Skenario ini mengirim satu baseline langsung ke bank lalu satu request duplikat lewat ASPI dengan External ID yang sama.</small></span></label>}
         {(scenarioId==="INVALID_ACCESS_TOKEN"||scenarioId==="INVALID_SIGNATURE"||scenarioId==="UNKNOWN_CLIENT")&&<p className="helper">Perubahan hanya terjadi pada request API Service. Kredensial Master Data dan token asli tidak ditampilkan.</p>}
         <div className="form-actions"><button type="button" className="secondary-button" disabled={running} onClick={resetRequest}>Reset Form</button><button className="primary-button" disabled={busy}>{busy?"Menjalankan...":"Jalankan Client Simulator"}</button></div>
       </>}
@@ -259,6 +259,19 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       <EvaluationNotice run={selectedRun}/>
       <p className="helper">Nama Skenario: {String(object(selectedRun.request)?selectedRun.request.scenarioName??"—":"—")}</p>
       <p className="helper">Service Name ASPI: {String(object(selectedRun.request)?selectedRun.request.aspiServiceName??selectedRun.request.activityName??"—":"—")}</p>
+      {(()=>{
+        const request=object(selectedRun.request)?selectedRun.request:null;
+        const external=request&&object(request.idempotency)?String(request.idempotency.externalId??""):"";
+        const baseline=request&&object(request.baseline)?request.baseline:request&&Array.isArray(request.steps)?request.steps.find(step=>object(step)&&(step.stage==="duplicate_baseline"||step.stage==="duplicate_seed")):null;
+        const baselineHttp=object(baseline)?baseline.httpStatus:null;
+        const baselineCode=object(baseline)?String(baseline.responseCode??""):"";
+        if(!external&&!baseline)return null;
+        return <>
+          {external?<p className="helper">X-EXTERNAL-ID bersama: {external}</p>:null}
+          {baseline?<p className="helper">Baseline bank: HTTP {baselineHttp==null?"—":String(baselineHttp)}{baselineCode?` · ${baselineCode}`:""}{request?.baselinePhase?` · ${String(request.baselinePhase)}`:""}</p>:null}
+          <p className="helper">Hasil ASPI (dievaluasi): HTTP {selectedRun.http_status??"—"}{selectedRun.response_code?` · ${selectedRun.response_code}`:""}</p>
+        </>;
+      })()}
       <p className="helper">PDF ASPI: {countsOf(selectedRun).ready}/{countsOf(selectedRun).required||0}{countsOf(selectedRun).required>countsOf(selectedRun).ready?" · bukti belum lengkap":""}</p>
       {(()=>{const request=object(selectedRun.request)?selectedRun.request:null;const errors=request&&Array.isArray(request.evidenceErrors)?request.evidenceErrors:[];if(!errors.length)return null;return <div className="validation-box"><strong>Bukti yang belum tersedia</strong><p>{errors.map(item=>typeof item==="string"?item:object(item)?String(item.error??""):"").filter(Boolean).join(" · ")}</p></div>;})()}
       <div className="inline-actions">{pendingEvidence(selectedRun).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={running||!!reprocessingId} onClick={()=>void retryEvidence(selectedRun,item.activityId)}>{reprocessingId===`${selectedRun.id}:${item.activityId}`?"Mengambil bukti...":`Proses Ulang Bukti ${item.activityId.slice(0,8)}`}</button>)}{pdfsOf(selectedRun).filter(item=>item.pdfReady&&officialActivity(item.activityId)).map(item=><button type="button" className="secondary-button" key={item.activityId} disabled={!!downloadingId} onClick={()=>setPreview({runId:selectedRun.id,activityId:item.activityId,fileName:item.fileName})}>View PDF</button>)}</div>

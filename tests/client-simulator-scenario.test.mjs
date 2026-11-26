@@ -53,7 +53,7 @@ test("scenario name is rebuilt from database records and does not send a new tra
   const now = new Date().toISOString();
   const provider = {
     id: "prov", kind: "sim_provider", name: "Bank SUMUT", parent_id: null, partner_id: null, created_at: now, updated_at: now,
-    data: { baseUrl: "https://dev.banksumut.co.id", clientKey: "client-key", clientSecret: encrypt("secret"), signatureAccessTokenMode: "NONE", signatureServiceMode: "FUNCTION", hmacEncoding: "base64", channelId: "0001", deviceId: "device-1", timestampConfig: { offsetMinutes: 420, includeMillis: false } },
+    data: { baseUrl: "https://dev.banksumut.co.id", clientId: "client-id-1", partnerId: "9296", clientSecret: encrypt("secret"), signatureAccessTokenMode: "NONE", signatureServiceMode: "FUNCTION", hmacEncoding: "base64", channelId: "0001", deviceId: "device-1", timestampConfig: { offsetMinutes: 420, includeMillis: false } },
   };
   const service = {
     id: "svc", kind: "sim_service", name: "Create VA", parent_id: "prov", partner_id: null, created_at: now, updated_at: now,
@@ -101,7 +101,7 @@ test("a crash after Send starts does not submit the transaction again", async ()
   const now = new Date().toISOString();
   const provider = {
     id: "prov", kind: "sim_provider", name: "Bank SUMUT", parent_id: null, partner_id: null, created_at: now, updated_at: now,
-    data: { baseUrl: "https://dev.banksumut.co.id", clientKey: "client-key", clientSecret: encrypt("secret"), signatureAccessTokenMode: "NONE", signatureServiceMode: "FUNCTION", hmacEncoding: "base64", channelId: "0001", deviceId: "device-1", timestampConfig: { offsetMinutes: 420, includeMillis: false } },
+    data: { baseUrl: "https://dev.banksumut.co.id", clientId: "client-id-1", partnerId: "9296", clientSecret: encrypt("secret"), signatureAccessTokenMode: "NONE", signatureServiceMode: "FUNCTION", hmacEncoding: "base64", channelId: "0001", deviceId: "device-1", timestampConfig: { offsetMinutes: 420, includeMillis: false } },
   };
   const service = {
     id: "svc", kind: "sim_service", name: "Create VA", parent_id: "prov", partner_id: null, created_at: now, updated_at: now,

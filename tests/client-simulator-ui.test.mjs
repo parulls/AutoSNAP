@@ -29,8 +29,8 @@ test("client simulator uses a scenario name and API services live in master data
     const now = new Date().toISOString();
     const records = [
       { id: "snap", kind: "snap_user", name: "QA SNAP", parentId: null, partnerId: null, data: { email: "qa@example.test", displayUsername: "ulitesting" }, createdAt: now, updatedAt: now },
-      { id: "prov", kind: "sim_provider", name: "Bank SUMUT", parentId: null, partnerId: null, data: { baseUrl: "https://dev.banksumut.co.id", clientKey: "key", channelId: "0001", deviceId: "device-1", signatureAccessTokenMode: "FUNCTION", signatureServiceMode: "FUNCTION" }, createdAt: now, updatedAt: now },
-      { id: "other", kind: "sim_provider", name: "Bank ABC", parentId: null, partnerId: null, data: { baseUrl: "https://example.test", clientKey: "key" }, createdAt: now, updatedAt: now },
+      { id: "prov", kind: "sim_provider", name: "Bank SUMUT", parentId: null, partnerId: null, data: { baseUrl: "https://dev.banksumut.co.id", clientId: "key", partnerId: "9296", channelId: "0001", deviceId: "device-1", signatureAccessTokenMode: "FUNCTION", signatureServiceMode: "FUNCTION" }, createdAt: now, updatedAt: now },
+      { id: "other", kind: "sim_provider", name: "Bank ABC", parentId: null, partnerId: null, data: { baseUrl: "https://example.test", clientId: "key", partnerId: "9296" }, createdAt: now, updatedAt: now },
     ];
     let saved;
     let releaseRun = () => {};
@@ -117,7 +117,7 @@ test("client simulator uses a scenario name and API services live in master data
     await page.getByRole("region", { name: "Expected Result" }).getByText("Access Token Invalid", { exact: true }).waitFor();
     await page.screenshot({ path: join(tmpdir(), "autosnap-client-sim-desktop.png"), fullPage: true });
     await page.getByLabel("Skenario Pengujian").selectOption("DUPLICATE_EXTERNAL_ID");
-    await page.getByText("Skenario ini memakai X-EXTERNAL-ID pengujian sebelumnya dan mengirim header itu dua kali (seed bank + ASPI).").waitFor();
+    await page.getByText("Skenario ini mengirim satu baseline langsung ke bank lalu satu request duplikat lewat ASPI dengan External ID yang sama.").waitFor();
     await page.getByRole("button", { name: "Reset Form", exact: true }).click();
     assert.equal(await page.getByLabel("Skenario Pengujian").inputValue(), "");
     assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "");
