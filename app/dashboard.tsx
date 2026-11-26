@@ -20,7 +20,6 @@ type MetricCard = {
   target?: Target;
   status?: string;
   filterStatus?: string;
-  badge?: string;
 };
 
 function statusClass(status: string) {
@@ -82,12 +81,12 @@ export default function Dashboard({
   const cards: MetricCard[] = [
     { label: "Dev Site diuji", value: dev, target: "Dev Site Client" },
     { label: "Simulator diuji", value: simulator, target: "Client Simulator" },
-    { label: "PASSED", value: passed, status: "passed", badge: "PASSED", filterStatus: "PASSED" },
-    { label: "FAILED", value: failed, status: "failed", badge: "FAILED", filterStatus: "FAILED" },
-    { label: "COMPLETED", value: completed, status: "completed", badge: "COMPLETED", filterStatus: "COMPLETED" },
-    { label: "AUTOMATION / VALIDATION ERROR", value: errors, status: "automation_error", badge: "ERROR", filterStatus: "ERROR" },
-    { label: "CANCELLED", value: cancelled, status: "cancelled", badge: "CANCELLED", filterStatus: "CANCELLED" },
-    { label: "RUNNING", value: running, status: "running", badge: "RUNNING", filterStatus: "RUNNING" },
+    { label: "PASSED", value: passed, status: "passed", filterStatus: "PASSED" },
+    { label: "FAILED", value: failed, status: "failed", filterStatus: "FAILED" },
+    { label: "COMPLETED", value: completed, status: "completed", filterStatus: "COMPLETED" },
+    { label: "AUTOMATION / VALIDATION ERROR", value: errors, status: "automation_error", filterStatus: "ERROR" },
+    { label: "CANCELLED", value: cancelled, status: "cancelled", filterStatus: "CANCELLED" },
+    { label: "RUNNING", value: running, status: "running", filterStatus: "RUNNING" },
   ];
 
   function applyStatusFilter(status: string) {
@@ -148,13 +147,8 @@ export default function Dashboard({
           const active = card.filterStatus != null && filters.status === card.filterStatus;
           const content = (
             <>
-              <span>{card.label}</span>
+              <span className={card.status ? `metric-label ${statusClass(card.status)}` : undefined}>{card.label}</span>
               <strong>{card.value}</strong>
-              {card.badge && (
-                <span className={`status-badge ${statusClass(card.status ?? "")}`}>
-                  {card.badge}
-                </span>
-              )}
             </>
           );
 
