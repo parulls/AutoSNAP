@@ -520,7 +520,7 @@ export class PortalEngine{
       return await collectActivityPdfs({
         before:input.before,paths:input.paths,operations:input.operations,knownActivities:input.knownActivities,activityNames:input.activityNames,deadline,signal:controller.signal,
         read:()=>this.activitiesInContext(session.page,deadline),
-        download:activity=>fetchOfficialPdf(downloadPage,activity.downloadUrl,deadline,"navigation"),
+        download:(activity,itemDeadline)=>fetchOfficialPdf(downloadPage,activity.downloadUrl,Math.min(deadline,itemDeadline),"navigation"),
         report,onResult:input.onEvidence
       });
     }catch(cause){

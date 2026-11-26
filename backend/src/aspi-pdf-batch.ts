@@ -12,22 +12,36 @@ type BatchInput={
   deadline:number;
   signal?:AbortSignal;
   read:()=>Promise<AspiActivity[]>;
-  download:(activity:AspiActivity)=>Promise<Buffer>;
+  download:(activity:AspiActivity,itemDeadline:number)=>Promise<Buffer>;
   report:(status:"running"|"completed"|"failed",detail:string)=>Promise<void>;
   onResult?:(result:PdfEvidence)=>Promise<void>;
 };
 
 function downloadError(error:unknown){
   const message=error instanceof Error?error.message:"";
-  if(message.includes("ASPI_REPORT_TIMEOUT_headers"))return "DOWNLOAD_TIMEOUT: Timeout menunggu HTTP headers laporan ASPI.";
+  if(/^ACTIVITY_NOT_FOUND\b/.test(message))return message.slice(0,220);
+  if(/^DOWNLOAD_LINK_NOT_FOUND\b/.test(message))return message.slice(0,220);
+  if(/^POPUP_NOT_DETECTED\b/.test(message))return message.slice(0,220);
+  if(/^DOWNLOAD_EVENT_TIMEOUT\b/.test(message))return message.slice(0,220);
+  if(/^ASPI_AUTH_EXPIRED\b/.test(message))return message.slice(0,220);
+  if(/^INVALID_PDF_RESPONSE\b/.test(message))return message.slice(0,220);
+  if(/^PDF_STORAGE_ERROR\b/.test(message))return message.slice(0,220);
+  if(message.includes("ASPI_REPORT_TIMEOUT_headers"))return "DOWNLOAD_EVENT_TIMEOUT: Timeout menunggu HTTP headers laporan ASPI.";
   const bodyStatus=/ASPI_REPORT_TIMEOUT_body_http_(\d{3})/.exec(message)?.[1];
-  if(bodyStatus)return `DOWNLOAD_TIMEOUT: HTTP ${bodyStatus} diterima, tetapi isi laporan ASPI timeout.`;
-  if(/HTTP (\d{3})/.test(message))return `DOWNLOAD_HTTP_ERROR: ${/HTTP \d{3}/.exec(message)?.[0]}`;
-  if(/timeout|batas waktu|AbortError/i.test(message))return "DOWNLOAD_TIMEOUT: Batas waktu download PDF terlewati";
+  if(bodyStatus)return `DOWNLOAD_EVENT_TIMEOUT: HTTP ${bodyStatus} diterima, tetapi isi laporan ASPI timeout.`;
+  if(/HTTP (\d{3})/.test(message))return `INVALID_PDF_RESPONSE: ${/HTTP \d{3}/.exec(message)?.[0]}`;
+  if(/timeout|batas waktu|AbortError/i.test(message))return "DOWNLOAD_EVENT_TIMEOUT: Batas waktu download PDF terlewati";
   if(/login|sesi/i.test(message))return "ASPI_AUTH_EXPIRED: Sesi ASPI tidak dapat membuka laporan";
+  if(/tidak ditemukan|Tombol Download/i.test(message))return `DOWNLOAD_LINK_NOT_FOUND: ${message.slice(0,180)}`;
   if(/HTML|bukan binary|%%EOF|%PDF-/i.test(message))return `INVALID_PDF_RESPONSE: ${message.slice(0,180)}`;
   if(/PDF|laporan/i.test(message))return `INVALID_PDF_RESPONSE: ${message.slice(0,180)}`;
-  return `DOWNLOAD_HTTP_ERROR: ${message.slice(0,180)||"Koneksi download PDF ASPI gagal"}`;
+  return `DOWNLOAD_EVENT_TIMEOUT: ${message.slice(0,180)||"Koneksi download PDF ASPI gagal"}`;
+}
+
+function shouldRetryDownload(error:string){
+  // Retry only when an alternate strategy or transient wait may help.
+  return /DOWNLOAD_EVENT_TIMEOUT|DOWNLOAD_LINK_NOT_FOUND|POPUP_NOT_DETECTED|batas waktu|Timeout/i.test(error)
+    && !/ASPI_AUTH_EXPIRED|INVALID_PDF_RESPONSE|ACTIVITY_NOT_FOUND|ACTIVITY_AMBIGUOUS|PDF_STORAGE_ERROR/i.test(error);
 }
 
 /** Read-only evidence phase. Never Execute an API again to obtain a missing PDF. */
@@ -88,11 +102,27 @@ export async function collectActivityPdfs(input:BatchInput):Promise<PdfEvidence[
       else{
         await input.report("running",`${path}: mengunduh PDF; Activity ID ${activity.activityId}.`);
         let error="";
+        let attempts=0;
+        // Fair share of remaining budget so one slow PDF cannot starve the rest.
+        const pending=paths.length-index;
+        const fairShare=Math.max(8000,Math.floor((deadline-Date.now())/Math.max(1,pending)));
+        const perAttempt=Math.min(pdfSettings().requestTimeoutMs,fairShare);
         for(let attempt=1;attempt<=2&&active();attempt++){
-          try{results[index]={path,activity,pdf:await input.download(activity),attempts:attempt};break;}
-          catch(cause){error=downloadError(cause);await input.report("failed",`${path}: ${error} (percobaan ${attempt}/2).`);}
+          const slice=Math.min(perAttempt,Math.max(5000,deadline-Date.now()-1000));
+          if(slice<5000){error=stopped();break;}
+          attempts=attempt;
+          const itemDeadline=Date.now()+slice;
+          try{
+            results[index]={path,activity,pdf:await input.download(activity,itemDeadline),attempts};
+            break;
+          }catch(cause){
+            error=downloadError(cause);
+            await input.report("failed",`${path}: ${error} (percobaan ${attempt}/2).`);
+            if(attempt===1&&!shouldRetryDownload(error))break;
+            if(attempt===1&&active())await new Promise<void>(resolve=>setTimeout(resolve,400));
+          }
         }
-        results[index]??={path,activity,error:!active()?stopped():error,attempts:2};
+        results[index]??={path,activity,error:!active()?stopped():error,attempts};
       }
       const result=results[index];
       result.key=input.operations?.[index]?.key;

@@ -79,7 +79,7 @@ test("client simulator uses a scenario name and API services live in master data
     await page.getByRole("navigation").getByRole("button", { name: "Master Data", exact: true }).click();
     await page.getByRole("tab", { name: "API Service Client Simulator", exact: true }).click();
     await page.getByText("Belum ada API Service Client Simulator.", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "Tambah API Service Client Simulator", exact: true }).click();
+    await page.getByRole("button", { name: "Tambah", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("Penyedia Client Simulator").selectOption("prov");
     await dialog.getByText("https://dev.banksumut.co.id").waitFor();
@@ -106,7 +106,7 @@ test("client simulator uses a scenario name and API services live in master data
     await page.getByLabel("User SNAP").selectOption("snap");
     await page.getByLabel("Penyedia Client Simulator").selectOption("prov");
     await page.getByLabel("API Service").selectOption("svc");
-    await page.getByRole("button", { name: "Jalankan Client Simulator", exact: true }).click();
+    await page.getByRole("button", { name: "Jalankan Testing", exact: true }).click();
     await page.locator(".field-error", { hasText: "Pilih skenario pengujian terlebih dahulu." }).waitFor();
     await page.getByLabel("Skenario Pengujian").selectOption("POSITIVE");
     assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Positif");
@@ -135,21 +135,23 @@ test("client simulator uses a scenario name and API services live in master data
     await page.getByLabel("API Service").selectOption("svc");
     await page.getByLabel("Skenario Pengujian").selectOption("POSITIVE");
     assert.equal(await page.getByLabel("Service Name ASPI").inputValue(), "Bank SUMUT - Create VA Updated - Positif");
-    await page.getByRole("button", { name: "Jalankan Client Simulator", exact: true }).click();
+    await page.getByRole("button", { name: "Jalankan Testing", exact: true }).click();
     await page.getByRole("button", { name: "Cancel Testing", exact: true }).click();
     for (let i = 0; i < 30 && !cancelSeen; i++) await new Promise(resolve => setTimeout(resolve, 50));
     assert.equal(cancelSeen, true);
     releaseRun();
-    await page.getByRole("button", { name: "Tutup", exact: true }).waitFor();
-    await page.keyboard.press("Escape");
-    await page.getByRole("dialog").waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "Jalankan Client Simulator", exact: true }).click();
-    await page.getByRole("button", { name: "Tutup jendela log", exact: true }).click();
-    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    const logDialog=page.getByRole("dialog",{name:"Log Testing"});
+    await logDialog.getByRole("button", { name: "Tutup", exact: true }).waitFor({state:"visible"});
+    await logDialog.getByRole("button", { name: "Tutup", exact: true }).click();
+    await logDialog.waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "Jalankan Testing", exact: true }).click();
+    await page.getByRole("dialog",{name:"Log Testing"}).getByRole("button", { name: "Tutup", exact: true }).click();
+    await page.getByRole("dialog",{name:"Log Testing"}).waitFor({ state: "hidden" });
     await page.getByRole("navigation").getByRole("button", { name: "Master Data", exact: true }).click();
     await page.getByRole("tab", { name: "API Service Client Simulator", exact: true }).click();
     await page.getByLabel("Filter penyedia").selectOption("prov");
     await page.getByRole("button", { name: "Hapus", exact: true }).click();
+    await page.getByRole("dialog", { name: "Konfirmasi Hapus" }).getByRole("button", { name: "Hapus", exact: true }).click();
     await page.getByText("Tidak ada API Service yang cocok dengan pencarian.", { exact: true }).waitFor();
     assert.equal(saved.name, "Create VA Updated");
   } finally { await browser?.close(); server.kill(); }

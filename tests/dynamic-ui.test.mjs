@@ -37,7 +37,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     });
     await page.goto(base);await page.getByRole("navigation").getByRole("button",{name:"Master Data",exact:true}).click();
     assert.equal(await page.getByRole("tab",{name:"API Service",exact:true}).count(),0);
-    await page.getByRole("tab",{name:"Dev Site Endpoint",exact:true}).click();await page.getByRole("button",{name:"Tambah Dev Site Endpoint",exact:true}).click();
+    await page.getByRole("tab",{name:"Dev Site Endpoint",exact:true}).click();await page.getByRole("button",{name:"Tambah",exact:true}).click();
     const dialog=page.getByRole("dialog");
     assert.equal(await dialog.getByRole("combobox",{name:"User SNAP untuk sesi portal"}).count(),0,"single SNAP user is selected automatically");
     assert.equal(await dialog.getByRole("combobox",{name:"Referensi layanan"}).count(),0,"no hardcoded service reference picker");
@@ -81,7 +81,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     assert.match(await result.innerText(),/Validasi HTTP|HTTP Only/);assert.match(await result.locator("pre").innerText(),/2002800/);
     await result.screenshot({path:".next/completed-http-result.png"});
     await page.locator(".history-card tbody").getByText("COMPLETED",{exact:true}).waitFor();
-    await page.getByRole("button",{name:"Detail validasi",exact:true}).click();await page.locator(".run-modal").getByText("Outcome: COMPLETED",{exact:true}).waitFor();await page.locator(".run-modal .modal-footer").getByRole("button",{name:"Tutup",exact:true}).click();
+    await page.getByRole("button",{name:"Detail Testing",exact:true}).click();await page.locator(".run-modal").getByText("Outcome: COMPLETED",{exact:true}).waitFor();await page.locator(".run-modal").getByRole("button",{name:"Tutup",exact:true}).click();
     await page.getByRole("navigation").getByRole("button",{name:"Dashboard",exact:true}).click();await page.locator(".dashboard-history .status-badge.completed, .dashboard-grid .status-badge.completed").filter({hasText:"COMPLETED"}).first().waitFor();assert.deepEqual(errors,[]);
   }finally{await browser?.close();server.kill();}
 });

@@ -1,5 +1,6 @@
 "use client";
 import {useEffect,useRef,useState} from "react";
+import UiIcon from "./ui-icon";
 
 /** Preview only for official ASPI evidence PDFs (requires activityId). */
 export default function PdfPreview({runId,activityId,fileName,onClose}:{runId:string;activityId:string;fileName:string;onClose:()=>void}){
@@ -15,5 +16,12 @@ export default function PdfPreview({runId,activityId,fileName,onClose}:{runId:st
     }catch(cause){if(active)setError(cause instanceof Error?cause.message:"PDF gagal dimuat.");}})();
     return()=>{active=false;controller.abort();if(objectUrl)URL.revokeObjectURL(objectUrl);};
   },[runId,activityId]);
-  return <dialog ref={dialog} onCancel={onClose} aria-labelledby="pdf-preview-title" className="m-auto h-[85vh] w-[95vw] max-w-5xl rounded-lg border border-slate-200 p-0 backdrop:bg-slate-900/50"><div className="flex items-center justify-between gap-3 border-b p-3"><h2 id="pdf-preview-title" className="text-lg font-semibold">Preview PDF ASPI</h2><div className="flex gap-3">{url&&<a className="text-blue-600" href={url} download={fileName}>Download</a>}<button type="button" onClick={onClose}>Tutup</button></div></div>{error?<p role="alert" className="p-4 text-red-700">{error}</p>:url?<iframe title="PDF resmi ASPI" src={url} className="h-[calc(100%-60px)] w-full border-0"/>:<p role="status" className="p-4">Memuat PDF…</p>}</dialog>;
+  return <dialog ref={dialog} onCancel={onClose} aria-labelledby="pdf-preview-title" className="m-auto h-[85vh] w-[95vw] max-w-5xl overflow-hidden rounded-lg border border-slate-200 p-0 backdrop:bg-slate-900/50">
+    <div className="modal-header"><div><h2 id="pdf-preview-title">Preview PDF</h2><p>{fileName}</p></div>
+      <div className="inline-actions">{url&&<a className="text-button" href={url} download={fileName}>Download PDF</a>}
+        <button type="button" className="close-button" aria-label="Tutup" title="Tutup" onClick={onClose}><UiIcon name="close"/></button>
+      </div>
+    </div>
+    {error?<p role="alert" className="p-4 text-red-700">{error}</p>:url?<iframe title="PDF resmi ASPI" src={url} className="h-[calc(100%-60px)] w-full border-0"/>:<p role="status" className="p-4">Memuat PDF…</p>}
+  </dialog>;
 }

@@ -23,24 +23,18 @@ export async function saveConnection(db:DatabaseService,input:Record<string,unkn
     if(!name)fail("Isi nama Dev Site Client.");
     if(name.length>120)fail("Nama koneksi maksimal 120 karakter.");
     const environment={...(oldEnvironment?.data??{})};
-    for(const field of ["mode","executionMode","useCase","baseUrl","tokenPath","authFlow","rsaEncoding","hmacEncoding"])if(field in incomingEnvironment)environment[field]=text(incomingEnvironment[field]);
+    for(const field of ["useCase","baseUrl","tokenPath","authFlow","rsaEncoding","hmacEncoding"])if(field in incomingEnvironment)environment[field]=text(incomingEnvironment[field]);
     environment.category="Dev Site";
-    environment.mode=environment.mode||"portal";
-    if(environment.mode==="portal"){
-      delete environment.securityPortalUrl;
-      delete environment.rsaEncoding;
-      delete environment.hmacEncoding;
-    }
+    // Dev Site Client always targets ASPI Sandbox. Legacy mock/live history remains readable.
+    environment.mode="portal";
+    environment.executionMode="portal";
+    delete environment.securityPortalUrl;
+    delete environment.rsaEncoding;
+    delete environment.hmacEncoding;
     environment.useCase="B2B";
     environment.authFlow="token_b2b";
-    if(!["portal","live","mock"].includes(String(environment.mode)))fail("Mode Dev Site tidak valid.");
     if(!["B2B","B2B2C"].includes(String(environment.useCase)))fail("Pilih use case B2B atau B2B2C.");
     if(!["token_b2b","provided_token"].includes(String(environment.authFlow)))fail("Koneksi saldo memerlukan token B2B otomatis atau token tersimpan.");
-    if(environment.mode!=="portal")for(const field of ["rsaEncoding","hmacEncoding"])if(environment[field]&&!["hex","base64"].includes(String(environment[field])))fail("Encoding signature harus hex atau base64.");
-    if(environment.mode==="live"&&environment.baseUrl){
-      let url:URL;try{url=new URL(text(environment.baseUrl));}catch{fail("Base URL API langsung tidak valid.");}
-      if(url!.protocol!=="https:"||url!.username||url!.password||url!.search||url!.hash)fail("Base URL API langsung harus HTTPS tanpa query atau fragment.");
-    }
     const requestedSource=text(incomingClient.partnerIdSource)||String(oldClient?.data.partnerIdSource??"client_id");
     const requestedPartner=requestedSource==="client_id"?text(incomingClient.clientId):text(incomingClient.partnerId);
     const reusableClient=!oldClient&&requestedPartner?rows.find(x=>x.kind==="client"&&x.partner_id===requestedPartner):undefined;

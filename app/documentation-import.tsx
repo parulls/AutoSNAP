@@ -3,6 +3,7 @@
 import {useEffect,useMemo,useRef,useState} from "react";
 import type {Api,Item} from "./model";
 import type {EndpointConfig} from "../backend/src/endpoint-config";
+import UiIcon from "./ui-icon";
 
 type Draft={name:string;module:string;code:string;method:string;path:string;portalUrl:string;requestBody:string;config:EndpointConfig};
 type Props={users:Item[];endpoint?:Item;service?:Item;api:Api;reload:()=>Promise<void>;onClose:()=>void};
@@ -55,9 +56,10 @@ export default function DocumentationImport({users,endpoint,service,api,reload,o
         if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
         else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
       }}>
-      <header className="documentation-heading">
-        <h2 id="import-title">{endpoint?"Edit Dev Site Endpoint":"Tambah Dev Site Endpoint"}</h2>
-        <p>Tempel URL operasi ASPI untuk mengambil konfigurasi dan sample request.</p>
+      <header className="documentation-heading modal-header">
+        <div><h2 id="import-title">{endpoint?"Edit Dev Site Endpoint":"Tambah Dev Site Endpoint"}</h2>
+        <p>Tempel URL operasi ASPI untuk mengambil konfigurasi dan sample request.</p></div>
+        <button type="button" className="close-button" aria-label="Tutup" title="Tutup" disabled={busy} onClick={onClose}><UiIcon name="close"/></button>
       </header>
       {error&&<p role="alert" className="form-error">{error}</p>}
       <div className="documentation-content" aria-busy={working==="reading"}>
@@ -154,8 +156,8 @@ export default function DocumentationImport({users,endpoint,service,api,reload,o
           </label>
         </div>}
       </div>
-      <footer className="form-actions documentation-footer">
-        <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>Tutup</button>
+      <footer className="modal-footer documentation-footer">
+        <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>Batal</button>
         <button type="button" className="primary-button" disabled={busy||!parsed||!confirmed} onClick={()=>void save()}>
           {working==="saving"?<><span className="button-spinner" aria-hidden="true"/>Menyimpan…</>:"Simpan"}
         </button>

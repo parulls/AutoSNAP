@@ -99,6 +99,10 @@ test("database/controller flow: credentials, Balance Inquiry variables and mock 
     const environment = await call("save", { kind: "environment", name: "ASPI Sandbox", parentId: project.body.id, data: { category: "Dev Site", mode: "mock", useCase: "B2B", authFlow: "token_b2b" } });
     const user = await call("save", { kind: "snap_user", name: "Registration", data: { email: "snap@example.test", password: "snap-password", accountNo: "2000100101", bankCardToken: "registration-card-token" } });
     await call("save", { id: environment.body.id, kind: "environment", name: "ASPI Sandbox", parentId: project.body.id, data: { category: "Dev Site", mode: "mock", useCase: "B2B", authFlow: "token_b2b", defaultUserId: user.body.id } });
+    const forcedPortal = await db.one("SELECT * FROM autosnap_records WHERE id=$1", [environment.body.id]);
+    assert.equal(forcedPortal.data.mode, "portal", "Dev Site environment save always forces portal");
+    // Keep mock history/run coverage for legacy rows without going through the form.
+    await db.query("UPDATE autosnap_records SET data = data || jsonb_build_object('mode','mock','executionMode','mock','defaultUserId',$2::text) WHERE id=$1", [environment.body.id, user.body.id]);
     const stored = await db.one("SELECT * FROM autosnap_records WHERE id=$1", [client.body.id]);
     assert.equal(stored.partner_id, "test-client");
     assert.notEqual(stored.data.clientSecret, "test-secret");

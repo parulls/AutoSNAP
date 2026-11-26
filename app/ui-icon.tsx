@@ -14,6 +14,7 @@ const paths = {
   simulator: "M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5l-2 3-2-3H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 5 3 3-3 3m5 0h5",
   menu: "M4 6h16M4 12h16M4 18h16",
   refresh: "M20 11a8 8 0 1 0 2 5M20 4v7h-7",
+  chevronDown: "m6 9 6 6 6-6",
 };
 
 export default function UiIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: keyof typeof paths }) {

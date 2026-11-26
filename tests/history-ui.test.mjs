@@ -8,7 +8,7 @@ import {once} from "node:events";
 const require=createRequire(import.meta.url),{chromium}=require("playwright-core");
 const chrome=[process.env.AUTOSNAP_CHROME_PATH,"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe","C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"].filter(Boolean).find(existsSync);
 
-test("Refresh clears filled testing form and response, retains history, and both pages send date filters",{skip:!chrome,timeout:45000},async()=>{
+test("Refresh keeps valid form choices, reloads history filters, and both pages send date filters",{skip:!chrome,timeout:45000},async()=>{
   const portProbe=createServer();portProbe.listen(0,"127.0.0.1");await once(portProbe,"listening");const port=portProbe.address().port;await new Promise(resolve=>portProbe.close(resolve));
   const server=spawn(process.execPath,[require.resolve("next/dist/bin/next"),"start","--hostname","127.0.0.1","--port",String(port)],{windowsHide:true,stdio:"ignore"});
   let browser;
@@ -45,9 +45,10 @@ test("Refresh clears filled testing form and response, retains history, and both
     await page.locator(".response-card .status-badge").getByText("PASSED",{exact:true}).waitFor();
     assert.match(await page.locator(".response-card").innerText(),/2001100/);
     await page.getByRole("button",{name:"Refresh",exact:true}).click();
-    for(const label of ["User SNAP","Dev Site Client","Dev Site Endpoint","API Service"])assert.equal(await page.getByRole("combobox",{name:label,exact:true}).inputValue(),"");
-    assert.equal(await page.locator("textarea").count(),0);assert.doesNotMatch(await page.locator(".response-card").innerText(),/2001100/);
-    await choose();assert.doesNotMatch(await page.getByLabel("Request Body",{exact:true}).inputValue(),/edited-draft/);assert.doesNotMatch(await page.locator(".response-card").innerText(),/2001100/);
+    // Refresh must keep valid form selections and must not re-run APIs.
+    for(const label of ["User SNAP","Dev Site Client","Dev Site Endpoint","API Service"])assert.notEqual(await page.getByRole("combobox",{name:label,exact:true}).inputValue(),"");
+    assert.match(await page.getByLabel("Request Body",{exact:true}).inputValue(),/edited-draft|accountNo/);
+    assert.equal(runCalls,1,"refresh never re-executes testing APIs");
     await page.getByLabel("Periode",{exact:true}).selectOption("custom");await page.getByLabel("Dari tanggal").fill("2025-01-01");
     const filtered=page.waitForResponse(response=>response.url().endsWith("/api/autosnap")&&response.request().postDataJSON()?.to==="2025-01-05");
     await page.getByLabel("Sampai tanggal").fill("2025-01-05");await filtered;

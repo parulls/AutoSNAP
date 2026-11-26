@@ -87,19 +87,21 @@ test("testing starts with explicit choices, no hidden target or manual token inp
 test("terminal progress shows backend events and leaves Cancel active while testing runs",()=>{
   const Progress=component("app/testing-progress.tsx");
   const html=renderToStaticMarkup(createElement(Progress,{progress:{status:"running",stage:"access_token",steps:[{stage:"signature_auth",status:"completed",at:"2026-11-17T02:00:00Z",detail:"Signature diterima"},{stage:"access_token",status:"running",at:"2026-11-17T02:00:01Z",detail:"Mengambil token"}]},running:true,formReady:false,onCancel:async()=>{},onClose:()=>{}}));
-  assert.match(html,/role="log"/);assert.match(html,/Signature diterima/);assert.match(html,/Mengambil token/);assert.match(html,/Cancel Testing/);assert.doesNotMatch(html,/disabled=""/);
-  assert.doesNotMatch(html,/>Tutup</);assert.match(html,/Proses berjalan/);
+  assert.match(html,/role="log"/);assert.match(html,/Signature diterima/);assert.match(html,/Mengambil token/);assert.match(html,/Cancel Testing/);
+  assert.doesNotMatch(html,/danger-button"[^>]*disabled|danger-button disabled/);
+  assert.match(html,/aria-label="Tutup"[^>]*disabled|disabled[^>]*aria-label="Tutup"/);assert.match(html,/Proses berjalan/);
 });
 
 test("execution log claims form ready and shows Tutup only when formReady after run ends",()=>{
   const Progress=component("app/testing-progress.tsx");
   const locked=renderToStaticMarkup(createElement(Progress,{progress:{status:"completed",stage:"finished",steps:[{stage:"finished",status:"completed",at:"2026-11-17T02:00:05Z",detail:"PASSED"}]},running:false,formReady:false,accountBusy:true,onCancel:async()=>{},onClose:()=>{}}));
   assert.match(locked,/akun ASPI dipakai proses lain/);
-  assert.match(locked,/>Tutup Log</);
+  assert.match(locked,/aria-label="Tutup"/);
+  assert.doesNotMatch(locked,/close-button"[^>]*disabled|disabled=""/);
   assert.doesNotMatch(locked,/form siap digunakan/);
   const ready=renderToStaticMarkup(createElement(Progress,{progress:{status:"completed",stage:"finished",steps:[{stage:"finished",status:"completed",at:"2026-11-17T02:00:05Z",detail:"PASSED"}]},running:false,formReady:true,accountBusy:false,onCancel:async()=>{},onClose:()=>{}}));
   assert.match(ready,/form siap digunakan/);
-  assert.match(ready,/>Tutup</);
+  assert.match(ready,/aria-label="Tutup"/);
   assert.doesNotMatch(ready,/>Tutup Log</);
 });
 
@@ -108,22 +110,22 @@ test("finished progress lines must not keep form locked when own process already
   // Mirrors the bug: log already has finished/PASSED while running=false and formReady=true.
   const html=renderToStaticMarkup(createElement(Progress,{progress:{status:"completed",stage:"finished",steps:[{stage:"finished",status:"completed",at:"2026-11-17T02:00:05Z",detail:"PASSED"}]},running:false,formReady:true,accountBusy:false,onCancel:async()=>{},onClose:()=>{}}));
   assert.match(html,/Proses selesai - form siap digunakan/);
-  assert.match(html,/>Tutup</);
+  assert.match(html,/aria-label="Tutup"/);
   assert.doesNotMatch(html,/Proses berjalan|Menunggu form|Menghentikan/);
 });
 
-test("execution log hides Tutup while finalizing even if finished step already appears",()=>{
+test("execution log disables Tutup while finalizing even if finished step already appears",()=>{
   const Progress=component("app/testing-progress.tsx");
   const html=renderToStaticMarkup(createElement(Progress,{progress:{status:"running",stage:"finalizing",steps:[{stage:"finalizing",status:"running",at:"2026-11-17T02:00:04Z",detail:"Melepaskan sesi"}]},running:true,formReady:false,onCancel:async()=>{},onClose:()=>{}}));
   assert.match(html,/melepaskan sesi ASPI/i);
-  assert.doesNotMatch(html,/>Tutup</);
+  assert.match(html,/aria-label="Tutup"[^>]*disabled|disabled[^>]*aria-label="Tutup"/);
   assert.doesNotMatch(html,/form siap digunakan/);
 });
 
 test("a Dev Site draft requires an owner, defaults to ASPI Sandbox and has editable channel",()=>{
   const ConnectionForm=component("app/connection-form.tsx");
   const html=renderToStaticMarkup(createElement(ConnectionForm,{api:async()=>({}),reload:async()=>{},onSaved:()=>{},onClose:()=>{}}));
-  assert.match(html,/User SNAP \*/);assert.match(html,/Nama Dev Site Client/);assert.match(html,/Mode Pengujian/);assert.match(html,/ASPI Sandbox/);assert.match(html,/Mock Lokal/);assert.doesNotMatch(html,/URL Aplikasi Pengujian Access Token B2B|Encoding RSA|Encoding HMAC|Public Key client/);assert.match(html,/>Simpan</);
+  assert.match(html,/User SNAP \*/);assert.match(html,/Nama Dev Site Client/);assert.match(html,/ASPI Sandbox/);assert.doesNotMatch(html,/Mode Pengujian \*/);assert.doesNotMatch(html,/<option value="mock">Mock Lokal/);assert.doesNotMatch(html,/URL Aplikasi Pengujian Access Token B2B|Encoding RSA|Encoding HMAC|Public Key client/);assert.match(html,/>Simpan</);
   assert.match(html,/value="95221"/);assert.doesNotMatch(html,/Target pengujian|Simulasi lokal/);
   assert.doesNotMatch(html,/<span>Access Token|provided_token|rekening konsumen/);
 });

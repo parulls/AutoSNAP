@@ -576,26 +576,55 @@ async function downloadControl(page: Page, activity: ClientSimulatorActivity) {
   throw portalError.trigger();
 }
 
-/** Click Download on the matched activity row and keep the file that click produces. Never page.pdf(). */
-export async function downloadClientSimulatorActivityPdf(page: Page, activity: ClientSimulatorActivity) {
+/** Client Simulator adapter: click Download on the activity row at /client-simulator-activity. Never page.pdf(). */
+export async function downloadClientSimulatorActivityPdf(page: Page, activity: ClientSimulatorActivity, timeoutMs = 60000) {
   const here = new URL(page.url());
   if (here.origin !== "https://apidevportal.aspi-indonesia.or.id" || here.pathname !== "/client-simulator-activity") {
     throw portalError.session();
   }
   const control = await downloadControl(page, activity);
-  const downloadPromise = page.context().waitForEvent("download", { timeout: 60000 });
-  const popupPromise = page.context().waitForEvent("page", { timeout: 60000 }).catch(() => null);
+  const timeout = Math.max(5000, timeoutMs);
+  const started = Date.now();
+  // Listen on the activity Page (and popup Page) — not BrowserContext — before click.
+  const pageDownload = page.waitForEvent("download", { timeout }).then((download) => ({ kind: "page" as const, download })).catch(() => null);
+  const popupPromise = page.waitForEvent("popup", { timeout }).then((popup) => ({ kind: "popup" as const, popup })).catch(() => null);
   try {
-    await control.click({ timeout: 10000 });
+    await control.click({ timeout: Math.min(10000, timeout) });
     if (page.url().includes("/sign-in")) throw portalError.session();
   } catch (error) {
     if (error instanceof ClientSimulatorPortalError) throw error;
     throw portalError.trigger();
   }
-  const popup = await Promise.race([popupPromise, downloadPromise.then(() => null)]).catch(() => null);
-  if (popup && new URL(popup.url() || "https://apidevportal.aspi-indonesia.or.id/sign-in").pathname === "/sign-in") throw portalError.session();
+  console.info("[aspi-pdf]", JSON.stringify({
+    module: "client_simulator",
+    activityId: officialActivityId(activity.activityId) || activity.activityId,
+    path: "/client-simulator-activity",
+    triggerPage: "/client-simulator-activity",
+    stage: "clicked_download",
+  }));
+  const first = await Promise.race([
+    pageDownload,
+    popupPromise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeout)),
+  ]);
   try {
-    return await readPortalDownload(await downloadPromise);
+    if (first?.kind === "page") {
+      return await readPortalDownload(first.download);
+    }
+    if (first?.kind === "popup") {
+      const popup = first.popup;
+      try {
+        if (new URL(popup.url() || "https://apidevportal.aspi-indonesia.or.id/sign-in").pathname === "/sign-in") throw portalError.session();
+        const remaining = Math.max(1000, timeout - (Date.now() - started));
+        const download = await popup.waitForEvent("download", { timeout: remaining });
+        return await readPortalDownload(download);
+      } finally {
+        await popup.close().catch(() => undefined);
+      }
+    }
+    const late = await pageDownload;
+    if (late?.kind === "page") return await readPortalDownload(late.download);
+    throw portalError.timeout();
   } catch (error) {
     if (error instanceof ClientSimulatorPortalError) throw error;
     if (error instanceof Error && /timeout/i.test(error.message)) throw portalError.timeout();

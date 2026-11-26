@@ -553,6 +553,11 @@ export class AutoSnapController {
     if(kind==="service")Object.assign(data,annotateServiceData(data));
     if(kind==="environment"){
       if(!["Dev Site","Client Simulator"].includes(String(data.category)))return this.fail(res,clientError("Kategori environment tidak valid."));
+      // Dev Site Client is always portal/ASPI Sandbox. Mock remains only for Client Simulator category legacy rows.
+      if(String(data.category)==="Dev Site"){
+        data.mode="portal";
+        data.executionMode="portal";
+      }
       if(!["mock","live","portal"].includes(String(data.mode)))return this.fail(res,clientError("Mode environment tidak valid."));
       if(data.authFlow&&!["token_b2b","direct_rsa","provided_token"].includes(String(data.authFlow)))return this.fail(res,clientError("Alur authorization tidak valid."));
       if(data.useCase&&!["B2B","B2B2C"].includes(String(data.useCase)))return this.fail(res,clientError("Use case harus B2B atau B2B2C."));

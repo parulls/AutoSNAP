@@ -47,9 +47,9 @@ export default function TestingProgress({progress,running,formReady,accountBusy=
   async function cancel(){setCancelRequested(true);setCancelError("");try{await onCancel();}catch(error){setCancelError((error as Error).message);setCancelRequested(false);}}
   return <div className="modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget&&!canClose){event.preventDefault();event.stopPropagation();}}} onClick={event=>{if(event.target===event.currentTarget){if(!canClose){event.preventDefault();return;}onClose();}}}>
     <section className="card testing-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="terminal-title" onClick={event=>event.stopPropagation()}>
-      <div className="section-header">
+      <div className="section-header modal-header">
         <div><h2 id="terminal-title">Log Testing</h2><p>{statusText}</p></div>
-        {canClose&&<button type="button" className="close-button" onClick={onClose} aria-label="Tutup jendela log" title={formReady?"Tutup":"Tutup log (form masih terkunci)"}><UiIcon name="close"/></button>}
+        <button type="button" className="close-button" onClick={onClose} disabled={!canClose} aria-label="Tutup" title={canClose?(formReady?"Tutup":"Tutup log (form masih terkunci)"):"Tidak dapat ditutup selama pengujian berjalan"}><UiIcon name="close"/></button>
       </div>
       <div className="testing-terminal" role="log" aria-live="polite" aria-relevant="additions" tabIndex={0}>
         <div className="terminal-heading">AutoSNAP - execution log</div>
@@ -62,7 +62,7 @@ export default function TestingProgress({progress,running,formReady,accountBusy=
       <div className="terminal-actions">
         {ownActive
           ?<><span>Request yang sudah terkirim tetap tercatat.</span><button type="button" className="danger-button" disabled={stopping||progress.status==="cancel_requested"} onClick={()=>void cancel()}>{stopping||progress.status==="cancel_requested"?"Menghentikan…":"Cancel Testing"}</button></>
-          :<>{onRetryEvidence&&formReady&&<button type="button" className="secondary-button" onClick={()=>void onRetryEvidence()}>Proses Ulang Bukti</button>}{canClose?<button type="button" className="secondary-button" onClick={onClose}>{formReady?"Tutup":"Tutup Log"}</button>:<span>{`Menunggu form ${product} siap digunakan kembali…`}</span>}<span>{formReady?"Log tersimpan pada detail History Testing.":accountBusy?"Form belum siap: akun ASPI dipakai proses lain.":"Menunggu pelepasan sesi ASPI…"}</span></>}
+          :<>{onRetryEvidence&&formReady&&<button type="button" className="secondary-button" onClick={()=>void onRetryEvidence()}>Proses Ulang Bukti</button>}{!canClose&&<span>{`Menunggu form ${product} siap digunakan kembali…`}</span>}<span>{formReady?"Log tersimpan pada detail History Testing.":accountBusy?"Form belum siap: akun ASPI dipakai proses lain.":"Menunggu pelepasan sesi ASPI…"}</span></>}
       </div>
     </section>
   </div>;

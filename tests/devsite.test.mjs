@@ -31,9 +31,12 @@ test("Dev Site drafts and endpoint-first services run with the right owner and p
     const user=(await invoke("save",{kind:"snap_user",name:"Mentor mengisi nanti",data:{}})).body;
     const other=(await invoke("save",{kind:"snap_user",name:"User berbeda",data:{}})).body;
     const connection=await saveConnection(db,{name:"Dev Site belum lengkap",userId:user.id,environment:{mode:"live"}});
+    const environment=await db.one("SELECT * FROM autosnap_records WHERE id=$1",[connection.id]);
+    assert.equal(environment.data.mode,"portal","saveConnection always forces ASPI Sandbox");
+    assert.equal(environment.data.executionMode,"portal");
     const client=await db.one("SELECT * FROM autosnap_records WHERE id=$1",[connection.clientId]);
     assert.equal(client.data.channelId,"95221");assert.equal(client.partner_id,null);
-    const savedEndpoint=await invoke("save",{kind:"endpoint",name:"Saldo Bank Sumut",data:{method:"POST",path:"/api/v1.0/balance-inquiry"}});
+    const savedEndpoint=await invoke("save",{kind:"endpoint",name:"Saldo Bank Sumut",data:{method:"POST",path:"/api/v1.0/balance-inquiry",portalUrl:"https://apidevportal.aspi-indonesia.or.id/api-services/informasi-saldo"}});
     const endpointId=savedEndpoint.body.id;
     assert.equal((await invoke("save",{kind:"service",name:"Saldo tanpa endpoint",data:{module:"Informasi Saldo",code:"11"}})).status,400);
     const savedService=await invoke("save",{kind:"service",name:"Informasi Saldo",parentId:endpointId,data:{module:"Informasi Saldo",code:"11",requestBody:JSON.stringify({accountNo:"1234567890"})}});
@@ -41,12 +44,13 @@ test("Dev Site drafts and endpoint-first services run with the right owner and p
     const input={clientId:connection.clientId,projectId:connection.projectId,environmentId:connection.id,userId:user.id,serviceId:savedService.body.id,endpointId,body:JSON.stringify({accountNo:"1234567890"})};
     let hitCount=0;engine.hit=async()=>{hitCount++;throw Error("Must not reach the network for an incomplete draft");};
     const blocked=await invoke("run",input);
-    assert.equal(blocked.status,400);assert.match(blocked.body.error,/Base URL/);assert.equal(hitCount,0);
-    await saveConnection(db,{environmentId:connection.id,userId:user.id,client:{clientId:"client-qa",clientSecret:"secret",privateKey:"fake-for-stub-only"},environment:{mode:"live",baseUrl:"https://bank.example",tokenPath:"/bank/security/token",rsaEncoding:"base64",hmacEncoding:"hex"}});
-    await db.query("UPDATE autosnap_records SET data=data || '{\"authFlow\":\"provided_token\"}'::jsonb WHERE id=$1",[connection.id]);
+    assert.equal(blocked.status,400);assert.match(blocked.body.error,/browser ASPI|Client ID|Private Key/);assert.equal(hitCount,0);
+    await saveConnection(db,{environmentId:connection.id,userId:user.id,client:{clientId:"client-qa",clientSecret:"secret",privateKey:"fake-for-stub-only"},environment:{mode:"mock"}});
+    const forced=await db.one("SELECT * FROM autosnap_records WHERE id=$1",[connection.id]);
+    assert.equal(forced.data.mode,"portal","mock/live are rejected on save for Dev Site");
+    // Legacy mock rows remain runnable for history continuity when mode is set outside the form.
+    await db.query("UPDATE autosnap_records SET data=data || '{\"mode\":\"mock\",\"executionMode\":\"mock\"}'::jsonb WHERE id=$1",[connection.id]);
     engine.hit=async(args)=>{assert.equal(args.authFlow,"token_b2b","legacy manual token configuration must not bypass Security");return {status:200,body:{responseCode:"2001100",responseMessage:"Successful"},request:{method:args.method,path:args.path}};};
-    assert.equal((await invoke("run",input)).body.status,"PASSED");
-    await saveConnection(db,{environmentId:connection.id,userId:user.id,environment:{mode:"mock"}});
     const result=await invoke("run",input);assert.equal(result.status,200);assert.equal(result.body.status,"PASSED");
     assert.equal((await invoke("run",{...input,userId:other.id})).status,400);
     const customBody=JSON.stringify({accountNo:"9876543210"});

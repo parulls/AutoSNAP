@@ -96,10 +96,10 @@ test("PDF batch shares one activity lookup, limits concurrency and preserves IDs
   const attempts=new Map(),logs=[];let reads=0,active=0,max=0;
   const results=await collectActivityPdfs({before:[],paths,deadline:Date.now()+10000,read:async()=>{reads++;return rows;},download:async row=>{
     active++;max=Math.max(max,active);attempts.set(row.activityId,(attempts.get(row.activityId)??0)+1);
-    try{await new Promise(resolve=>setTimeout(resolve,5));if(row.service==="Signature Service")throw Error("timeout");return Buffer.from("%PDF-1.7\nASPI result\n%%EOF\n");}finally{active--;}
+    try{await new Promise(resolve=>setTimeout(resolve,5));if(row.service==="Signature Service")throw Error("DOWNLOAD_EVENT_TIMEOUT: timeout");return Buffer.from("%PDF-1.7\nASPI result\n%%EOF\n");}finally{active--;}
   },report:async(status,detail)=>logs.push({status,detail})});
   assert.equal(reads,1);assert.equal(max,2);assert.equal(results.filter(item=>item.pdf).length,3);
-  assert.equal(results[2].activity.activityId,"activity-2");assert.match(results[2].error,/Batas waktu/);
+  assert.equal(results[2].activity.activityId,"activity-2");assert.match(results[2].error,/DOWNLOAD_EVENT_TIMEOUT|Batas waktu/);
   assert.equal(attempts.get("activity-2"),2);assert.ok(logs.some(item=>item.status==="failed"));
   if(originalConcurrency===undefined)delete process.env.AUTOSNAP_PDF_CONCURRENCY;else process.env.AUTOSNAP_PDF_CONCURRENCY=originalConcurrency;
 });
@@ -214,4 +214,88 @@ test("report navigation captures ASPI blob only â€” no PDF generators or route.f
   assert.match(src,/captureAspHtml2PdfBlob/);
   assert.match(src,/captureViaDownloadLinkClick/);
   assert.match(src,/tidak membuat PDF pengganti/);
+});
+
+test("Dev Site click path listens on Page/popup — not BrowserContext alone",async()=>{
+  const {readFileSync}=await import("node:fs");
+  const {join}=await import("node:path");
+  const src=readFileSync(join(process.cwd(),"backend","src","aspi-report-navigation.ts"),"utf8");
+  assert.match(src,/waitForEvent\(["']download["']/);
+  assert.match(src,/waitForEvent\(["']popup["']/);
+  assert.equal(/page\.context\(\)\s*\.\s*waitForEvent\s*\(\s*["']download["']/.test(src),false,"Dev Site must not rely on context download events");
+  assert.match(src,/DOWNLOAD_EVENT_TIMEOUT|DOWNLOAD_LINK_NOT_FOUND|ASPI_AUTH_EXPIRED/);
+  const sim=readFileSync(join(process.cwd(),"backend","src","aspi-client-simulator.ts"),"utf8");
+  assert.equal(/page\.context\(\)\s*\.\s*waitForEvent\s*\(\s*["']download["']/.test(sim),false,"Client Simulator must not rely on context download events");
+  assert.match(sim,/waitForEvent\(["']popup["']/);
+});
+
+test("PDF batch keeps partial success when one of four downloads fails",async()=>{
+  const paths=["/api/v1.0/utilities/signature-auth","/api/v1.0/access-token/b2b","/api/v1.0/utilities/signature-service","/api/v1.0/bank-statement"];
+  const names=["Signature Authentication","Access Token B2B","Signature Service","API Bank Statement"];
+  const rows=names.map((service,index)=>({...activity,service,activityId:`bank-stmt-${index}`,downloadUrl:`https://apidevportal.aspi-indonesia.or.id/sandboxactivity/downloadreportactivity?activityId=bank-stmt-${index}`}));
+  const results=await collectActivityPdfs({
+    before:[],paths,deadline:Date.now()+20000,
+    read:async()=>rows,
+    download:async(row)=>{
+      if(row.service==="Signature Service")throw Error("DOWNLOAD_EVENT_TIMEOUT: fixture timeout");
+      return Buffer.from("%PDF-1.7\nASPI bank statement fixture\n%%EOF\n");
+    },
+    report:async()=>{},
+  });
+  assert.equal(results.filter(item=>item.pdf).length,3);
+  assert.equal(results.filter(item=>item.error).length,1);
+  assert.match(results[2].error,/DOWNLOAD_EVENT_TIMEOUT/);
+  assert.equal(results[0].activity.activityId,"bank-stmt-0");
+  assert.equal(results[3].activity.activityId,"bank-stmt-3");
+});
+
+test("PDF batch does not retry permanent auth failures",async()=>{
+  let calls=0;
+  const results=await collectActivityPdfs({
+    before:[],paths:["/api/v1.0/balance-inquiry"],deadline:Date.now()+10000,
+    read:async()=>[activity],
+    download:async()=>{calls++;throw Error("ASPI_AUTH_EXPIRED: Sesi ASPI habis");},
+    report:async()=>{},
+  });
+  assert.equal(calls,1);
+  assert.match(results[0].error,/ASPI_AUTH_EXPIRED/);
+});
+
+test("activity-table click download and popup blob download",{skip:!chrome},async()=>{
+  const browser=await chromium.launch({executablePath:chrome,headless:true});
+  try{
+    const context=await browser.newContext({acceptDownloads:true});
+    const pdf=aspiPdf("click-and-popup");
+    const blobHtml=`<!DOCTYPE html><html><body><div id="printPdf">x</div><script>
+      window.html2pdf=function(){
+        const bytes=Uint8Array.from(atob("${pdf.toString("base64")}"),c=>c.charCodeAt(0));
+        const a=document.createElement("a");
+        a.href=URL.createObjectURL(new Blob([bytes],{type:"application/pdf"}));
+        a.download="API Bank Statement.pdf";
+        a.click();
+      };
+      function download(){html2pdf();}
+      download();
+    </script></body></html>`;
+    await context.route("https://apidevportal.aspi-indonesia.or.id/**",async route=>{
+      const url=route.request().url();
+      if(url.includes("downloadreportactivity"))return route.fulfill({contentType:"text/html; charset=utf-8",body:blobHtml});
+      if(url.includes("aktivitas-aplikasi-pengujian")){
+        return route.fulfill({contentType:"text/html",body:`<!DOCTYPE html><html><body><table><tr><td><a href="/sandboxactivity/downloadreportactivity?activityId=${activityId}" target="_blank">Download</a></td></tr></table></body></html>`});
+      }
+      return route.fulfill({contentType:"text/html",body:"ok"});
+    });
+    const page=await context.newPage();
+    await page.goto("https://apidevportal.aspi-indonesia.or.id/aktivitas-aplikasi-pengujian");
+    assert.deepEqual(await fetchOfficialPdf(page,activity.downloadUrl,Date.now()+20000,"navigation"),pdf);
+  }finally{await browser.close();}
+});
+
+test("source forbids context download listener and keeps official-only capture",async()=>{
+  const {readFileSync}=await import("node:fs");
+  const {join}=await import("node:path");
+  const nav=readFileSync(join(process.cwd(),"backend","src","aspi-report-navigation.ts"),"utf8");
+  assert.match(nav,/module:"dev_site"/);
+  assert.match(nav,/page\.waitForEvent\(["']popup["']/);
+  assert.equal(/page\.pdf\s*\(/.test(nav),false);
 });

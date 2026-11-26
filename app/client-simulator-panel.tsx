@@ -41,13 +41,15 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   const [timestamp,setTimestamp]=useState(()=>buildTimestamp(offsetMinutes,defaultMillis,new Date(Date.now()+120_000)));
   const [body,setBody]=useState("{}");
   const [partnerId,setPartnerId]=useState(""),[externalId,setExternalId]=useState(""),[deviceId,setDeviceId]=useState(""),[channelId,setChannelId]=useState("");
-  const [busy,setBusy]=useState(false),[running,setRunning]=useState(false),[progress,setProgress]=useState<TestProgress|null>(null);
+  const [busy,setBusy]=useState(false),[running,setRunning]=useState(false),[refreshing,setRefreshing]=useState(false),[progress,setProgress]=useState<TestProgress|null>(null);
   const progressIdRef=useRef("");
+  const [resultId,setResultId]=useState<string|null>(null);
   const [historyRange,setHistoryRange]=useState(()=>rangeForPeriod("today"));
   const [historyFilters,setHistoryFilters]=useState<HistoryFilters>({scope:canViewAll?"all":"mine"});
   const [historyQuery,setHistoryQuery]=useState(""),[offset,setOffset]=useState(0);
   const [selectedRun,setSelectedRun]=useState<Run|null>(null),[downloadingId,setDownloadingId]=useState(""),[preview,setPreview]=useState<{runId:string;activityId:string;fileName:string}|null>(null),[testingError,setTestingError]=useState<{summary:string;technical:string;suggestion:string}|null>(null),[reprocessingId,setReprocessingId]=useState("");
   const retryLock=useRef(false);
+  const formLocked=running||refreshing;
   useEffect(()=>{
     if(!selectedRun&&!testingError)return;
     function onKey(event:KeyboardEvent){if(event.key==="Escape"&&!running){setSelectedRun(null);setTestingError(null);}}
@@ -108,11 +110,23 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       });
       try{setProgress(await api("getProgress",{id:progressId}) as unknown as TestProgress);}catch{/* the modal already has the last poll */}
       setNotice(`${String(response.activityName??"Client Simulator")} · ${String(response.status??"")} · PDF ${response.pdfReady?"tersimpan":"belum tersimpan"}`);
+      setResultId(String(response.id??""));
       await reload();
+      historyData.refresh();
     }catch(e){
       try{setProgress(await api("getProgress",{id:progressId}) as unknown as TestProgress);}catch{/* keep the last visible log */}
       setError((e as Error).message);
     }finally{polling=false;clearInterval(timer);setRunning(false);setBusy(false);}
+  }
+
+  async function refreshPage(){
+    if(running||refreshing)return;
+    setRefreshing(true);setTestingError(null);setError("");setNotice("");
+    try{
+      // Reload Master Data + History + PDF status. Never re-run the API request.
+      await reload();
+      historyData.refresh();
+    }finally{setRefreshing(false);}
   }
 
   const joinEndpoint=(baseRaw:string,pathRaw:string)=>{
@@ -175,16 +189,19 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     try{aspiServiceName=buildClientSimulatorServiceName(provider.name,service.name,selectedScenario.label);}catch(error){scenarioError=thrownMessage(error);}
   }else if(scenarioAttempted&&!selectedScenario)scenarioError="Pilih skenario pengujian terlebih dahulu.";
   const expectation=selectedScenario&&service?presentScenarioExpectation(selectedScenario.id,service.data):null;
+  const historyRuns=historyData.runs.filter(r=>r.mode==="client_sim"||r.mode==="mock");
+  const latest=(resultId?historyRuns.find(run=>run.id===resultId):undefined)??historyRuns[0]??null;
+  const latestPdf=latest?countsOf(latest):{ready:0,required:0};
 
-  return <>
+  return <div className="testing-page">
+    <div className="testing-toolbar"><button type="button" className="secondary-button" disabled={formLocked} onClick={()=>refreshPage().catch(error=>setError((error as Error).message))}>{refreshing?"Memuat...":"Refresh"}</button></div>
     <form className="card test-form" onSubmit={run}>
-      <div className="section-header"><div><h2>Client Simulator</h2><p>Pilih User SNAP, penyedia, API Service, dan skenario.</p></div></div>
-      <h3>Identitas pengujian</h3>
+      <div className="section-header"><div><h2>Form Testing</h2><p>Pilih User SNAP, penyedia, API Service, dan skenario.</p></div></div>
       <div className="form-grid">
-        <label className="form-field"><span>User SNAP</span><select required aria-label="User SNAP" disabled={running} value={snapUserId} onChange={e=>setSnapUserId(e.target.value)}><option value="">Pilih User SNAP</option>{snapUsers.map(user=><option key={user.id} value={user.id}>{snapUserLabel(user)}</option>)}</select></label>
-        <label className="form-field"><span>Penyedia Client Simulator</span><select required disabled={running} value={providerId} onChange={e=>{const id=e.target.value;setProviderId(id);setServiceId("");loadDefaults(providers.find(x=>x.id===id),undefined);}}><option value="">Pilih penyedia</option>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-        <label className="form-field"><span>API Service</span><select required aria-label="API Service" disabled={running||!providerId||!services.length} value={serviceId} onChange={e=>{const id=e.target.value;setServiceId(id);loadDefaults(provider,services.find(s=>s.id===id));}}><option value="">{services.length?"Pilih service":"Belum ada service"}</option>{services.map(s=><option key={s.id} value={s.id}>{s.name} - {value(s,"method")||"POST"} {value(s,"path")||value(s,"serviceUrl")}</option>)}</select></label>
-        <label className="form-field"><span>Skenario Pengujian *</span><select aria-label="Skenario Pengujian" aria-invalid={scenarioError?true:undefined} disabled={running} value={scenarioId} onChange={e=>{setScenarioId(e.target.value);setConfirmDuplicate(false);}}><option value="">Pilih Skenario</option>{CLIENT_SIMULATOR_SCENARIOS.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>{scenarioError&&<small className="field-error" role="alert">{scenarioError}</small>}</label>
+        <label className="form-field"><span>User SNAP</span><select required aria-label="User SNAP" disabled={formLocked} value={snapUserId} onChange={e=>setSnapUserId(e.target.value)}><option value="">Pilih User SNAP</option>{snapUsers.map(user=><option key={user.id} value={user.id}>{snapUserLabel(user)}</option>)}</select></label>
+        <label className="form-field"><span>Penyedia Client Simulator</span><select required disabled={formLocked} value={providerId} onChange={e=>{const id=e.target.value;setProviderId(id);setServiceId("");loadDefaults(providers.find(x=>x.id===id),undefined);}}><option value="">Pilih penyedia</option>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label className="form-field"><span>API Service</span><select required aria-label="API Service" disabled={formLocked||!providerId||!services.length} value={serviceId} onChange={e=>{const id=e.target.value;setServiceId(id);loadDefaults(provider,services.find(s=>s.id===id));}}><option value="">{services.length?"Pilih service":"Belum ada service"}</option>{services.map(s=><option key={s.id} value={s.id}>{s.name} - {value(s,"method")||"POST"} {value(s,"path")||value(s,"serviceUrl")}</option>)}</select></label>
+        <label className="form-field"><span>Skenario Pengujian *</span><select aria-label="Skenario Pengujian" aria-invalid={scenarioError?true:undefined} disabled={formLocked} value={scenarioId} onChange={e=>{setScenarioId(e.target.value);setConfirmDuplicate(false);}}><option value="">Pilih Skenario</option>{CLIENT_SIMULATOR_SCENARIOS.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>{scenarioError&&<small className="field-error" role="alert">{scenarioError}</small>}</label>
       </div>
       {provider&&!services.length&&<p className="helper">Penyedia ini belum mempunyai API Service. Tambahkan API Service melalui Master Data → API Service Client Simulator.{onOpenMasterData&&<> <button type="button" className="text-button" onClick={onOpenMasterData}>Buka API Service Client Simulator</button></>}</p>}
       <h3>Service Name ASPI</h3>
@@ -197,30 +214,46 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
           <label className="form-field"><span>Access Token URI</span><input readOnly value={accessTokenUri}/></label>
           <label className="form-field"><span>Service URI</span><input readOnly value={serviceUri}/></label>
           <div className="timestamp-field wide">
-            <label className="form-field"><span>X-TIMESTAMP</span><input disabled={running} value={timestamp} onChange={e=>setTimestamp(e.target.value)} spellCheck={false}/></label>
+            <label className="form-field"><span>X-TIMESTAMP</span><input disabled={formLocked} value={timestamp} onChange={e=>setTimestamp(e.target.value)} spellCheck={false}/></label>
             <div className="timestamp-controls">
               <div className="timestamp-buttons">
-                <button type="button" className="secondary-button" disabled={running} onClick={()=>setTimestamp(t=>{try{const d=Date.parse(t);return buildTimestamp(offsetMinutes,includeMillis,new Date((Number.isFinite(d)?d:Date.now())-60_000));}catch{return buildTimestamp(offsetMinutes,includeMillis,new Date(Date.now()-60_000));}})}>-1 Menit</button>
-                <button type="button" className="secondary-button" disabled={running} onClick={()=>setTimestamp(t=>{const d=Date.parse(t);return buildTimestamp(offsetMinutes,includeMillis,new Date((Number.isFinite(d)?d:Date.now())+60_000));})}>+1 Menit</button>
-                <button type="button" className="secondary-button" disabled={running} onClick={()=>setTimestamp(buildTimestamp(offsetMinutes,includeMillis,new Date(Date.now()+120_000)))}>Reset</button>
+                <button type="button" className="secondary-button" disabled={formLocked} onClick={()=>setTimestamp(t=>{try{const d=Date.parse(t);return buildTimestamp(offsetMinutes,includeMillis,new Date((Number.isFinite(d)?d:Date.now())-60_000));}catch{return buildTimestamp(offsetMinutes,includeMillis,new Date(Date.now()-60_000));}})}>-1 Menit</button>
+                <button type="button" className="secondary-button" disabled={formLocked} onClick={()=>setTimestamp(t=>{const d=Date.parse(t);return buildTimestamp(offsetMinutes,includeMillis,new Date((Number.isFinite(d)?d:Date.now())+60_000));})}>+1 Menit</button>
+                <button type="button" className="secondary-button" disabled={formLocked} onClick={()=>setTimestamp(buildTimestamp(offsetMinutes,includeMillis,new Date(Date.now()+120_000)))}>Reset</button>
               </div>
-              <label className="timestamp-millis"><input type="checkbox" disabled={running} checked={includeMillis} onChange={e=>{setIncludeMillis(e.target.checked);setTimestamp(buildTimestamp(offsetMinutes,e.target.checked,new Date(Date.now()+120_000)));}}/><span>Milidetik</span></label>
+              <label className="timestamp-millis"><input type="checkbox" disabled={formLocked} checked={includeMillis} onChange={e=>{setIncludeMillis(e.target.checked);setTimestamp(buildTimestamp(offsetMinutes,e.target.checked,new Date(Date.now()+120_000)));}}/><span>Milidetik</span></label>
             </div>
             <small className="helper">Timestamp dikirim minimal 2 menit di depan waktu server bank.</small>
           </div>
-          <label className="form-field"><span>X-PARTNER-ID</span><input disabled={running} value={partnerId} onChange={e=>setPartnerId(e.target.value)}/></label>
-          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={running||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Dibuat otomatis saat dijalankan":externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis" title={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Baseline bank lalu request ASPI memakai External ID yang sama.":undefined}/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">External ID baru: baseline bank, lalu duplikat lewat ASPI.</small>}</label>
-          <label className="form-field"><span>X-DEVICE-ID</span><input disabled={running} value={deviceId} onChange={e=>setDeviceId(e.target.value)}/></label>
-          <label className="form-field"><span>CHANNEL-ID</span><input disabled={running} value={channelId} onChange={e=>setChannelId(e.target.value)}/></label>
-          <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={8} spellCheck={false} disabled={running} value={body} onChange={e=>setBody(e.target.value)}/><small className="helper">Dari API Service {service.name}; hanya untuk pengujian ini.</small></label>
+          <label className="form-field"><span>X-PARTNER-ID</span><input disabled={formLocked} value={partnerId} onChange={e=>setPartnerId(e.target.value)}/></label>
+          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={formLocked||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Dibuat otomatis saat dijalankan":externalId} onChange={e=>setExternalId(e.target.value)} placeholder="Kosongkan untuk generate otomatis" title={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Baseline bank lalu request ASPI memakai External ID yang sama.":undefined}/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">External ID baru: baseline bank, lalu duplikat lewat ASPI.</small>}</label>
+          <label className="form-field"><span>X-DEVICE-ID</span><input disabled={formLocked} value={deviceId} onChange={e=>setDeviceId(e.target.value)}/></label>
+          <label className="form-field"><span>CHANNEL-ID</span><input disabled={formLocked} value={channelId} onChange={e=>setChannelId(e.target.value)}/></label>
+          <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={8} spellCheck={false} disabled={formLocked} value={body} onChange={e=>setBody(e.target.value)}/><small className="helper">Dari API Service {service.name}; hanya untuk pengujian ini.</small></label>
         </div>
-        {scenarioId==="DUPLICATE_EXTERNAL_ID"&&<label className="check-row wide"><input type="checkbox" checked={confirmDuplicate} disabled={running} onChange={e=>setConfirmDuplicate(e.target.checked)}/><span>Konfirmasi<small className="helper">Satu baseline ke bank, lalu satu request ASPI dengan External ID yang sama.</small></span></label>}
+        {scenarioId==="DUPLICATE_EXTERNAL_ID"&&<label className="check-row wide"><input type="checkbox" checked={confirmDuplicate} disabled={formLocked} onChange={e=>setConfirmDuplicate(e.target.checked)}/><span>Konfirmasi<small className="helper">Satu baseline ke bank, lalu satu request ASPI dengan External ID yang sama.</small></span></label>}
         {(scenarioId==="INVALID_ACCESS_TOKEN"||scenarioId==="INVALID_SIGNATURE"||scenarioId==="UNKNOWN_CLIENT")&&<p className="helper">Mutasi hanya pada request API Service.</p>}
-        <div className="form-actions"><button type="button" className="secondary-button" disabled={running} onClick={resetRequest}>Reset Form</button><button className="primary-button" disabled={busy}>{busy?"Menjalankan...":"Jalankan Client Simulator"}</button></div>
+        <div className="form-actions"><button type="button" className="secondary-button" disabled={formLocked} onClick={resetRequest}>Reset Form</button><button className="primary-button" disabled={busy||refreshing}>{busy?"Menjalankan...":"Jalankan Testing"}</button></div>
       </>}
       {!snapUsers.length&&<p className="helper">Belum ada User SNAP. Tambahkan di Master Data beserta email dan password portal ASPI.</p>}
       {!providers.length&&<p className="helper">Belum ada Penyedia. Tambahkan di Master Data → Penyedia Client Simulator.</p>}
     </form>
+
+    <section className="card response-card" aria-live="polite">
+      <div className="section-header"><div><h2>Hasil Testing</h2><p>{latest?new Date(latest.created_at).toLocaleString("id-ID"):"Hasil muncul setelah testing dijalankan."}</p></div>{latest&&<span className={`status-badge ${latest.status.toLowerCase()}`}>{latest.status}</span>}</div>
+      <div className="response-summary">
+        <div><span>HTTP Status</span><strong>{latest?.http_status??"—"}</strong></div>
+        <div><span>SNAP Code</span><strong>{latest?.response_code??"—"}</strong></div>
+        <div><span>PDF ASPI</span><strong>{latest?`${latestPdf.ready}/${latestPdf.required||"—"}`:"—"}</strong></div>
+      </div>
+      <EvaluationNotice run={latest}/>
+      <pre className="response-code">{JSON.stringify(latest?.response??{message:"Belum ada hasil untuk pilihan ini."},null,2)}</pre>
+      {latest&&<div className="inline-actions">
+        <button type="button" className="text-button" onClick={()=>setSelectedRun(latest)}>Detail Testing</button>
+        {pdfsOf(latest).some(item=>item.pdfReady)&&<button type="button" className="text-button" onClick={()=>{const evidence=pdfsOf(latest).find(item=>item.pdfReady);if(evidence)setPreview({runId:latest.id,activityId:evidence.activityId,fileName:evidence.fileName});}}>Download PDF</button>}
+        {pendingEvidence(latest).map(item=><button type="button" className="text-button" key={item.activityId} disabled={formLocked||reprocessingId===`${latest.id}:${item.activityId}`} onClick={()=>void retryEvidence(latest,item.activityId)}>{reprocessingId===`${latest.id}:${item.activityId}`?"Mengambil bukti...":"Proses Ulang Bukti"}</button>)}
+      </div>}
+    </section>
 
     {progress&&<TestingProgress product="Client Simulator" progress={progress} running={running} formReady={!running} onCancel={async()=>{await api("cancelRun",{id:progressIdRef.current});}} onClose={()=>setProgress(null)} onRetryEvidence={undefined}/>}
 
@@ -230,7 +263,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       </div>
       <HistoryFilter value={historyRange} onChange={range=>{setHistoryRange(range);setOffset(0);}} filters={historyFilters} onFiltersChange={next=>{setHistoryFilters(next);setOffset(0);}} isAdmin={canViewAll}/>
       <div className="table-wrap" aria-busy={historyData.loading}><table><thead><tr><th>WAKTU</th>{canViewAll&&<th>PELAKSANA</th>}<th>SERVICE / PENYEDIA</th><th>STATUS</th><th>HTTP / PDF</th><th>DURASI</th><th>AKSI</th></tr></thead>
-        <tbody>{historyData.runs.filter(r=>r.mode==="client_sim"||r.mode==="mock").map(run=>{
+        <tbody>{historyRuns.map(run=>{
           const name=object(run.request)?String(run.request.activityName??""):"";
           const pdf=countsOf(run);
           const evidence=pdfsOf(run).find(item=>item.pdfReady&&officialActivity(item.activityId));
@@ -242,20 +275,20 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
             <td>{run.http_status??"—"} / {pdf.required?`${pdf.ready}/${pdf.required}`:"—"}</td>
             <td>{run.duration_ms??0} ms</td>
             <td><div className="inline-actions">
-              <button type="button" className="text-button" onClick={()=>setSelectedRun(run)}>Detail</button>
+              <button type="button" className="text-button" onClick={()=>setSelectedRun(run)}>Detail Testing</button>
               <button type="button" className="text-button" onClick={()=>downloadJson(run)}>JSON</button>
-              {evidence&&<button type="button" className="text-button" disabled={!!downloadingId} onClick={()=>setPreview({runId:run.id,activityId:evidence.activityId,fileName:evidence.fileName})}>View PDF</button>}
+              {evidence&&<button type="button" className="text-button" disabled={!!downloadingId} onClick={()=>setPreview({runId:run.id,activityId:evidence.activityId,fileName:evidence.fileName})}>Download PDF</button>}
               {evidence&&<button type="button" className="text-button" disabled={downloadingId===`${run.id}:${evidence.activityId}`} onClick={()=>void downloadPdf(run,evidence.activityId,evidence.fileName)}>{downloadingId===`${run.id}:${evidence.activityId}`?"Mengunduh...":"Download PDF"}</button>}
               {pendingEvidence(run).map(item=><button type="button" className="text-button" key={item.activityId} disabled={running||reprocessingId===`${run.id}:${item.activityId}`} onClick={()=>void retryEvidence(run,item.activityId)}>{reprocessingId===`${run.id}:${item.activityId}`?"Mengambil bukti...":"Proses Ulang Bukti"}</button>)}
             </div></td>
           </tr>;
         })}</tbody>
-      </table>{!historyData.runs.length&&<p className="empty-note">{historyData.loading?"Memuat history…":"Belum ada history yang cocok."}</p>}</div>
-      <div className="history-pagination"><button className="secondary-button" disabled={!offset||historyData.loading} onClick={()=>setOffset(Math.max(0,offset-20))}>Sebelumnya</button><span>{historyData.total?`${offset+1}-${Math.min(offset+historyData.runs.length,historyData.total)} dari ${historyData.total}`:"0 hasil"}</span><button className="secondary-button" disabled={offset+20>=historyData.total||historyData.loading} onClick={()=>setOffset(offset+20)}>Berikutnya</button></div>
+      </table>{!historyRuns.length&&<p className="empty-note">{historyData.loading?"Memuat history…":"Belum ada history yang cocok."}</p>}</div>
+      <div className="history-pagination"><button className="secondary-button" disabled={!offset||historyData.loading} onClick={()=>setOffset(Math.max(0,offset-20))}>Sebelumnya</button><span>{historyData.total?`${offset+1}-${Math.min(offset+historyRuns.length,historyData.total)} dari ${historyData.total}`:"0 hasil"}</span><button className="secondary-button" disabled={offset+20>=historyData.total||historyData.loading} onClick={()=>setOffset(offset+20)}>Berikutnya</button></div>
     </section>
 
     {preview&&<PdfPreview runId={preview.runId} activityId={preview.activityId} fileName={preview.fileName} onClose={()=>setPreview(null)}/>}
-    {testingError&&<div className="modal-backdrop error-layer"><section className="card error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="sim-error-title"><button type="button" className="close-button" aria-label="Tutup" onClick={()=>setTestingError(null)}><UiIcon name="close"/></button><h2 id="sim-error-title">{testingError.summary}</h2><dl><div><dt>Detail</dt><dd>{testingError.technical}</dd></div><div><dt>Saran</dt><dd>{testingError.suggestion}</dd></div></dl></section></div>}
+    {testingError&&<div className="modal-backdrop error-layer"><section className="card edit-modal error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="sim-error-title"><div className="modal-header"><div><h2 id="sim-error-title">{testingError.summary}</h2></div><button type="button" className="close-button" aria-label="Tutup" title="Tutup" onClick={()=>setTestingError(null)}><UiIcon name="close"/></button></div><div className="modal-body"><dl><div><dt>Detail</dt><dd>{testingError.technical}</dd></div><div><dt>Saran</dt><dd>{testingError.suggestion}</dd></div></dl></div></section></div>}
     {selectedRun&&<ClientSimulatorDetailModal
       run={selectedRun}
       running={running}
@@ -271,7 +304,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       counts={countsOf(selectedRun)}
       officialActivity={officialActivity}
     />}
-  </>;
+  </div>;
 }
 
 
@@ -307,6 +340,6 @@ function ClientSimulatorDetailModal({run,running,reprocessingId,downloadingId,on
       <details className="json-fold"><summary>Request JSON</summary><pre className="snippet-code">{JSON.stringify(run.request,null,2)}</pre></details>
       <details className="json-fold"><summary>Response JSON</summary><pre className="snippet-code">{JSON.stringify(run.response,null,2)}</pre></details>
     </div>
-    <div className="modal-footer"><button type="button" className="secondary-button" onClick={onClose}>Tutup</button><button type="button" className="primary-button" onClick={onDownloadJson}>Download JSON</button></div>
+    <div className="modal-footer"><button type="button" className="primary-button" onClick={onDownloadJson}>Download JSON</button></div>
   </div></div>;
 }

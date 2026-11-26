@@ -20,7 +20,8 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
   const [importing,setImporting]=useState<{endpoint?:Item;service?:Item}|null>(null);
   const [serviceEditor,setServiceEditor]=useState<{service?:Item}|null>(null);
   const [serviceDraft,setServiceDraft]=useState({providerId:"",name:"",method:"POST",path:"",channelId:"",deviceId:"",partnerId:"",externalId:"",defaultBody:"{}",expectedHttpStatus:"",expectedCode:""});
-  const [serviceQuery,setServiceQuery]=useState(""),[providerFilter,setProviderFilter]=useState("");
+  const [serviceQuery,setServiceQuery]=useState(""),[endpointQuery,setEndpointQuery]=useState(""),[providerFilter,setProviderFilter]=useState("");
+  const [pendingDelete,setPendingDelete]=useState<Item|null>(null);
   const moduleAccess=kind==="sim_provider"||kind==="sim_service"?can(state.user,"client_simulator")||can(state.user,"master_data"):can(state.user,"master_data");
   const canCreate=moduleAccess,canUpdate=moduleAccess,canDelete=moduleAccess;
   const canMutate=canCreate||canUpdate;
@@ -33,12 +34,19 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
   const simServices=state.records.filter(x=>x.kind==="sim_service");
   const rows=kind==="snap_user"?users:kind==="dev_site"?[...sites,...incompleteClients]:kind==="sim_provider"?providers:kind==="endpoint"?endpoints:[];
   const serviceQueryText=serviceQuery.trim().toLowerCase();
+  const endpointQueryText=endpointQuery.trim().toLowerCase();
   const visibleServices=simServices.filter(item=>{
     if(providerFilter&&item.parentId!==providerFilter)return false;
     if(!serviceQueryText)return true;
     const providerName=providers.find(provider=>provider.id===item.parentId)?.name??"";
     return [item.name,value(item,"method"),value(item,"path")||value(item,"serviceUrl"),providerName].join(" ").toLowerCase().includes(serviceQueryText);
   });
+  const visibleEndpoints=endpoints.filter(item=>{
+    if(!endpointQueryText)return true;
+    const linked=services.filter(service=>service.parentId===item.id).map(service=>service.name).join(" ");
+    return [item.name,value(item,"method"),value(item,"path"),value(item,"portalUrl"),linked].join(" ").toLowerCase().includes(endpointQueryText);
+  });
+  const visibleRows=kind==="endpoint"?visibleEndpoints:rows;
   function open(item:Item|null){
     setEditing(item??"new");setModalError("");setError("");
     if(kind==="sim_provider"){
@@ -81,9 +89,13 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
       await reload();setEditing(null);setNotice("Master Data disimpan.");
     }catch(e){setModalError((e as Error).message);}finally{setBusy(false);}
   }
+  function deleteMessage(item:Item){
+    if(item.kind==="endpoint")return `Hapus Dev Site Endpoint ${item.name} beserta konfigurasi layanan dan templatenya? History Testing tetap disimpan.`;
+    if(item.kind==="sim_provider")return `Hapus penyedia ${item.name}? Hapus service turunannya terlebih dahulu.`;
+    return `Hapus ${item.name}?`;
+  }
   async function remove(item:Item){
-    if(!window.confirm(item.kind==="endpoint"?`Hapus Dev Site Endpoint ${item.name} beserta konfigurasi layanan dan templatenya? History Testing tetap disimpan.`:item.kind==="sim_provider"?`Hapus penyedia ${item.name}? Hapus service turunannya terlebih dahulu.`:`Hapus ${item.name}?`))return;
-    setBusy(true);setError("");
+    setBusy(true);setError("");setPendingDelete(null);
     try{await api(item.kind==="endpoint"?"deleteEndpointConfiguration":"delete",{id:item.id});await reload();setNotice("Data dihapus.");}catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
   function openService(service?:Item){
@@ -136,7 +148,7 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
     </label>;
 
   return <section className="card master-card">
-    <div className="section-header"><div><h2>Master Data</h2><p>Kelola User SNAP, Dev Site Client, Dev Site Endpoint, Penyedia Client Simulator, dan API Service Client Simulator.</p></div>{canCreate&&<button className="primary-button" disabled={busy||((kind==="dev_site"||kind==="endpoint")&&!users.length)||(kind==="sim_service"&&!providers.length)} onClick={()=>kind==="endpoint"?setImporting({}):kind==="dev_site"?setConnection("new"):kind==="sim_service"?openService():open(null)}>Tambah {labels[kind]}</button>}</div>
+    <div className="section-header"><div><h2>Master Data</h2><p>Kelola User SNAP, Dev Site Client, Dev Site Endpoint, Penyedia Client Simulator, dan API Service Client Simulator.</p></div>{canCreate&&<button className="primary-button" disabled={busy||((kind==="dev_site"||kind==="endpoint")&&!users.length)||(kind==="sim_service"&&!providers.length)} onClick={()=>kind==="endpoint"?setImporting({}):kind==="dev_site"?setConnection("new"):kind==="sim_service"?openService():open(null)} title={`Tambah ${labels[kind]}`}>Tambah</button>}</div>
     {importing&&<DocumentationImport users={users} endpoint={importing.endpoint} service={importing.service} api={api} reload={reload} onClose={()=>setImporting(null)}/>}
     <div className="tabs" role="tablist">{(Object.keys(labels) as Kind[]).map(key=><button key={key} role="tab" aria-selected={kind===key} className={kind===key?"active":""} onClick={()=>{setKind(key);setEditing(null);setConnection(null);setServiceEditor(null);}}>{labels[key]}</button>)}</div>
     {kind==="dev_site"&&!users.length&&<p className="helper">Tambahkan User SNAP sebelum membuat Dev Site Client.</p>}
@@ -144,20 +156,29 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
       <label className="form-field"><span>Cari API Service</span><input aria-label="Cari API Service" value={serviceQuery} onChange={e=>setServiceQuery(e.target.value)} placeholder="Nama, method, atau path"/></label>
       <label className="form-field"><span>Filter penyedia</span><select aria-label="Filter penyedia" value={providerFilter} onChange={e=>setProviderFilter(e.target.value)}><option value="">Semua penyedia</option>{providers.map(provider=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
     </div>}
+    {kind==="endpoint"&&<div className="form-grid">
+      <label className="form-field wide"><span>Cari Dev Site Endpoint</span><input aria-label="Cari Dev Site Endpoint" value={endpointQuery} onChange={e=>setEndpointQuery(e.target.value)} placeholder="Nama endpoint, API Service, method, path, atau URL ASPI"/></label>
+    </div>}
     {kind==="sim_service"?<div className="table-wrap" aria-busy={busy}><table><thead><tr><th>NAMA</th><th>PENYEDIA</th><th>METHOD / PATH</th><th>DIPERBARUI</th>{canMutate&&<th>AKSI</th>}</tr></thead><tbody>{visibleServices.map(item=>{
       const owner=providers.find(provider=>provider.id===item.parentId);
-      return <tr key={item.id}><td><strong>{item.name}</strong></td><td>{owner?.name??"—"}</td><td>{[value(item,"method")||"POST",value(item,"path")||value(item,"serviceUrl")].filter(Boolean).join(" ")}</td><td>{new Date(item.updatedAt).toLocaleDateString("id-ID")}</td>{canMutate&&<td><div className="inline-actions">{canUpdate&&<button disabled={busy} onClick={()=>openService(item)}>Edit</button>}{canDelete&&<button disabled={busy} className="danger-action" onClick={()=>remove(item)}>Hapus</button>}</div></td>}</tr>;
-    })}</tbody></table>{!visibleServices.length&&<p className="empty-note">{simServices.length?"Tidak ada API Service yang cocok dengan pencarian.":"Belum ada API Service Client Simulator."}</p>}</div>:<div className="table-wrap"><table><thead><tr><th>NAMA</th><th>DETAIL</th><th>DIPERBARUI</th>{canMutate&&<th>AKSI</th>}</tr></thead><tbody>{rows.map(item=>{
+      return <tr key={item.id}><td><strong>{item.name}</strong></td><td>{owner?.name??"—"}</td><td>{[value(item,"method")||"POST",value(item,"path")||value(item,"serviceUrl")].filter(Boolean).join(" ")}</td><td>{new Date(item.updatedAt).toLocaleDateString("id-ID")}</td>{canMutate&&<td><div className="inline-actions">{canUpdate&&<button disabled={busy} onClick={()=>openService(item)}>Edit</button>}{canDelete&&<button disabled={busy} className="danger-action" onClick={()=>setPendingDelete(item)}>Hapus</button>}</div></td>}</tr>;
+    })}</tbody></table>{!visibleServices.length&&<p className="empty-note">{simServices.length?"Tidak ada API Service yang cocok dengan pencarian.":"Belum ada API Service Client Simulator."}</p>}</div>:<div className="table-wrap"><table><thead><tr><th>NAMA</th><th>DETAIL</th><th>DIPERBARUI</th>{canMutate&&<th>AKSI</th>}</tr></thead><tbody>{visibleRows.map(item=>{
       const incomplete=item.kind==="client",siteClient=incomplete?item:linkDevSite(state.records,item).client;
       const linkedServices=services.filter(x=>x.parentId===item.id);
       const linkedSim=simServices.filter(x=>x.parentId===item.id);
-      return <tr key={item.id}><td><strong>{item.name}</strong>{incomplete&&<span className="cell-caption">Belum dilengkapi</span>}</td><td className="detail-cell">{kind==="snap_user"?(value(item,"email")||"—"):kind==="dev_site"?<>{incomplete?"Pilih Lengkapi untuk menghubungkan User SNAP":users.find(x=>x.id===value(item,"defaultUserId"))?.name??"—"}<span className="cell-caption">{[incomplete?"Client tersimpan":value(item,"mode")==="mock"?"Mock Lokal":value(item,"mode")==="live"?"Live Bank Sumut":"ASPI Sandbox",fieldOf(siteClient,"channelId")&&`CHANNEL-ID ${fieldOf(siteClient,"channelId")}`,fieldOf(siteClient,"deviceId")&&`X-DEVICE-ID ${fieldOf(siteClient,"deviceId")}`].filter(Boolean).join(" · ")}</span></>:kind==="sim_provider"?<>{value(item,"baseUrl")||"—"}<span className="cell-caption">AT {String(item.data.signatureAccessTokenMode??"FUNCTION")} · SVC {String(item.data.signatureServiceMode??"FUNCTION")} · {linkedSim.length} service</span><span className="cell-caption">{linkedSim.map(s=>s.name).join(" · ")||"Belum ada API Service"}</span></>:<>{[value(item,"method"),value(item,"path")].filter(Boolean).join(" ")||"—"}<span className="cell-caption">{value(item,"portalUrl")||"URL Aplikasi Pengujian belum diisi"}</span><span className="cell-caption">{linkedServices.map(service=>service.name).join(" · ")||"Belum ada konfigurasi layanan"}</span></>}</td><td>{new Date(item.updatedAt).toLocaleDateString("id-ID")}</td>{canMutate&&<td><div className="inline-actions">{kind==="endpoint"?linkedServices.length>1?linkedServices.map(service=><button key={service.id} disabled={busy||!canUpdate} onClick={()=>setImporting({endpoint:item,service})}>Edit {service.name}</button>):<button disabled={busy||!canUpdate} onClick={()=>setImporting({endpoint:item,service:linkedServices[0]})}>Edit</button>:kind==="sim_provider"?<>{canUpdate&&<button disabled={busy} onClick={()=>open(item)}>Edit</button>}</>: <button disabled={busy||!canUpdate} onClick={()=>kind==="dev_site"?setConnection(item):open(item)}>{incomplete?"Lengkapi":"Edit"}</button>}{canDelete&&<button disabled={busy} className="danger-action" onClick={()=>remove(item)}>Hapus</button>}</div></td>}</tr>;
-    })}</tbody></table>{!rows.length&&<p className="empty-note">Belum ada data.</p>}</div>}
+      return <tr key={item.id}><td><strong>{item.name}</strong>{incomplete&&<span className="cell-caption">Belum dilengkapi</span>}</td><td className="detail-cell">{kind==="snap_user"?(value(item,"email")||"—"):kind==="dev_site"?<>{incomplete?"Pilih Lengkapi untuk menghubungkan User SNAP":users.find(x=>x.id===value(item,"defaultUserId"))?.name??"—"}<span className="cell-caption">{[incomplete?"Client tersimpan":"ASPI Sandbox",fieldOf(siteClient,"channelId")&&`CHANNEL-ID ${fieldOf(siteClient,"channelId")}`,fieldOf(siteClient,"deviceId")&&`X-DEVICE-ID ${fieldOf(siteClient,"deviceId")}`].filter(Boolean).join(" · ")}</span></>:kind==="sim_provider"?<>{value(item,"baseUrl")||"—"}<span className="cell-caption">AT {String(item.data.signatureAccessTokenMode??"FUNCTION")} · SVC {String(item.data.signatureServiceMode??"FUNCTION")} · {linkedSim.length} service</span><span className="cell-caption">{linkedSim.map(s=>s.name).join(" · ")||"Belum ada API Service"}</span></>:<>{[value(item,"method"),value(item,"path")].filter(Boolean).join(" ")||"—"}<span className="cell-caption">{value(item,"portalUrl")||"URL Aplikasi Pengujian belum diisi"}</span><span className="cell-caption">{linkedServices.map(service=>service.name).join(" · ")||"Belum ada konfigurasi layanan"}</span></>}</td><td>{new Date(item.updatedAt).toLocaleDateString("id-ID")}</td>{canMutate&&<td><div className="inline-actions">{kind==="endpoint"?linkedServices.length>1?linkedServices.map(service=><button key={service.id} disabled={busy||!canUpdate} onClick={()=>setImporting({endpoint:item,service})}>Edit {service.name}</button>):<button disabled={busy||!canUpdate} onClick={()=>setImporting({endpoint:item,service:linkedServices[0]})}>Edit</button>:kind==="sim_provider"?<>{canUpdate&&<button disabled={busy} onClick={()=>open(item)}>Edit</button>}</>: <button disabled={busy||!canUpdate} onClick={()=>kind==="dev_site"?setConnection(item):open(item)}>{incomplete?"Lengkapi":"Edit"}</button>}{canDelete&&<button disabled={busy} className="danger-action" onClick={()=>setPendingDelete(item)}>Hapus</button>}</div></td>}</tr>;
+    })}</tbody></table>{!visibleRows.length&&<p className="empty-note">{kind==="endpoint"&&endpoints.length?"Tidak ada Dev Site Endpoint yang cocok dengan pencarian.":"Belum ada data."}</p>}</div>}
     {kind==="endpoint"&&<p className="helper">Dev Site Endpoint terpisah dari Penyedia Client Simulator.</p>}
     {kind==="sim_provider"&&<p className="helper">Client Secret dan Private Key disimpan terenkripsi. API Service dikelola pada tab API Service Client Simulator.</p>}
     {kind==="sim_service"&&<p className="helper">Field yang dikosongkan memakai default penyedia. Kredensial penyedia tidak disalin ke API Service.</p>}
-    {editing&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save}>
-      <div className="section-header"><div><h2>{editing==="new"?"Tambah":"Edit"} {labels[kind]}</h2><p>{kind==="sim_provider"?"Isian bertanda * wajib. HIT_API mengubah Private Key PEM menjadi base64 secara otomatis.":"Perbaiki isian yang ditandai sebelum menyimpan."}</p></div></div>
+    {pendingDelete&&<div className="modal-backdrop nested" onClick={event=>{if(event.target===event.currentTarget&&!busy)setPendingDelete(null);}}><div className="card edit-modal" role="dialog" aria-modal="true" aria-labelledby="delete-title" onClick={event=>event.stopPropagation()}>
+      <div className="modal-header"><div><h2 id="delete-title">Konfirmasi Hapus</h2><p>{pendingDelete.name}</p></div><button type="button" className="close-button" aria-label="Tutup" title="Tutup" disabled={busy} onClick={()=>setPendingDelete(null)}><UiIcon name="close"/></button></div>
+      <div className="modal-body"><p>{deleteMessage(pendingDelete)}</p></div>
+      <div className="modal-footer"><button type="button" className="secondary-button" disabled={busy} onClick={()=>setPendingDelete(null)}>Batal</button><button type="button" className="danger-button" disabled={busy} onClick={()=>void remove(pendingDelete)}>{busy?"Menghapus...":"Hapus"}</button></div>
+    </div></div>}
+    {editing&&<div className="modal-backdrop"><form className="card edit-modal" onSubmit={save} role="dialog" aria-modal="true">
+      <div className="modal-header"><div><h2>{editing==="new"?"Tambah":"Edit"} {labels[kind]}</h2><p>{kind==="sim_provider"?"Isian bertanda * wajib. HIT_API mengubah Private Key PEM menjadi base64 secara otomatis.":"Perbaiki isian yang ditandai sebelum menyimpan."}</p></div><button type="button" className="close-button" aria-label="Tutup" title="Tutup" disabled={busy} onClick={()=>{setEditing(null);setModalError("");}}><UiIcon name="close"/></button></div>
+      <div className="modal-body">
       {modalError&&<div className="form-error" role="alert">{modalError}</div>}
       <div className="form-grid">
         <label className="form-field"><span>Nama *</span><input required maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
@@ -196,10 +217,12 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
           </details>
         </>}
       </div>
-      <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>{setEditing(null);setModalError("");}}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
+      </div>
+      <div className="modal-footer"><button type="button" className="secondary-button" disabled={busy} onClick={()=>{setEditing(null);setModalError("");}}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
     </form></div>}
     {serviceEditor&&<div className="modal-backdrop" onClick={event=>{if(event.target===event.currentTarget&&!busy)setServiceEditor(null);}}><form className="card edit-modal" role="dialog" aria-modal="true" aria-labelledby="sim-service-title" onSubmit={saveService} onClick={event=>event.stopPropagation()} onKeyDown={event=>{if(event.key==="Escape"&&!busy){event.preventDefault();setServiceEditor(null);}}}>
-      <div className="section-header"><div><h2 id="sim-service-title">{serviceEditor.service?"Edit":"Tambah"} API Service Client Simulator</h2><p>Service ini dipilih di halaman Client Simulator. Path relatif disambung ke Base URL penyedia saat pengujian dijalankan.</p></div><button type="button" className="close-button" aria-label="Tutup" disabled={busy} onClick={()=>setServiceEditor(null)}><UiIcon name="close"/></button></div>
+      <div className="modal-header"><div><h2 id="sim-service-title">{serviceEditor.service?"Edit":"Tambah"} API Service Client Simulator</h2><p>Path relatif disambung ke Base URL penyedia saat pengujian dijalankan.</p></div><button type="button" className="close-button" aria-label="Tutup" title="Tutup" disabled={busy} onClick={()=>setServiceEditor(null)}><UiIcon name="close"/></button></div>
+      <div className="modal-body">
       {modalError&&<div className="form-error" role="alert">{modalError}</div>}
       <div className="form-grid">
         <label className="form-field"><span>Penyedia Client Simulator *</span><select required aria-label="Penyedia Client Simulator" value={serviceDraft.providerId} onChange={e=>setServiceDraft({...serviceDraft,providerId:e.target.value})}><option value="">Pilih penyedia</option>{providers.map(provider=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
@@ -221,7 +244,8 @@ export default function MasterData({state,api,reload,setError,setNotice,initialK
           </div>
         </details>
       </div>
-      <div className="form-actions"><button type="button" className="secondary-button" disabled={busy} onClick={()=>setServiceEditor(null)}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
+      </div>
+      <div className="modal-footer"><button type="button" className="secondary-button" disabled={busy} onClick={()=>setServiceEditor(null)}>Batal</button><button className="primary-button" disabled={busy}>{busy?"Menyimpan...":"Simpan"}</button></div>
     </form></div>}
     {connection&&<ConnectionForm client={selectedClient} environment={selectedSite} user={owner} users={users} api={api} reload={reload} onClose={()=>setConnection(null)} onSaved={()=>{setConnection(null);setNotice("Dev Site Client disimpan.");}}/>}
   </section>;
