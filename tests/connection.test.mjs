@@ -125,7 +125,7 @@ test("execution log disables Tutup while finalizing even if finished step alread
 test("a Dev Site draft requires an owner, defaults to ASPI Sandbox and has editable channel",()=>{
   const ConnectionForm=component("app/connection-form.tsx");
   const html=renderToStaticMarkup(createElement(ConnectionForm,{api:async()=>({}),reload:async()=>{},onSaved:()=>{},onClose:()=>{}}));
-  assert.match(html,/User SNAP \*/);assert.match(html,/Nama Dev Site Client/);assert.match(html,/ASPI Sandbox/);assert.doesNotMatch(html,/Mode Pengujian \*/);assert.doesNotMatch(html,/<option value="mock">Mock Lokal/);assert.doesNotMatch(html,/URL Aplikasi Pengujian Access Token B2B|Encoding RSA|Encoding HMAC|Public Key client/);assert.match(html,/>Simpan</);
+  assert.match(html,/User SNAP \*/);assert.match(html,/Nama Dev Site Client/);assert.match(html,/\* wajib diisi/);assert.doesNotMatch(html,/Mode Pengujian \*/);assert.doesNotMatch(html,/<option value="mock">Mock Lokal/);assert.doesNotMatch(html,/URL Aplikasi Pengujian Access Token B2B|Encoding RSA|Encoding HMAC|Public Key client/);assert.match(html,/>Simpan</);
   assert.match(html,/value="95221"/);assert.doesNotMatch(html,/Target pengujian|Simulasi lokal/);
   assert.doesNotMatch(html,/<span>Access Token|provided_token|rekening konsumen/);
 });
