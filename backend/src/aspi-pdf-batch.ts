@@ -64,7 +64,10 @@ export async function collectActivityPdfs(input:BatchInput):Promise<PdfEvidence[
       listingError="";
       for(const path of paths){
         const match=describeActivityMatch(before,[...rows.values()],path,input.activityNames?.[path]);
-        await input.report("running",`Activity search ${path}: listed=${match.listed} fresh=${match.fresh} candidates=${match.candidates.length} → ${match.result}`);
+        const label=input.activityNames?.[path]?.[0]||path;
+        if(match.result==="matched")await input.report("running",`${label}: Activity ID ditemukan`);
+        else if(match.result==="ACTIVITY_AMBIGUOUS")await input.report("running",`${label}: beberapa kandidat Activity ID`);
+        else await input.report("running",`${label}: mencari Activity ID…`);
       }
     }catch(cause){
       const message=cause instanceof Error?cause.message:"";
@@ -100,7 +103,8 @@ export async function collectActivityPdfs(input:BatchInput):Promise<PdfEvidence[
         results[index]=failure(path,detail);
       }
       else{
-        await input.report("running",`${path}: mengunduh PDF; Activity ID ${activity.activityId}.`);
+        const label=String(activity.service||input.activityNames?.[path]?.[0]||path).trim()||path;
+        await input.report("running",`${label}: mengunduh PDF · Activity ID ${activity.activityId}`);
         let error="";
         let attempts=0;
         // Fair share of remaining budget so one slow PDF cannot starve the rest.
@@ -117,7 +121,7 @@ export async function collectActivityPdfs(input:BatchInput):Promise<PdfEvidence[
             break;
           }catch(cause){
             error=downloadError(cause);
-            await input.report("failed",`${path}: ${error} (percobaan ${attempt}/2).`);
+            await input.report("failed",`${label}: ${error} (percobaan ${attempt}/2)`);
             if(attempt===1&&!shouldRetryDownload(error))break;
             if(attempt===1&&active())await new Promise<void>(resolve=>setTimeout(resolve,400));
           }
@@ -127,7 +131,8 @@ export async function collectActivityPdfs(input:BatchInput):Promise<PdfEvidence[
       const result=results[index];
       result.key=input.operations?.[index]?.key;
       await input.onResult?.(result);
-      await input.report(result.pdf?"completed":"failed",result.pdf?`${path}: PDF diterima; Activity ID ${activity!.activityId}.`:`${path}: ${result.error}`);
+      const doneLabel=String(result.activity?.service||input.activityNames?.[path]?.[0]||path).trim()||path;
+      await input.report(result.pdf?"completed":"failed",result.pdf?`${doneLabel}: PDF diterima · Activity ID ${result.activity!.activityId}`:`${doneLabel}: ${result.error}`);
     }
   };
   // Bounded parallelism avoids four serial report downloads without opening excessive tabs.

@@ -169,12 +169,14 @@ export class RunEvidenceService{
                 );
                 await query("UPDATE autosnap_runs SET request_json=request_json || $1::jsonb WHERE id=$2 AND operator_id=$3",[JSON.stringify({evidence:plan,aspiActivities:activities,evidenceErrors:this.missingOf(plan)}),run.id,input.ownerId]);
               });
-              await emit("pdf_store","completed",`${op.path}: PDF resmi ASPI (Download/html2pdf) CAPTURED; Activity ID ${op.activity.activityId}; SHA-256 ${contentSha256}; fingerprint ${contentFingerprint}. Kesesuaian tampilan vs Firefox belum VERIFIED.`);
+              const label=String(op.activity.service||op.service||op.path).trim()||op.path;
+              await emit("pdf_store","completed",`${label}: PDF tersimpan · Activity ID ${op.activity.activityId}`);
             }catch(cause){
               op.pdfReady=previousReady;delete op.contentSha256;delete op.contentFingerprint;delete op.byteSize;delete op.pdfProducer;delete op.downloadedAt;delete op.authenticity;
               const mapped=describePdfFailure(cause);
               op.error=/^(DATABASE|PDF_STORAGE)/.test(mapped)?mapped:"PDF_STORAGE_ERROR: Gagal menyimpan PDF resmi ke database.";
-              await persist();await emit("pdf_store","failed",`${op.path}: ${op.error}`);
+              const label=String(op.activity?.service||op.service||op.path).trim()||op.path;
+              await persist();await emit("pdf_store","failed",`${label}: ${op.error}`);
             }
           }
           await persist();
@@ -259,10 +261,10 @@ export class RunEvidenceService{
     const httpFailed=!evaluation.httpValidation?.matches;
     const promoted={...evaluation,outcome:status,detail:httpFailed?evaluation.detail:complete?evaluation.detail.replace(/Pengumpulan bukti PDF belum selesai\.?/,"Bukti PDF lengkap."):evaluation.detail,suggestion:complete||httpFailed?"":"Sebagian bukti PDF belum tersedia. Proses ulang hanya mengunduh PDF yang belum tersimpan."};
     const notes=httpFailed
-      ? `${evaluation.detail} Bukti PDF resmi ASPI ${count}/${plan.operations.length} tersimpan. Outcome tetap FAILED karena validasi HTTP sebelumnya tidak sesuai.`
+      ? `${evaluation.detail} Bukti PDF ${count}/${plan.operations.length} tersimpan. Outcome tetap FAILED karena validasi HTTP sebelumnya tidak sesuai.`
       : complete
-        ? `HTTP sesuai expected. Bukti PDF resmi ASPI ${count}/${plan.operations.length} CAPTURED (asal Download/html2pdf). Kesesuaian tampilan vs Firefox belum VERIFIED. Outcome: PASSED.`
-        : `HTTP sesuai expected. Bukti PDF resmi ASPI ${count}/${plan.operations.length} tersimpan. Outcome: COMPLETED. Belum tersedia: ${missing.map(item=>item.path).join(", ")||"—"}.`;
+        ? `HTTP sesuai expected. Bukti PDF ${count}/${plan.operations.length} tersimpan. Outcome: PASSED.`
+        : `HTTP sesuai expected. Bukti PDF ${count}/${plan.operations.length} tersimpan. Outcome: COMPLETED. Belum tersedia: ${missing.map(item=>item.path).join(", ")||"—"}.`;
     let checkpoint=object(request.checkpoint)&&Array.isArray(request.checkpoint.stages)?structuredClone(request.checkpoint) as RunCheckpoint:{version:1 as const,stages:[]};
     if(complete){
       checkpoint=markStage(checkpoint,"evidence","COMPLETED",`${count}/${plan.operations.length} PDF resmi tersimpan`);
