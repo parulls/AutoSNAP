@@ -16,7 +16,10 @@ import { evidencePdfFilenameForRun } from "./evidence-filename";
 import EvaluationNotice from "./evaluation-notice";
 
 const value=(row:Item|undefined,key:string)=>String(row?.data[key]??"");
+const fieldValue=(row:Item|undefined,key:string)=>value(row,key).trim();
 const object=(entry:unknown):entry is Record<string,unknown>=>!!entry&&typeof entry==="object"&&!Array.isArray(entry);
+/** Service override wins when non-empty; otherwise inherit from penyedia Master Data. */
+const headerFrom=(provider:Item|undefined,service:Item|undefined,key:string)=>fieldValue(service,key)||fieldValue(provider,key);
 
 function pad(n:number){return String(n).padStart(2,"0");}
 function buildTimestamp(offsetMinutes:number,includeMillis:boolean,at=new Date()){
@@ -65,35 +68,42 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
   },[selectedRun,testingError,running]);
   const historyData=useHistory(api,historyRange,"simulator",historyQuery,offset,20,state.runs,historyFilters);
 
-  function defaultsFrom(nextProvider?:Item,nextService?:Item){
-    const p=nextProvider??provider,s=nextService??service;
+  function defaultsFrom(p:Item|undefined,s:Item|undefined){
     return {
-      partnerId:value(s,"partnerId")||value(p,"partnerId"),
-      externalId:value(s,"externalId"),
-      deviceId:value(s,"deviceId")||value(p,"deviceId"),
-      channelId:value(s,"channelId")||value(p,"channelId"),
-      body:value(s,"defaultBody")||value(s,"requestBody")||"{}",
+      partnerId:headerFrom(p,s,"partnerId"),
+      externalId:fieldValue(s,"externalId"),
+      deviceId:headerFrom(p,s,"deviceId"),
+      channelId:headerFrom(p,s,"channelId"),
+      body:fieldValue(s,"defaultBody")||fieldValue(s,"requestBody")||"{}",
     };
   }
-  function loadDefaults(nextProvider?:Item,nextService?:Item,force=true){
-    const p=nextProvider??provider,s=nextService??service;
+  const masterDefaults=defaultsFrom(provider,serviceId?service:undefined);
+  const shownPartnerId=headerTouched.partnerId?partnerId:masterDefaults.partnerId;
+  const shownExternalId=headerTouched.externalId?externalId:masterDefaults.externalId;
+  const shownDeviceId=headerTouched.deviceId?deviceId:masterDefaults.deviceId;
+  const shownChannelId=headerTouched.channelId?channelId:masterDefaults.channelId;
+  const shownBody=headerTouched.body?body:masterDefaults.body;
+  function applyTimestampDefaults(p:Item|undefined){
     const cfg=object(p?.data.timestampConfig)?p!.data.timestampConfig as {offsetMinutes?:number;includeMillis?:boolean}:{};
     const millis=cfg.includeMillis===true;
     const offset=Number(cfg.offsetMinutes??420);
-    const next=defaultsFrom(p,s);
     setIncludeMillis(millis);
     setTimestamp(()=>buildTimestamp(offset,millis,new Date(Date.now()+120_000)));
-    if(force||!headerTouched.partnerId||partnerId===appliedDefaults.current.partnerId)setPartnerId(next.partnerId);
-    if(force||!headerTouched.externalId||externalId===appliedDefaults.current.externalId)setExternalId(next.externalId);
-    if(force||!headerTouched.deviceId||deviceId===appliedDefaults.current.deviceId)setDeviceId(next.deviceId);
-    if(force||!headerTouched.channelId||channelId===appliedDefaults.current.channelId)setChannelId(next.channelId);
-    if(force||!headerTouched.body||body===appliedDefaults.current.body)setBody(next.body);
+  }
+  function loadDefaults(p:Item|undefined,s:Item|undefined){
+    const next=defaultsFrom(p,s);
+    applyTimestampDefaults(p);
+    setPartnerId(next.partnerId);
+    setExternalId(next.externalId);
+    setDeviceId(next.deviceId);
+    setChannelId(next.channelId);
+    setBody(next.body);
     appliedDefaults.current=next;
-    if(force)setHeaderTouched({partnerId:false,deviceId:false,channelId:false,externalId:false,body:false});
+    setHeaderTouched({partnerId:false,deviceId:false,channelId:false,externalId:false,body:false});
   }
   function resetRequest(){
     if(running)return;
-    setScenarioId("");setScenarioAttempted(false);setConfirmDuplicate(false);loadDefaults(provider,service,true);
+    setScenarioId("");setScenarioAttempted(false);setConfirmDuplicate(false);loadDefaults(provider,service);
   }
   function snapUserLabel(user:Item){
     const display=value(user,"displayUsername").trim();
@@ -112,9 +122,9 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     if(!chosen){setError("Pilih skenario pengujian terlebih dahulu.");return;}
     if(chosen.id==="DUPLICATE_EXTERNAL_ID"&&!confirmDuplicate){setError("Konfirmasi diperlukan sebelum baseline bank dan uji duplikat lewat ASPI.");return;}
     try{buildClientSimulatorServiceName(provider.name,service.name,chosen.label);}catch(error){setError(thrownMessage(error));return;}
-    if(!channelId.trim()){setError("CHANNEL-ID wajib diisi. Form ASPI mengirim header ini.");return;}
-    if(!deviceId.trim()){setError("X-DEVICE-ID wajib diisi. Bank Sumut menolak request tanpa header ini.");return;}
-    if(!partnerId.trim()){setError("X-PARTNER-ID wajib diisi pada penyedia atau API Service.");return;}
+    if(!shownChannelId.trim()){setError("CHANNEL-ID wajib diisi. Form ASPI mengirim header ini.");return;}
+    if(!shownDeviceId.trim()){setError("X-DEVICE-ID wajib diisi. Bank Sumut menolak request tanpa header ini.");return;}
+    if(!shownPartnerId.trim()){setError("X-PARTNER-ID wajib diisi pada penyedia atau API Service.");return;}
     const progressId=crypto.randomUUID();
     progressIdRef.current=progressId;
     setBusy(true);setRunning(true);setResultId(null);setError("");setProgress({status:"queued",stage:"preparing",steps:[]});
@@ -128,7 +138,7 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
     try{
       const response=await api("runClientSimulator",{
         progressId,providerId,serviceId,snapUserId,scenarioId,confirmDuplicateExternalId:confirmDuplicate,
-        overrides:{partnerId,externalId,deviceId,channelId,body,timestamp,includeMillis,offsetMinutes,regenerateExternalId:scenarioId!=="DUPLICATE_EXTERNAL_ID"&&!externalId.trim()},
+        overrides:{partnerId:shownPartnerId,externalId:shownExternalId,deviceId:shownDeviceId,channelId:shownChannelId,body:shownBody,timestamp,includeMillis,offsetMinutes,regenerateExternalId:scenarioId!=="DUPLICATE_EXTERNAL_ID"&&!shownExternalId.trim()},
       });
       try{setProgress(await api("getProgress",{id:progressId}) as unknown as TestProgress);}catch{/* the modal already has the last poll */}
       setNotice(`${String(response.activityName??"Client Simulator")} · ${String(response.status??"")} · PDF ${response.pdfReady?"tersimpan":"belum tersimpan"}`);
@@ -151,7 +161,16 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       historyData.refresh();
       const nextProvider=next.records.find(item=>item.id===providerId&&item.kind==="sim_provider");
       const nextService=next.records.find(item=>item.id===serviceId&&item.kind==="sim_service"&&item.parentId===providerId);
-      if(nextProvider||nextService)loadDefaults(nextProvider,nextService,false);
+      if(nextProvider){
+        applyTimestampDefaults(nextProvider);
+        const nextDefaults=defaultsFrom(nextProvider,nextService);
+        if(!headerTouched.partnerId||partnerId===appliedDefaults.current.partnerId)setPartnerId(nextDefaults.partnerId);
+        if(!headerTouched.externalId||externalId===appliedDefaults.current.externalId)setExternalId(nextDefaults.externalId);
+        if(!headerTouched.deviceId||deviceId===appliedDefaults.current.deviceId)setDeviceId(nextDefaults.deviceId);
+        if(!headerTouched.channelId||channelId===appliedDefaults.current.channelId)setChannelId(nextDefaults.channelId);
+        if(!headerTouched.body||body===appliedDefaults.current.body)setBody(nextDefaults.body);
+        appliedDefaults.current=nextDefaults;
+      }
     }finally{setRefreshing(false);}
   }
 
@@ -231,8 +250,8 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       <div className="section-header"><div><h2>Form Testing</h2><p>Pilih User SNAP, penyedia, API Service, dan skenario.</p></div></div>
       <div className="form-grid">
         <label className="form-field"><span>User SNAP</span><select required aria-label="User SNAP" disabled={formLocked} value={snapUserId} onChange={e=>setSnapUserId(e.target.value)}><option value="">Pilih User SNAP</option>{snapUsers.map(user=><option key={user.id} value={user.id}>{snapUserLabel(user)}</option>)}</select></label>
-        <label className="form-field"><span>Penyedia Client Simulator</span><select required disabled={formLocked} value={providerId} onChange={e=>{const id=e.target.value;setProviderId(id);setServiceId("");loadDefaults(providers.find(x=>x.id===id),undefined);}}><option value="">Pilih penyedia</option>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-        <label className="form-field"><span>API Service</span><select required aria-label="API Service" disabled={formLocked||!providerId||!services.length} value={serviceId} onChange={e=>{const id=e.target.value;setServiceId(id);loadDefaults(provider,services.find(s=>s.id===id));}}><option value="">{services.length?"Pilih service":"Belum ada service"}</option>{services.map(s=><option key={s.id} value={s.id}>{s.name} - {value(s,"method")||"POST"} {value(s,"path")||value(s,"serviceUrl")}</option>)}</select></label>
+        <label className="form-field"><span>Penyedia Client Simulator</span><select required aria-label="Penyedia Client Simulator" disabled={formLocked} value={providerId} onChange={e=>{const id=e.target.value;const nextProvider=providers.find(x=>x.id===id);setProviderId(id);setServiceId("");loadDefaults(nextProvider,undefined);}}><option value="">Pilih penyedia</option>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label className="form-field"><span>API Service</span><select required aria-label="API Service" disabled={formLocked||!providerId||!services.length} value={serviceId} onChange={e=>{const id=e.target.value;const nextProvider=providers.find(x=>x.id===providerId);const nextService=services.find(s=>s.id===id);setServiceId(id);loadDefaults(nextProvider,nextService);}}><option value="">{services.length?"Pilih service":"Belum ada service"}</option>{services.map(s=><option key={s.id} value={s.id}>{s.name} - {value(s,"method")||"POST"} {value(s,"path")||value(s,"serviceUrl")}</option>)}</select></label>
         <label className="form-field"><span>Skenario Pengujian *</span><select aria-label="Skenario Pengujian" aria-invalid={scenarioError?true:undefined} disabled={formLocked} value={scenarioId} onChange={e=>{setScenarioId(e.target.value);setConfirmDuplicate(false);}}><option value="">Pilih Skenario</option>{CLIENT_SIMULATOR_SCENARIOS.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>{scenarioError&&<small className="field-error" role="alert">{scenarioError}</small>}</label>
       </div>
       {provider&&!services.length&&<p className="helper">Penyedia ini belum mempunyai API Service. Tambahkan API Service melalui Master Data → API Service Client Simulator.{onOpenMasterData&&<> <button type="button" className="text-button" onClick={onOpenMasterData}>Buka API Service Client Simulator</button></>}</p>}
@@ -240,11 +259,11 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
       <label className="form-field wide"><span>Service Name ASPI</span><input readOnly aria-label="Service Name ASPI" value={aspiServiceName} placeholder="Pilih penyedia, API Service, dan skenario."/></label>
       {expectation&&<section aria-label="Expected Result"><h3>Expected Result</h3><dl className="expected-result"><div><dt>HTTP Status</dt><dd>{expectation.http}</dd></div><div><dt>SNAP Code</dt><dd>{expectation.code||`${expectation.pattern} · opsional`}</dd></div><div><dt>Response Message</dt><dd>{expectation.message||"—"}</dd></div></dl><p className="helper">{selectedScenario?selectedScenario.summary:"Pilih skenario pengujian terlebih dahulu."}</p></section>}
       {!selectedScenario&&<p className="helper">Pilih skenario pengujian terlebih dahulu.</p>}
-      {provider&&service&&<>
+      {provider&&<>
         <h3>Konfigurasi request</h3>
         <div className="form-grid">
           <label className="form-field"><span>Access Token URI</span><input readOnly value={accessTokenUri}/></label>
-          <label className="form-field"><span>Service URI</span><input readOnly value={serviceUri}/></label>
+          <label className="form-field"><span>Service URI</span><input readOnly value={service?serviceUri:"Pilih API Service"}/></label>
           <div className="timestamp-field wide">
             <label className="form-field"><span>X-TIMESTAMP</span><input disabled={formLocked} value={timestamp} onChange={e=>setTimestamp(e.target.value)} spellCheck={false}/></label>
             <div className="timestamp-controls">
@@ -255,13 +274,12 @@ export default function ClientSimulatorPanel({state,api,reload,setError,setNotic
               </div>
               <label className="timestamp-millis"><input type="checkbox" disabled={formLocked} checked={includeMillis} onChange={e=>{setIncludeMillis(e.target.checked);setTimestamp(buildTimestamp(offsetMinutes,e.target.checked,new Date(Date.now()+120_000)));}}/><span>Milidetik</span></label>
             </div>
-            <small className="helper">Timestamp dikirim minimal 2 menit di depan waktu server bank.</small>
           </div>
-          <label className="form-field"><span>X-PARTNER-ID</span><input disabled={formLocked} value={partnerId} onChange={e=>{setHeaderTouched(old=>({...old,partnerId:true}));setPartnerId(e.target.value);}}/><small className="helper">Dari API Service, atau Penyedia jika kosong.</small></label>
-          <label className="form-field"><span>X-EXTERNAL-ID</span><input readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={formLocked||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Dibuat otomatis saat dijalankan":externalId} onChange={e=>{setHeaderTouched(old=>({...old,externalId:true}));setExternalId(e.target.value);}} placeholder="Kosongkan untuk generate otomatis" title={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Baseline bank lalu request ASPI memakai External ID yang sama.":undefined}/>{scenarioId==="DUPLICATE_EXTERNAL_ID"&&<small className="helper">External ID baru: baseline bank, lalu duplikat lewat ASPI.</small>}</label>
-          <label className="form-field"><span>X-DEVICE-ID</span><input disabled={formLocked} value={deviceId} onChange={e=>{setHeaderTouched(old=>({...old,deviceId:true}));setDeviceId(e.target.value);}}/><small className="helper">Dari API Service, atau Penyedia jika kosong.</small></label>
-          <label className="form-field"><span>CHANNEL-ID</span><input disabled={formLocked} value={channelId} onChange={e=>{setHeaderTouched(old=>({...old,channelId:true}));setChannelId(e.target.value);}}/><small className="helper">Dari API Service, atau Penyedia jika kosong.</small></label>
-          <label className="form-field wide"><span>Request Body (JSON)</span><textarea rows={8} spellCheck={false} disabled={formLocked} value={body} onChange={e=>{setHeaderTouched(old=>({...old,body:true}));setBody(e.target.value);}}/><small className="helper">Dari API Service {service.name}; hanya untuk pengujian ini.</small></label>
+          <label className="form-field"><span>X-PARTNER-ID</span><input aria-label="X-PARTNER-ID" disabled={formLocked} value={shownPartnerId} onChange={e=>{setHeaderTouched(old=>({...old,partnerId:true}));setPartnerId(e.target.value);}}/></label>
+          <label className="form-field"><span>X-EXTERNAL-ID</span><input aria-label="X-EXTERNAL-ID" readOnly={scenarioId==="DUPLICATE_EXTERNAL_ID"} disabled={formLocked||scenarioId==="DUPLICATE_EXTERNAL_ID"} value={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Dibuat otomatis saat dijalankan":shownExternalId} onChange={e=>{setHeaderTouched(old=>({...old,externalId:true}));setExternalId(e.target.value);}} placeholder="Kosongkan untuk generate otomatis" title={scenarioId==="DUPLICATE_EXTERNAL_ID"?"Baseline bank lalu request ASPI memakai External ID yang sama.":undefined}/></label>
+          <label className="form-field"><span>X-DEVICE-ID</span><input aria-label="X-DEVICE-ID" disabled={formLocked} value={shownDeviceId} onChange={e=>{setHeaderTouched(old=>({...old,deviceId:true}));setDeviceId(e.target.value);}}/></label>
+          <label className="form-field"><span>CHANNEL-ID</span><input aria-label="CHANNEL-ID" disabled={formLocked} value={shownChannelId} onChange={e=>{setHeaderTouched(old=>({...old,channelId:true}));setChannelId(e.target.value);}}/></label>
+          {service&&<label className="form-field wide"><span>Request Body (JSON)</span><textarea aria-label="Request Body (JSON)" rows={8} spellCheck={false} disabled={formLocked} value={shownBody} onChange={e=>{setHeaderTouched(old=>({...old,body:true}));setBody(e.target.value);}}/></label>}
         </div>
         {scenarioId==="DUPLICATE_EXTERNAL_ID"&&<label className="check-row wide"><input type="checkbox" checked={confirmDuplicate} disabled={formLocked} onChange={e=>setConfirmDuplicate(e.target.checked)}/><span>Konfirmasi<small className="helper">Satu baseline ke bank, lalu satu request ASPI dengan External ID yang sama.</small></span></label>}
         {(scenarioId==="INVALID_ACCESS_TOKEN"||scenarioId==="INVALID_SIGNATURE"||scenarioId==="UNKNOWN_CLIENT")&&<p className="helper">Mutasi hanya pada request API Service.</p>}
