@@ -82,7 +82,6 @@ test("client simulator uses a scenario name and API services live in master data
     await page.getByRole("button", { name: "Tambah", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("Penyedia Client Simulator").selectOption("prov");
-    await dialog.getByText("https://dev.banksumut.co.id").waitFor();
     await dialog.getByLabel("Nama API Service *").fill("Create VA");
     await dialog.getByLabel("Endpoint *").fill("/api/v1.0/transfer-va/create-va");
     await dialog.getByRole("button", { name: "Simpan", exact: true }).click();
@@ -105,7 +104,13 @@ test("client simulator uses a scenario name and API services live in master data
     assert.deepEqual(scenarioOptions, ["Pilih Skenario", "Positif", "Access Token Invalid", "Unauthorized . Signature", "Unauthorized . Unknown Client", "Cannot use the same X-EXTERNAL-ID"]);
     await page.getByLabel("User SNAP").selectOption("snap");
     await page.getByLabel("Penyedia Client Simulator").selectOption("prov");
+    assert.equal(await page.getByLabel("X-DEVICE-ID").inputValue(), "device-1");
+    assert.equal(await page.getByLabel("CHANNEL-ID").inputValue(), "0001");
+    assert.equal(await page.getByLabel("X-PARTNER-ID").inputValue(), "9296");
     await page.getByLabel("API Service").selectOption("svc");
+    assert.equal(await page.getByLabel("X-DEVICE-ID").inputValue(), "device-1");
+    assert.equal(await page.getByLabel("CHANNEL-ID").inputValue(), "0001");
+    assert.equal(await page.getByLabel("X-PARTNER-ID").inputValue(), "9296");
     await page.getByRole("button", { name: "Jalankan Testing", exact: true }).click();
     await page.locator(".field-error", { hasText: "Pilih skenario pengujian terlebih dahulu." }).waitFor();
     await page.getByLabel("Skenario Pengujian").selectOption("POSITIVE");
