@@ -19,6 +19,7 @@ type MetricCard = {
   value: number;
   target?: Target;
   status?: string;
+  filterStatus?: string;
   badge?: string;
 };
 
@@ -54,7 +55,7 @@ export default function Dashboard({
   const history = useHistory(api, range, mode, "", offset, 15, state.runs, filters);
 
   const recent = history.runs;
-  const { dev, simulator, passed, failed, errors, completed = 0, cancelled = 0 } = history.summary as typeof history.summary & { completed?: number; cancelled?: number };
+  const { dev, simulator, passed, failed, errors, completed = 0, cancelled = 0, running = 0 } = history.summary;
 
   async function refreshDashboard() {
     if (refreshing) return;
@@ -81,12 +82,21 @@ export default function Dashboard({
   const cards: MetricCard[] = [
     { label: "Dev Site diuji", value: dev, target: "Dev Site Client" },
     { label: "Simulator diuji", value: simulator, target: "Client Simulator" },
-    { label: "PASSED", value: passed, status: "passed", badge: "PASSED" },
-    { label: "FAILED", value: failed, status: "failed", badge: "FAILED" },
-    { label: "AUTOMATION / VALIDATION ERROR", value: errors, status: "automation_error", badge: "ERROR" },
-    ...(completed ? [{ label: "COMPLETED", value: completed, status: "completed", badge: "COMPLETED" }] : []),
-    ...(cancelled ? [{ label: "CANCELLED", value: cancelled, status: "cancelled", badge: "CANCELLED" }] : []),
+    { label: "PASSED", value: passed, status: "passed", badge: "PASSED", filterStatus: "PASSED" },
+    { label: "FAILED", value: failed, status: "failed", badge: "FAILED", filterStatus: "FAILED" },
+    { label: "COMPLETED", value: completed, status: "completed", badge: "COMPLETED", filterStatus: "COMPLETED" },
+    { label: "AUTOMATION / VALIDATION ERROR", value: errors, status: "automation_error", badge: "ERROR", filterStatus: "ERROR" },
+    { label: "CANCELLED", value: cancelled, status: "cancelled", badge: "CANCELLED", filterStatus: "CANCELLED" },
+    { label: "RUNNING", value: running, status: "running", badge: "RUNNING", filterStatus: "RUNNING" },
   ];
+
+  function applyStatusFilter(status: string) {
+    setOffset(0);
+    setFilters((current) => ({
+      ...current,
+      status: current.status === status ? undefined : status,
+    }));
+  }
 
   const scopeLabel = isAdmin
     ? filters.scope === "mine"
@@ -135,31 +145,33 @@ export default function Dashboard({
 
       <section className="dashboard-grid">
         {cards.map((card) => {
+          const active = card.filterStatus != null && filters.status === card.filterStatus;
           const content = (
             <>
               <span>{card.label}</span>
               <strong>{card.value}</strong>
               {card.badge && (
-                <span className={`status-badge ${card.status}`}>
+                <span className={`status-badge ${statusClass(card.status ?? "")}`}>
                   {card.badge}
                 </span>
               )}
             </>
           );
 
-          return card.target ? (
+          return (
             <button
               key={card.label}
               type="button"
-              className="card metric-card"
-              onClick={() => navigate(card.target!)}
+              className={`card metric-card${active ? " is-active" : ""}`}
+              aria-pressed={card.filterStatus ? active : undefined}
+              title={card.target ? `Buka ${card.target}` : `Filter status ${card.filterStatus}`}
+              onClick={() => {
+                if (card.target) navigate(card.target);
+                else if (card.filterStatus) applyStatusFilter(card.filterStatus);
+              }}
             >
               {content}
             </button>
-          ) : (
-            <div key={card.label} className="card metric-card">
-              {content}
-            </div>
           );
         })}
       </section>

@@ -24,7 +24,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     await page.route("**/api/autosnap",async route=>{
       const input=route.request().method()==="POST"?route.request().postDataJSON():{};let data;
       if(!input.action)data={user:{id:"admin",username:"qa",role:"admin",active:true},records,runs:runs?[run]:[],scenarios:[]};
-      else if(input.action==="getHistory")data={runs:runs?[{...run,operator:{id:"admin",name:"QA",username:"qa",role:"admin",mine:true,source:"snapshot"}}]:[],total:runs?1:0,summary:{total:runs?1:0,dev:runs?1:0,simulator:0,passed:0,completed:runs?1:0,failed:0,errors:0,cancelled:0},byOperator:runs?[{operator_id:"admin",name:"QA",username:"qa",role:"admin",total:1,passed:0,failed:0,completed:1}]:[],scope:"all"};
+      else if(input.action==="getHistory")data={runs:runs?[{...run,operator:{id:"admin",name:"QA",username:"qa",role:"admin",mine:true,source:"snapshot"}}]:[],total:runs?1:0,summary:{total:runs?1:0,dev:runs?1:0,simulator:0,passed:0,completed:runs?1:0,failed:0,errors:0,cancelled:0,running:0},byOperator:runs?[{operator_id:"admin",name:"QA",username:"qa",role:"admin",total:1,passed:0,failed:0,completed:1}]:[],scope:"all"};
       else if(input.action==="inspectDocumentation"){assert.equal(input.url,url);await new Promise(resolve=>setTimeout(resolve,250));data=draft;}
       else if(input.action==="saveImportedService"){
         assert.equal(input.draft.config.authFlow,"b2b");assert.equal(input.draft.config.reviewed,true);assert.equal(input.draft.config.expectedCode,null,"optional expected stays null when saved");
