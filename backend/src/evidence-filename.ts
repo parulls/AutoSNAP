@@ -42,9 +42,29 @@ export function evidencePdfFilename(serviceName: string) {
   return `${sanitizeEvidenceFilenameBase(serviceName)}.pdf`;
 }
 
+/**
+ * Base name for evidence PDF download.
+ * Client Simulator: ASPI HTML service name = "Penyedia - Service - Skenario".
+ * Dev Site Client: registered API Service name only.
+ */
+export function resolveEvidencePdfBaseName(request: Record<string, unknown> | null | undefined, activity?: Record<string, unknown> | null) {
+  const req = object(request) ? request : {};
+  const clientSim = req.mode === "client_sim" || !!String(req.aspiServiceName ?? "").trim();
+  if (clientSim) {
+    const identity = object(req.identity) ? req.identity : null;
+    for (const candidate of [
+      String(req.aspiServiceName ?? "").trim(),
+      String(req.activityName ?? "").trim(),
+      String(identity?.aspiServiceName ?? "").trim(),
+      object(activity) ? String(activity.service ?? activity.serviceName ?? "").trim() : "",
+    ]) if (candidate) return candidate;
+  }
+  return resolveRegisteredServiceName(request, activity);
+}
+
 /** Resolve PDF filename for one activity on a run. */
 export function evidencePdfFilenameForRun(request: Record<string, unknown> | null | undefined, activity?: Record<string, unknown> | null) {
-  return evidencePdfFilename(resolveRegisteredServiceName(request, activity));
+  return evidencePdfFilename(resolveEvidencePdfBaseName(request, activity));
 }
 
 /** ZIP entry names: same base as single PDF; numeric suffix only on collisions. */
