@@ -28,8 +28,19 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
       else if(input.action==="inspectDocumentation"){assert.equal(input.url,url);await new Promise(resolve=>setTimeout(resolve,250));data=draft;}
       else if(input.action==="saveImportedService"){
         assert.equal(input.draft.config.authFlow,"b2b");assert.equal(input.draft.config.reviewed,true);assert.equal(input.draft.config.expectedCode,null,"optional expected stays null when saved");
-        records.push({id:"endpoint",kind:"endpoint",name:"Update VA",data:{method:"PUT",path:draft.path,portalUrl:url}},{id:"service",kind:"service",parentId:"endpoint",name:"Update VA",data:{module:draft.module,code:"28",requestBody:draft.requestBody,config:input.draft.config}});data={ok:true};
-      }else if(input.action==="getProgress")data={status:"completed",stage:"finished",steps:[{stage:"evaluation",status:"completed",detail:"COMPLETED — HTTP 200 sesuai expected 200."}]};
+        records.push({id:"endpoint",kind:"endpoint",name:"Update VA",data:{method:"PUT",path:draft.path,portalUrl:url}},{id:"service",kind:"service",parentId:"endpoint",name:"Update VA",data:{module:draft.module,code:"28",requestBody:draft.requestBody,config:input.draft.config}});data={ok:true,endpointId:"endpoint",serviceId:"service"};
+      }else if(input.action==="listMasterData"){
+        const kind=String(input.kind??"");
+        const items=kind==="dev_site"?records.filter(row=>row.kind==="environment"||row.kind==="client")
+          :kind==="endpoint"?records.filter(row=>row.kind==="endpoint")
+          :kind==="service"?records.filter(row=>row.kind==="service")
+          :kind==="snap_user"?records.filter(row=>row.kind==="snap_user")
+          :kind==="sim_provider"?records.filter(row=>row.kind==="sim_provider")
+          :kind==="sim_service"?records.filter(row=>row.kind==="sim_service")
+          :[];
+        data={items,total:items.length,page:Number(input.page??1),pageSize:Number(input.pageSize??20)};
+      }else if(input.action==="linkClientServices")data={ok:true,linkedServiceIds:Array.isArray(input.serviceIds)?input.serviceIds:[]};
+      else if(input.action==="getProgress")data={status:"completed",stage:"finished",steps:[{stage:"evaluation",status:"completed",detail:"COMPLETED — HTTP 200 sesuai expected 200."}]};
       else if(input.action==="run"){runs++;assert.equal(input.serviceId,"service");assert.equal(input.parameters.merchantId,"merchant-qa");assert.equal(JSON.parse(input.body).virtualAccountNo,"456");data={id:"fixture",status:"COMPLETED",outcome:"COMPLETED",evaluation,httpStatus:200,responseCode:"2002800",expectedCode:null,pdfCounts:{ready:0,required:4},reprocess:{retryEvidence:true}};}
       else if(input.action==="aspiBusy")data={busyUserIds:[]};
       else throw Error(`Unexpected UI action ${input.action}`);
@@ -37,7 +48,7 @@ test("admin saves HTTP-only service and headless UI shows COMPLETED without an e
     });
     await page.goto(base);await page.getByRole("navigation").getByRole("button",{name:"Master Data",exact:true}).click();
     assert.equal(await page.getByRole("tab",{name:"API Service",exact:true}).count(),0);
-    await page.getByRole("tab",{name:"Dev Site Endpoint",exact:true}).click();await page.getByRole("button",{name:"Tambah",exact:true}).click();
+    await page.getByRole("tab",{name:"Dev Site Endpoint",exact:true}).click();await page.getByRole("button",{name:"Tambah Dev Site Endpoint"}).click();
     const dialog=page.getByRole("dialog");
     assert.equal(await dialog.getByRole("combobox",{name:"User SNAP untuk sesi portal"}).count(),0,"single SNAP user is selected automatically");
     assert.equal(await dialog.getByRole("combobox",{name:"Referensi layanan"}).count(),0,"no hardcoded service reference picker");

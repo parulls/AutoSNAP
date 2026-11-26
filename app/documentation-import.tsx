@@ -6,9 +6,9 @@ import type {EndpointConfig} from "../backend/src/endpoint-config";
 import UiIcon from "./ui-icon";
 
 type Draft={name:string;module:string;code:string;method:string;path:string;portalUrl:string;requestBody:string;config:EndpointConfig};
-type Props={users:Item[];endpoint?:Item;service?:Item;api:Api;reload:()=>Promise<void>;onClose:()=>void};
+type Props={users:Item[];endpoint?:Item;service?:Item;api:Api;reload:()=>Promise<void>;onClose:()=>void;linkEnvironmentId?:string};
 
-export default function DocumentationImport({users,endpoint,service,api,reload,onClose}:Props){
+export default function DocumentationImport({users,endpoint,service,api,reload,onClose,linkEnvironmentId}:Props){
   const initial=endpoint&&service?.data.config?JSON.stringify({name:service.name,module:service.data.module,code:service.data.code,method:endpoint.data.method,path:endpoint.data.path,portalUrl:endpoint.data.portalUrl,requestBody:service.data.requestBody??"",config:service.data.config},null,2):"";
   const [url,setUrl]=useState(String(endpoint?.data.portalUrl??""));
   const [userId,setUserId]=useState(users.length===1?users[0].id:"");
@@ -36,7 +36,11 @@ export default function DocumentationImport({users,endpoint,service,api,reload,o
     if(busy||!parsed||!confirmed)return;
     setWorking("saving");setError("");
     try{
-      await api("saveImportedService",{draft:{...parsed,config:{...parsed.config,reviewed:true},endpointId:endpoint?.id,serviceId:service?.id}});
+      const saved=await api("saveImportedService",{draft:{...parsed,config:{...parsed.config,reviewed:true},endpointId:endpoint?.id,serviceId:service?.id}}) as {serviceId?:string};
+      if(linkEnvironmentId&&saved.serviceId){
+        try{await api("linkClientServices",{environmentId:linkEnvironmentId,appendServiceIds:[String(saved.serviceId)]});}
+        catch{/* soft-link best-effort after service save */}
+      }
       await reload();onClose();
     }catch(cause){setError((cause as Error).message);}
     finally{setWorking(null);}

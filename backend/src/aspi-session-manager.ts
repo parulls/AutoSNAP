@@ -110,4 +110,34 @@ export class AspiSessionManager{
     await page.waitForURL(url=>!String(url).includes("/sign-in"),{timeout:8000}).catch(()=>undefined);
     if(page.url().includes("/sign-in"))throw new AspiAutomationError("AUTH_SESSION_EXPIRED","Login ASPI ditolak. Periksa kredensial dan aktivasi akun.");
   }
+
+  /** Safe-stage renew only (open session / activity / PDF). Never re-Execute a target API. */
+  async renewSessionIfExpired(page:Page,user:RecordRow,opts:{maxAttempts?:number;logger?:{log:(message:string)=>void}}= {}){
+    const maxAttempts=Math.min(2,Math.max(1,opts.maxAttempts??2));
+    let lastError:unknown;
+    for(let attempt=1;attempt<=maxAttempts;attempt++){
+      try{
+        const onSignIn=page.url().includes("/sign-in")||!!(await page.locator('input[type="password"]').count());
+        if(!onSignIn){
+          const signIn=page.getByRole("link",{name:/sign in|login|masuk/i}).or(page.getByRole("button",{name:/sign in|login|masuk/i})).first();
+          if(!(await signIn.count())||!(await signIn.isVisible().catch(()=>false))){
+            await page.goto("https://apidevportal.aspi-indonesia.or.id/",{waitUntil:"domcontentloaded",timeout:60000}).catch(()=>undefined);
+          }
+        }
+        await this.loginIfRequired(page,user);
+        opts.logger?.log("ASPI session renewed");
+        return true;
+      }catch(error){
+        lastError=error;
+      }
+    }
+    if(lastError instanceof AspiAutomationError)throw lastError;
+    throw new AspiAutomationError("AUTH_SESSION_EXPIRED","Sesi ASPI tidak dapat diperbarui untuk tahap bukti.");
+  }
+
+  isAuthExpiredError(error:unknown){
+    const message=error instanceof Error?error.message:String(error??"");
+    const outcome=error instanceof AspiAutomationError?error.outcome:"";
+    return /ASPI_AUTH_EXPIRED|AUTH_SESSION_EXPIRED|sign-in|login|sesi/i.test(`${outcome} ${message}`);
+  }
 }

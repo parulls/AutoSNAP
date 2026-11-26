@@ -38,6 +38,7 @@ import {RunEvidenceService} from "./run-evidence";
 import {buildCheckpoint,canResumeTesting,canRetryEvidence,failedStage,markStage,requiresMutatingConfirm,type RunCheckpoint} from "./run-checkpoint";
 import {withSentProfile} from "./header-profile";
 import {pdfCaptureProfile,type PdfCaptureProfile} from "./pdf-browser";
+import {listMasterData} from "./master-data-list";
 
 type Scenario={id:string;group:string;service:string;scenario:string;expected:string;expectedCode:string|null};
 type Input=Record<string,unknown>;
@@ -157,6 +158,27 @@ export class AutoSnapController {
       if(action==="getHistory"){
         await this.enforceRateLimit(`history:${user.id}`,120,60_000);
         return res.json(await readHistory(this.db,user,input));
+      }
+      if(action==="listMasterData"){
+        await this.enforceRateLimit(`master-list:${user.id}`,120,60_000);
+        return res.json(await listMasterData(this.db,user,input));
+      }
+      if(action==="linkClientServices"){
+        if(!can(user,"master_data"))return this.fail(res,clientError("Anda tidak memiliki privilege Master Data.",403));
+        const environmentId=String(input.environmentId??"");
+        const appendIds=Array.isArray(input.appendServiceIds)?input.appendServiceIds.map(id=>String(id)).filter(id=>/^[0-9a-f-]{8,}$/i.test(id)).slice(0,200):[];
+        const replaceIds=Array.isArray(input.serviceIds)?input.serviceIds.map(id=>String(id)).filter(id=>/^[0-9a-f-]{8,}$/i.test(id)).slice(0,200):null;
+        const rows=await this.allRecords();
+        const environment=get(rows,environmentId,"environment");
+        if(!environment)return this.fail(res,clientError("Dev Site Client tidak ditemukan.",404));
+        const valid=new Set(rows.filter(row=>row.kind==="service").map(row=>row.id));
+        const prior=Array.isArray(environment.data.linkedServiceIds)?environment.data.linkedServiceIds.map(String):[];
+        const serviceIds=replaceIds??Array.from(new Set([...prior,...appendIds]));
+        if(serviceIds.some(id=>!valid.has(id)))return this.fail(res,clientError("Satu atau lebih API Service tidak valid."));
+        const data={...environment.data,linkedServiceIds:serviceIds};
+        await this.db.query("UPDATE autosnap_records SET data=$1::jsonb,updated_at=$2 WHERE id=$3",[JSON.stringify(data),new Date().toISOString(),environment.id]);
+        await writeAudit(this.db,user.id,"link_client_services","environment",environment.id,{count:serviceIds.length});
+        return res.json({ok:true,linkedServiceIds:serviceIds});
       }
       if(action==="deleteEndpointConfiguration"){
         if(!can(user,"master_data"))return this.fail(res,clientError("Anda tidak memiliki privilege Master Data.",403));
@@ -705,8 +727,10 @@ export class AutoSnapController {
     const mode=value(environment,"mode");
     if(!hasPrivilege(operator,mode==="mock"?"client_simulator":"dev_site"))return this.fail(res,clientError("Anda tidak memiliki privilege untuk menjalankan pengujian ini.",403));
     if(mode==="portal"&&snapUser&&await this.evidenceService.accountBusy(snapUser))return this.fail(res,clientError("Akun ASPI ini sedang dipakai untuk pengujian atau pengambilan bukti. Tunggu hingga selesai.",409,"ASPI_SESSION_BUSY"));
-    const {method,path,serviceCode,config,legacyBalance}=resolveEndpoint(endpoint,service);
-    const isBalance=method==="POST"&&path===BALANCE_PATH;
+    const resolved=resolveEndpoint(endpoint,service);
+    let method=resolved.method,path=resolved.path;
+    const {serviceCode,config,legacyBalance}=resolved;
+    const isBalance=method==="POST"&&path===BALANCE_PATH&&String(input.testType??"positive")!=="custom";
     const workflow=authenticationWorkflow(config??{authFlow:"b2b",parameters:[]});
     if(value(environment,"category")!=="Dev Site")return this.fail(res,clientError("Pengujian saat ini hanya untuk Dev Site."));
     if(!["mock","live","portal"].includes(mode))return this.fail(res,clientError("Mode environment tidak valid."));
@@ -731,9 +755,29 @@ export class AutoSnapController {
     const useCase=String(config?(config.authFlow==="b2b2c"?"B2B2C":"B2B"):input.useCase??environment.data.useCase??"B2B") as UseCase;
     if(!["B2B","B2B2C"].includes(useCase))return this.fail(res,clientError("Pilih use case B2B atau B2B2C."));
     const testType=String(input.testType??"positive");
-    if(!["positive","invalid_access_token"].includes(testType))return this.fail(res,clientError("Jenis testing tidak valid."));
+    // "custom" (Lainnya) replaces the old positive label; keep "positive" for history resume compatibility.
+    if(!["positive","custom","invalid_access_token"].includes(testType))return this.fail(res,clientError("Jenis testing tidak valid."));
     const negativeAccessToken=testType==="invalid_access_token";
+    const custom=testType==="custom"&&object(input.customOverride)?input.customOverride:{};
+    const customMethod=String(custom.method??"").trim().toUpperCase();
+    const customPath=String(custom.path??"").trim();
+    const customExpectedHttp=custom.expectedHttpStatus===undefined||custom.expectedHttpStatus===null||custom.expectedHttpStatus===""?null:Number(custom.expectedHttpStatus);
+    const customExpectedCode=String(custom.expectedCode??"").trim();
+    const customHeaders=object(custom.headers)?Object.fromEntries(Object.entries(custom.headers).filter(([,v])=>typeof v==="string").map(([k,v])=>[String(k),String(v).trim()])):{};
+    if(testType==="custom"){
+      if(customMethod&&!["GET","POST","PUT","PATCH","DELETE","HEAD"].includes(customMethod))return this.fail(res,clientError("Method Lainnya tidak valid."));
+      if(customPath&&(!customPath.startsWith("/")||customPath.startsWith("//")))return this.fail(res,clientError("Path Lainnya harus diawali /."));
+      if(customExpectedHttp!==null&&!(Number.isInteger(customExpectedHttp)&&customExpectedHttp>=100&&customExpectedHttp<=599))return this.fail(res,clientError("Expected HTTP Lainnya harus 100–599."));
+      if(customExpectedCode&&!/^\d{7}$/.test(customExpectedCode))return this.fail(res,clientError("Expected SNAP Code Lainnya harus 7 digit."));
+      for(const required of ["CHANNEL-ID"])if(required in customHeaders&&!String(customHeaders[required]??"").trim())return this.fail(res,clientError(`${required} wajib diisi pada override header.`));
+    }
     const expectation=scenarioExpectation(config,legacyBalance,negativeAccessToken,service.data);
+    if(testType==="custom"){
+      if(customExpectedHttp!==null)expectation.expectedHttpStatus=customExpectedHttp;
+      if(customExpectedCode)expectation.expectedCode=customExpectedCode;
+      if(customMethod)method=customMethod;
+      if(customPath)path=customPath;
+    }
     const dynamicParameters=object(input.parameters)?input.parameters:{};
     if(config){
       if(mode!=="portal"&&mode!=="mock")return this.fail(res,clientError("Service dinamis menggunakan portal ASPI atau simulator."));
@@ -792,7 +836,7 @@ export class AutoSnapController {
     const extraHeaders=(extra??{}) as Record<string,string>;
     const profileHeaders:Record<string,string>={};
     for(const [header,field] of [["ORIGIN","origin"],["X-IP-ADDRESS","ipAddress"],["X-LATITUDE","latitude"],["X-LONGITUDE","longitude"]])if(value(client,field))profileHeaders[header]=value(client,field);
-    const requestHeaders={...profileHeaders,...extraHeaders};
+    const requestHeaders={...profileHeaders,...extraHeaders,...(testType==="custom"?customHeaders:{})};
     const day=isoJakarta().slice(0,10),existing=await this.db.one("SELECT 1 AS n FROM autosnap_external_ids WHERE environment_id=$1 AND external_id=$2 AND day=$3",[environment.id,externalId,day]),duplicateCase=scenarioId?.endsWith(".5");
     if(duplicateCase&&!existing)return this.fail(res,clientError("Untuk skenario duplikat, isi X-EXTERNAL-ID yang sudah dijalankan hari ini."));
     if(existing&&!duplicateCase)return this.fail(res,clientError("X-EXTERNAL-ID sudah dipakai hari ini.",409));

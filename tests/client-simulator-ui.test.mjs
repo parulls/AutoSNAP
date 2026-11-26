@@ -72,14 +72,24 @@ test("client simulator uses a scenario name and API services live in master data
       } else if (input.action === "cancelRun") {
         cancelSeen = true;
         data = { ok: true };
+      } else if (input.action === "listMasterData") {
+        const kind = String(input.kind ?? "");
+        let items = kind === "sim_service" ? records.filter(row => row.kind === "sim_service")
+          : kind === "sim_provider" ? records.filter(row => row.kind === "sim_provider")
+          : kind === "snap_user" ? records.filter(row => row.kind === "snap_user")
+          : [];
+        if (kind === "sim_service" && input.parentId) items = items.filter(row => row.parentId === input.parentId);
+        data = { items, total: items.length, page: Number(input.page ?? 1), pageSize: Number(input.pageSize ?? 20) };
+      } else if (input.action === "linkClientServices") {
+        data = { ok: true, linkedServiceIds: [] };
       } else throw Error(`Unexpected UI action ${input.action}`);
       return route.fulfill({ contentType: "application/json", body: JSON.stringify(data) });
     });
     await page.goto(base);
     await page.getByRole("navigation").getByRole("button", { name: "Master Data", exact: true }).click();
     await page.getByRole("tab", { name: "API Service Client Simulator", exact: true }).click();
-    await page.getByText("Belum ada API Service Client Simulator.", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "Tambah", exact: true }).click();
+    await page.getByText("Belum ada data.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Tambah API Service Client Simulator" }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("Penyedia Client Simulator").selectOption("prov");
     await dialog.getByLabel("Nama API Service *").fill("Create VA");
@@ -155,9 +165,9 @@ test("client simulator uses a scenario name and API services live in master data
     await page.getByRole("navigation").getByRole("button", { name: "Master Data", exact: true }).click();
     await page.getByRole("tab", { name: "API Service Client Simulator", exact: true }).click();
     await page.getByLabel("Filter penyedia").selectOption("prov");
-    await page.getByRole("button", { name: "Hapus", exact: true }).click();
+    await page.getByRole("row", { name: /Create VA Updated/ }).getByRole("button", { name: "Hapus", exact: true }).click();
     await page.getByRole("dialog", { name: "Konfirmasi Hapus" }).getByRole("button", { name: "Hapus", exact: true }).click();
-    await page.getByText("Tidak ada API Service yang cocok dengan pencarian.", { exact: true }).waitFor();
+    await page.getByText("Belum ada data.", { exact: true }).waitFor();
     assert.equal(saved.name, "Create VA Updated");
   } finally { await browser?.close(); server.kill(); }
 });

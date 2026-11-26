@@ -31,17 +31,24 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
     const caps=object(item.data.capabilities)?item.data.capabilities:null;
     return caps?.allowUnreviewed===true||(!caps&&value(item,"code")==="11");
   });
-  const endpoints=records.filter(item=>item.kind==="endpoint"&&!item.parentId&&activeServices.some(service=>service.parentId===item.id));
   const [endpointId,setEndpointId]=useState(""),[serviceId,setServiceId]=useState(""),[userId,setUserId]=useState(""),[siteId,setSiteId]=useState("");
-  const [testType,setTestType]=useState<"positive"|"invalid_access_token">("positive");
-  const endpoint=endpoints.find(item=>item.id===endpointId),services=activeServices.filter(item=>item.parentId===endpoint?.id),service=services.find(item=>item.id===serviceId);
+  const [testType,setTestType]=useState<"custom"|"invalid_access_token">("custom");
+  const [customOverride,setCustomOverride]=useState({method:"",path:"",headersText:"{}",expectedHttpStatus:"",expectedCode:""});
+  const sitesPreview=records.filter(item=>item.kind==="environment"&&value(item,"category")==="Dev Site");
+  const selectedSitePreview=sitesPreview.find(item=>item.id===siteId);
+  const linkedServiceIds=Array.isArray(selectedSitePreview?.data.linkedServiceIds)?selectedSitePreview!.data.linkedServiceIds.map(String):[];
+  const linkedOrAll=(list:Item[])=>!linkedServiceIds.length?list:list.filter(item=>linkedServiceIds.includes(item.id));
+  const endpoints=records.filter(item=>item.kind==="endpoint"&&!item.parentId&&linkedOrAll(activeServices).some(service=>service.parentId===item.id));
+  const endpoint=endpoints.find(item=>item.id===endpointId),services=linkedOrAll(activeServices).filter(item=>item.parentId===endpoint?.id),service=services.find(item=>item.id===serviceId);
   const config=object(service?.data.config)?service.data.config:null;
   const [parameters,setParameters]=useState<Record<string,string>>({});
   const template=records.find(item=>item.kind==="template"&&item.parentId===endpoint?.id),users=records.filter(item=>item.kind==="snap_user"),user=users.find(item=>item.id===userId);
   const sites=records.filter(item=>item.kind==="environment"&&value(item,"category")==="Dev Site"&&(variant==="simulator"?value(item,"mode")==="mock":value(item,"mode")!=="mock")&&!!user&&value(item,"defaultUserId")===user.id);
   const site=sites.find(item=>item.id===siteId),linked=linkDevSite(records,site),project=linked.project,client=linked.client;
   const bodyContext=`${endpointId}|${serviceId}|${siteId}`,[draft,setDraft]=useState<{context:string;text:string}|null>(null);
-  const defaultBody=typeof service?.data.requestBody==="string"?service.data.requestBody:value(template,"body"),body=["GET","HEAD"].includes(value(endpoint,"method"))||config?.requestBodyMode==="none"?"":draft?.context===bodyContext?draft.text:defaultBody;
+  const defaultBody=typeof service?.data.requestBody==="string"?service.data.requestBody:value(template,"body");
+  const bodyMethod=(testType==="custom"&&customOverride.method)||value(endpoint,"method");
+  const body=["GET","HEAD"].includes(bodyMethod)||(testType!=="custom"&&config?.requestBodyMode==="none")?"":draft?.context===bodyContext?draft.text:defaultBody;
   const canViewAll=can(state.user,"history","view_all");
   const [historyRange,setHistoryRange]=useState(()=>rangeForPeriod("today"));
   const [historyFilters,setHistoryFilters]=useState<HistoryFilters>({scope:canViewAll?"all":"mine"});
@@ -88,16 +95,33 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
     return window.confirm(`${action} milik ${operatorLabel(run).text}. Tindakan akan dicatat pada audit log. Lanjutkan?`);
   };
   const latest=state.runs.find(run=>run.id===resultId&&run.environment_id===site?.id&&run.service_id===service?.id&&run.endpoint_id===endpoint?.id&&run.user_id===user?.id);
-  const sendsBody=!["GET","HEAD"].includes(value(endpoint,"method"))&&config?.requestBodyMode!=="none";
-  let jsonError="";try{if(sendsBody&&!body.trim()&&config?.requestBodyMode!=="optional")jsonError="Template request belum tersedia. Isi body sesuai dokumentasi.";else if(body.trim()&&!object(JSON.parse(body)))throw Error();}catch{jsonError="Request Body harus object JSON yang valid.";}
+  const effectiveMethod=(testType==="custom"&&customOverride.method)||value(endpoint,"method")||"POST";
+  const sendsBody=!["GET","HEAD"].includes(effectiveMethod)&&(testType==="custom"||config?.requestBodyMode!=="none");
+  let jsonError="";try{if(sendsBody&&!body.trim()&&config?.requestBodyMode!=="optional"&&testType!=="custom")jsonError="Template request belum tersedia. Isi body sesuai dokumentasi.";else if(body.trim()&&!object(JSON.parse(body)))throw Error();}catch{jsonError="Request Body harus object JSON yang valid.";}
+  let customError="";
+  if(testType==="custom"&&service){
+    const method=(customOverride.method||value(endpoint,"method")||"POST").toUpperCase();
+    const path=customOverride.path||value(endpoint,"path");
+    if(!["GET","POST","PUT","PATCH","DELETE","HEAD"].includes(method))customError="Method Lainnya tidak valid.";
+    else if(!path.startsWith("/")||path.startsWith("//"))customError="Path Lainnya harus diawali /.";
+    else if(customOverride.expectedHttpStatus&&!(Number(customOverride.expectedHttpStatus)>=100&&Number(customOverride.expectedHttpStatus)<=599))customError="Expected HTTP harus 100–599.";
+    else if(customOverride.expectedCode&&!/^\d{7}$/.test(customOverride.expectedCode.trim()))customError="Expected SNAP Code harus 7 digit.";
+    else{
+      try{
+        const headers=JSON.parse(customOverride.headersText||"{}");
+        if(!object(headers))throw Error();
+        if("CHANNEL-ID" in headers&&!String(headers["CHANNEL-ID"]??"").trim())customError="CHANNEL-ID wajib diisi pada override header.";
+      }catch{if(!customError)customError="Override headers harus object JSON.";}
+    }
+  }
   const missing:string[]=[];
   const configuredWorkflow=object(config?.workflow)?config.workflow:null;
   if(site&&value(site,"mode")==="portal"&&config?.authFlow!=="none"){for(const [key,label] of [["clientId","Client ID"],...(configuredWorkflow?.token==="provided"?[["accessToken","Access token tersimpan"]]:[["privateKey","Private Key"]]),...(configuredWorkflow?.signature!=="none"?[["clientSecret","Client Secret"]]:[])])if(!fieldOf(client,key))missing.push(label);if(!client?.partnerId&&!fieldOf(client,"clientId"))missing.push("X-PARTNER-ID");}
-  if(endpoint&&!value(endpoint,"path"))missing.push("Path endpoint");
+  if(endpoint&&!value(endpoint,"path")&&!(testType==="custom"&&customOverride.path))missing.push("Path endpoint");
   if(endpoint&&value(site,"mode")==="portal"&&!value(endpoint,"portalUrl"))missing.push("URL Aplikasi Pengujian ASPI pada Endpoint");
   if(config?.authFlow==="unknown")missing.push("Autentikasi endpoint belum ditinjau");
   const negativeConfigured=!!service&&config?.authFlow!=="none";
-  const ready=!!endpoint&&!!service&&!!user&&!!site&&!jsonError&&!missing.length;
+  const ready=!!endpoint&&!!service&&!!user&&!!site&&!jsonError&&!customError&&!missing.length;
   const accountBusy=variant==="dev_site"&&!!userId&&busyUserIds.includes(userId);
   const ownProcessActive=running||!!reprocessingId;
   const formLocked=ownProcessActive||accountBusy;
@@ -124,7 +148,14 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
       endOwnProcess();
     };
     try{
-      const result=await api("run",{progressId,clientId:client?.id,projectId:project?.id,environmentId:site?.id,userId:user?.id,serviceId:service?.id,endpointId:endpoint?.id,useCase:"B2B",testType,body,parameters,pdfScreen:{width:Math.round(window.innerWidth),height:Math.round(window.innerHeight),deviceScaleFactor:window.devicePixelRatio||1}});
+      const customPayload=testType==="custom"?{
+        method:customOverride.method||value(endpoint,"method")||"POST",
+        path:customOverride.path||value(endpoint,"path"),
+        headers:JSON.parse(customOverride.headersText||"{}"),
+        expectedHttpStatus:customOverride.expectedHttpStatus?Number(customOverride.expectedHttpStatus):null,
+        expectedCode:customOverride.expectedCode.trim()||null,
+      }:undefined;
+      const result=await api("run",{progressId,clientId:client?.id,projectId:project?.id,environmentId:site?.id,userId:user?.id,serviceId:service?.id,endpointId:endpoint?.id,useCase:"B2B",testType,body,parameters,customOverride:customPayload,pdfScreen:{width:Math.round(window.innerWidth),height:Math.round(window.innerHeight),deviceScaleFactor:window.devicePixelRatio||1}});
       try{const current=await api("getProgress",{id:progressId}) as unknown as TestProgress;lastStage.current=current.stage;setProgress(current);}catch{}
       await unlockForm(result);
       await reload();setResultId(String(result.id??""));
@@ -226,6 +257,16 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
     }
   }
   const stored=(key:string)=>client?sentHeaderField(client,site,key):"";
+  const prefillCustom=(nextEndpoint=endpoint,nextService=service,nextClient=client,nextSite=site)=>{
+    const nextConfig=object(nextService?.data.config)?nextService!.data.config:{};
+    setCustomOverride({
+      method:value(nextEndpoint,"method")||"POST",
+      path:value(nextEndpoint,"path"),
+      headersText:JSON.stringify({"CHANNEL-ID":sentHeaderField(nextClient,nextSite,"channelId")||"95221"},null,2),
+      expectedHttpStatus:String(nextConfig.expectedHttpStatus??""),
+      expectedCode:String(nextConfig.expectedCode??""),
+    });
+  };
   const partnerHeader=fieldOf(client,"partnerIdSource")==="custom"?client?.partnerId||stored("partnerId")||"Dari Master Data Dev Site Client":stored("clientId")||client?.partnerId||"Mengikuti Client ID di Master Data";
   const optional=(key:string)=>stored(key)||"Belum diisi di Master Data; tidak dikirim";
   const headers: [string,string][] = site ? [
@@ -247,8 +288,33 @@ export default function TestingPanel({state,api,reload,setError,setNotice,varian
   return <div className="testing-page">
     <div className="testing-toolbar"><button type="button" className="secondary-button" disabled={ownProcessActive||refreshing} onClick={()=>refreshPage().catch(error=>setError((error as Error).message))}>{refreshing?"Memuat...":"Refresh"}</button></div>
     <form className="card test-form" onSubmit={run}><div className="section-header"><div><h2>Form Testing</h2><p>{variant==="simulator"?"Simulasikan request dan response tanpa mengirim ke portal ASPI.":"Jalankan pengujian melalui Aplikasi Pengujian ASPI."}</p></div></div>{variant==="dev_site"&&formLocked&&<p className="helper" role="status"><span className="button-spinner" aria-hidden="true"/> {ownProcessActive?"Pengujian/bukti sedang berlangsung. Form dikunci sampai proses milik Anda selesai.":"Akun ASPI ini sedang dipakai proses lain. Form dikunci sampai sesi tersebut dilepas."}</p>}<div className="form-grid">
-      <Select label="User SNAP" value={userId} options={users} onChange={id=>{setUserId(id);setSiteId("");}} disabled={formLocked}/><Select label="Dev Site Client" value={siteId} options={sites} onChange={id=>{setSiteId(id);setDraft(null);}} disabled={formLocked||!user}/><Select label="Dev Site Endpoint" value={endpointId} options={endpoints} onChange={id=>{setEndpointId(id);setServiceId("");}} disabled={formLocked}/><Select label="API Service" value={serviceId} options={services} onChange={id=>{setServiceId(id);setParameters({});setDraft(null);setTestType("positive");}} disabled={formLocked||!endpoint}/>
-      <label className="form-field"><span>Content-Type</span><input disabled={formLocked} readOnly value={site?"application/json":""}/></label><label className="form-field"><span>CHANNEL-ID</span><input disabled={formLocked} readOnly value={site&&client?stored("channelId")||"95221":""} placeholder="Dari Dev Site Client"/><small className="helper">Diatur melalui Master Data.</small></label><label className="form-field wide"><span>Jenis pengujian</span><select disabled={formLocked} value={testType} onChange={event=>setTestType(event.target.value as "positive"|"invalid_access_token")}><option value="positive">Positif - token valid</option>{negativeConfigured&&config?.authFlow!=="none"&&<option value="invalid_access_token">Negatif - token tidak valid</option>}</select></label>{service&&sendsBody&&<label className="form-field wide"><span>Request Body</span><textarea aria-label="Request Body" required={config?.requestBodyMode!=="optional"} disabled={formLocked} className="code-editor" rows={8} spellCheck={false} value={body} onChange={event=>setDraft({context:bodyContext,text:event.target.value})}/>{jsonError&&<small className="field-error">{jsonError}</small>}</label>}
+      <Select label="User SNAP" value={userId} options={users} onChange={id=>{setUserId(id);setSiteId("");}} disabled={formLocked}/><Select label="Dev Site Client" value={siteId} options={sites} onChange={id=>{setSiteId(id);setDraft(null);}} disabled={formLocked||!user}/><Select label="Dev Site Endpoint" value={endpointId} options={endpoints} onChange={id=>{setEndpointId(id);setServiceId("");}} disabled={formLocked}/><Select label="API Service" value={serviceId} options={services} onChange={id=>{setServiceId(id);setParameters({});setDraft(null);setTestType("custom");prefillCustom(endpoint,activeServices.find(item=>item.id===id),client,site);}} disabled={formLocked||!endpoint}/>
+      <label className="form-field"><span>Content-Type</span><input disabled={formLocked} readOnly value={site?"application/json":""}/></label><label className="form-field"><span>CHANNEL-ID</span><input disabled={formLocked} readOnly value={site&&client?stored("channelId")||"95221":""} placeholder="Dari Dev Site Client"/><small className="helper">Diatur melalui Master Data.</small></label><label className="form-field wide"><span>Jenis pengujian</span><select disabled={formLocked} value={testType} onChange={event=>{const next=event.target.value as "custom"|"invalid_access_token";setTestType(next);if(next==="custom")prefillCustom();}}><option value="custom">Lainnya (custom)</option>{negativeConfigured&&config?.authFlow!=="none"&&<option value="invalid_access_token">Negatif - token tidak valid</option>}</select></label>
+      {testType==="custom"&&service&&<>
+        <label className="form-field"><span>Method</span><select disabled={formLocked} aria-label="Method Lainnya" value={customOverride.method||value(endpoint,"method")||"POST"} onChange={e=>setCustomOverride(old=>({...old,method:e.target.value}))}><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>HEAD</option></select></label>
+        <label className="form-field"><span>Path</span><input disabled={formLocked} aria-label="Path Lainnya" value={customOverride.path||value(endpoint,"path")} onChange={e=>setCustomOverride(old=>({...old,path:e.target.value}))}/></label>
+        <label className="form-field"><span>Expected HTTP</span><input disabled={formLocked} inputMode="numeric" aria-label="Expected HTTP Lainnya" value={customOverride.expectedHttpStatus} onChange={e=>setCustomOverride(old=>({...old,expectedHttpStatus:e.target.value}))} placeholder={String(config?.expectedHttpStatus??"200")}/></label>
+        <label className="form-field"><span>Expected SNAP Code</span><input disabled={formLocked} inputMode="numeric" maxLength={7} aria-label="Expected SNAP Code Lainnya" value={customOverride.expectedCode} onChange={e=>setCustomOverride(old=>({...old,expectedCode:e.target.value}))} placeholder={String(config?.expectedCode??"200xxxx")}/></label>
+        <label className="form-field wide"><span>Headers override (JSON)</span><textarea disabled={formLocked} aria-label="Headers override Lainnya" className="code-editor" rows={4} spellCheck={false} value={customOverride.headersText} onChange={e=>setCustomOverride(old=>({...old,headersText:e.target.value}))}/></label>
+      </>}
+      {service&&sendsBody&&(
+        <label className="form-field wide">
+          <span>Request Body</span>
+          <textarea
+            aria-label="Request Body"
+            required={testType!=="custom"&&config?.requestBodyMode!=="optional"}
+            disabled={formLocked}
+            className="code-editor"
+            rows={8}
+            spellCheck={false}
+            value={body}
+            onChange={event=>setDraft({context:bodyContext,text:event.target.value})}
+          />
+          {jsonError&&<small className="field-error">{jsonError}</small>}
+          {customError&&<small className="field-error">{customError}</small>}
+        </label>
+      )}
+      {service&&testType==="custom"&&!sendsBody&&customError&&<p className="field-error wide" role="alert">{customError}</p>}
     </div>{config&&<div className="form-grid"><p className="helper wide">Autentikasi: {String(config.authFlow)} · Expected HTTP {String(config.expectedHttpStatus??"belum diisi")} · SNAP {String(config.expectedCode??"belum diisi")}</p>{Array.isArray(config.parameters)&&config.parameters.filter(object).filter(p=>!["content-type","authorization","authorization-customer","x-timestamp","x-signature","x-partner-id","x-external-id","channel-id","x-device-id"].includes(String(p.name).toLowerCase())).map(p=><label key={String(p.name)} className="form-field"><span>{String(p.name)} ({String(p.in)}){p.required?" *":""}</span><input disabled={formLocked} value={parameters[String(p.name)]??""} onChange={e=>setParameters(old=>({...old,[String(p.name)]:e.target.value}))}/><small className="helper">{String(p.description??"")}</small></label>)}{sendsBody&&object(config.requestSchema)&&<DynamicRequestFields schema={config.requestSchema} body={body} onChange={text=>setDraft({context:bodyContext,text})} disabled={formLocked}/>}</div>}{site&&<div className="connection-summary"><span className="mode-badge blue">{"ASPI Sandbox"}</span></div>}{site&&<details className="header-details"><summary>Header otomatis</summary><dl>{headers.filter(([key])=>config?.authFlow!=="none"||["Content-Type","CHANNEL-ID","X-DEVICE-ID","ORIGIN","X-IP-ADDRESS","X-LATITUDE","X-LONGITUDE"].includes(key)).map(([key,entry])=><div key={key}><dt>{key}</dt><dd>{entry}</dd></div>)}</dl></details>}{missing.length>0&&<div className="validation-box"><strong>Konfigurasi belum lengkap</strong><p>{missing.join(", ")}.</p></div>}{(!users.length||!endpoints.length)&&<p className="helper">Lengkapi User SNAP, Dev Site Client, Endpoint URL, dan API Service di Master Data.</p>}<div className="form-actions"><button type="button" className="secondary-button" disabled={formLocked||!service} onClick={()=>setDraft(null)}>Reset Body</button><button className="primary-button" disabled={formLocked||!ready}>{formLocked?<span className="button-spinner" role="status" aria-label={ownProcessActive?(variant==="dev_site"?"Pengujian sedang berlangsung":"Testing sedang berjalan"):"Akun ASPI sedang dipakai proses lain"}/>:"Jalankan Testing"}</button></div></form>
     <section className="card response-card" aria-live="polite"><div className="section-header"><div><h2>Hasil Testing</h2><p>{latest?new Date(latest.created_at).toLocaleString("id-ID"):"Hasil testing akan muncul setelah pengujian dijalankan."}</p></div>{latest&&<span className={`status-badge ${latest.status.toLowerCase()}`}>{latest.status}</span>}</div><div className="response-summary"><div><span>HTTP</span><strong>{latest?.http_status??"—"}</strong></div><div><span>PDF ASPI</span><strong>{latest?`${pdfCountsOf(latest).ready}/${pdfCountsOf(latest).required||"—"}`:"—"}</strong></div><div><span>WAKTU</span><strong>{latest?`${latest.duration_ms} ms`:"—"}</strong></div></div><EvaluationNotice run={latest}/><pre className="response-code">{JSON.stringify(latest?.response??{message:"Hasil testing akan muncul setelah pengujian dijalankan."},null,2)}</pre>{latest&&<div className="inline-actions"><button type="button" className="text-button" onClick={()=>setSelectedRun(latest)}>Detail Testing</button>{canDownloadEvidence&&pdfsOf(latest).length>0&&<button type="button" className="text-button" onClick={()=>setEvidenceRun(latest)}>Download PDF</button>}{reprocessOf(latest).retryEvidence&&<button type="button" className="text-button" disabled={formLocked} onClick={()=>void retryEvidence(latest)}>Proses Ulang Bukti</button>}{reprocessOf(latest).resumeTesting&&<button type="button" className="text-button" disabled={formLocked} onClick={()=>void resumeRun(latest)}>Lanjutkan Testing</button>}</div>}</section>
     <section className="card history-card"><div className="section-header"><div><h2>History Testing</h2><p>{historyData.total} hasil pada periode terpilih{canViewAll&&historyFilters.scope!=="mine"?" · seluruh pengguna":""}.</p></div><label className="search-box"><input aria-label="Cari history" value={historyQuery} onChange={event=>{setHistoryQuery(event.target.value);setOffset(0);}} placeholder="Cari Dev Site, service, status, atau pengguna..."/></label></div><HistoryFilter value={historyRange} onChange={range=>{setHistoryRange(range);setOffset(0);}} filters={historyFilters} onFiltersChange={next=>{setHistoryFilters(next);setOffset(0);}} isAdmin={canViewAll}/>{historyData.error&&<p className="field-error" role="alert">{historyData.error}</p>}<div className="table-wrap" aria-busy={historyData.loading}><table><thead><tr><th>WAKTU</th>{canViewAll&&<th>PELAKSANA</th>}<th>SERVICE / DEV SITE</th><th>STATUS</th><th>HTTP / PDF</th><th>DURASI</th><th>AKSI</th></tr></thead><tbody>{history.map(run=>{const pdf=pdfCountsOf(run),reprocess=reprocessOf(run),actor=operatorLabel(run);return <tr key={run.id}><td>{new Date(run.created_at).toLocaleString("id-ID",{timeZone:"Asia/Jakarta"})}</td>{canViewAll&&<td><span>{actor.text}</span></td>}<td>{nameOf(run,"service")}<span className="cell-caption">{nameOf(run,"environment")} · {run.mode==="portal"?"ASPI Sandbox":run.mode==="live"?"Live Bank Sumut":"Mock Lokal"}</span></td><td><span className={`status-badge ${run.status.toLowerCase()}`}>{run.status}</span></td><td>{run.http_status??"—"} / {pdf.required?`${pdf.ready}/${pdf.required}`:"—"}</td><td>{run.duration_ms??0} ms</td><td><div className="inline-actions"><button type="button" className="text-button" onClick={()=>setSelectedRun(run)}>Detail</button>{canDownloadEvidence&&<button type="button" className="text-button" disabled={!pdfsOf(run).length||!!downloadingId} onClick={()=>setEvidenceRun(run)}>Bukti ASPI</button>}{reprocess.retryEvidence&&<button type="button" className="text-button" disabled={formLocked} onClick={()=>void retryEvidence(run)}>Proses Ulang Bukti</button>}{reprocess.resumeTesting&&<button type="button" className="text-button" disabled={formLocked} onClick={()=>void resumeRun(run)}>Lanjutkan</button>}</div></td></tr>;})}</tbody></table>{!history.length&&<p className="empty-note">{historyData.loading?"Memuat history…":"Belum ada history yang cocok."}</p>}</div><div className="history-pagination"><button className="secondary-button" disabled={!offset||historyData.loading} onClick={()=>setOffset(Math.max(0,offset-20))}>Sebelumnya</button><span>{historyData.total?`${offset+1}`:"0 hasil"}</span><button className="secondary-button" disabled={offset+20>=historyData.total||historyData.loading} onClick={()=>setOffset(offset+20)}>Berikutnya</button></div></section>

@@ -40,6 +40,7 @@ function downloadError(error:unknown){
 
 function shouldRetryDownload(error:string){
   // Retry only when an alternate strategy or transient wait may help.
+  // ASPI_AUTH_EXPIRED is renewed by the caller (portal evidence path) — not re-Executed here.
   return /DOWNLOAD_EVENT_TIMEOUT|DOWNLOAD_LINK_NOT_FOUND|POPUP_NOT_DETECTED|batas waktu|Timeout/i.test(error)
     && !/ASPI_AUTH_EXPIRED|INVALID_PDF_RESPONSE|ACTIVITY_NOT_FOUND|ACTIVITY_AMBIGUOUS|PDF_STORAGE_ERROR/i.test(error);
 }

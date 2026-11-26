@@ -513,14 +513,26 @@ export class PortalEngine{
       const downloadPage=opened.page;
       await downloadPage.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:Math.max(1000,Math.min(30000,deadline-Date.now()))});
       if(downloadPage.url().includes("/sign-in")||await downloadPage.locator('input[type="password"]').count()){
-        await this.sessions.loginIfRequired(downloadPage,input.user);
+        await this.sessions.renewSessionIfExpired(downloadPage,input.user,{maxAttempts:2,logger:this.logger});
         await downloadPage.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:Math.max(1000,Math.min(30000,deadline-Date.now()))});
       }
       this.logger.log(`[ASPI PDF] PDF digambar ${pdfCapture.kind} ${pdfCapture.width??1280}x${pdfCapture.height??800} @${pdfCapture.deviceScaleFactor??1}x. Skrip download ASPI tidak ditahan.`);
+      const withSafeRelogin=async<T>(task:()=>Promise<T>):Promise<T>=>{
+        try{return await task();}
+        catch(error){
+          if(!this.sessions.isAuthExpiredError(error))throw error;
+          // Evidence-only renew: never re-Execute the target API after the request already left.
+          await this.sessions.renewSessionIfExpired(downloadPage,input.user,{maxAttempts:2,logger:this.logger});
+          if(downloadPage.url().includes("/sign-in")||!downloadPage.url().includes("/aktivitas-aplikasi-pengujian")){
+            await downloadPage.goto(ACTIVITY_PAGE,{waitUntil:"domcontentloaded",timeout:Math.max(1000,Math.min(30000,deadline-Date.now()))});
+          }
+          return task();
+        }
+      };
       return await collectActivityPdfs({
         before:input.before,paths:input.paths,operations:input.operations,knownActivities:input.knownActivities,activityNames:input.activityNames,deadline,signal:controller.signal,
-        read:()=>this.activitiesInContext(session.page,deadline),
-        download:(activity,itemDeadline)=>fetchOfficialPdf(downloadPage,activity.downloadUrl,Math.min(deadline,itemDeadline),"navigation"),
+        read:()=>withSafeRelogin(()=>this.activitiesInContext(session.page,deadline)),
+        download:(activity,itemDeadline)=>withSafeRelogin(()=>fetchOfficialPdf(downloadPage,activity.downloadUrl,Math.min(deadline,itemDeadline),"navigation")),
         report,onResult:input.onEvidence
       });
     }catch(cause){
