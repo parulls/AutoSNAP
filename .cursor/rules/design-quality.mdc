@@ -1,0 +1,15 @@
+---
+description: Keep AutoSNAP Studio unless the user asks for a brand DESIGN.md, Material 3, or shadcn blocks.
+globs: "**/*.{tsx,css}"
+alwaysApply: false
+---
+
+AutoSNAP Studio is the product UI. Tokens are in `app/globals.css`: `--primary` `#2563eb`, `--background` `#f8fafc`, `--surface` `#fff`, `--sidebar` `#0f172a`, `--text-primary` `#0f172a`, `--border` `#e2e8f0`, `--radius` `6px`, `--control-h` `36px`. New screens use those tokens and the existing classes (`card`, `primary-button`, `secondary-button`, `app-shell`). Ordinary feature work does not add shadcn, Material components, or a brand skin.
+
+Switch only when the user asks, and say which system you are using:
+
+1. A named brand, or `DESIGN.md` at the repo root: follow `apply-design-md`. Map its tokens onto the variables above.
+2. Material, M3, or "desain material": follow `material-design`, mapped onto the existing controls.
+3. shadcn or shadcnblocks: follow `shadcn-blocks`.
+
+One system per screen.

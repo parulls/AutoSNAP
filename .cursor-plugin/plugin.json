@@ -1,0 +1,11 @@
+{
+  "name": "design-kits",
+  "version": "1.0.0",
+  "description": "Brand DESIGN.md files, Material Design 3, and shadcn blocks for consistent UI.",
+  "author": { "name": "Parulian" },
+  "license": "MIT",
+  "keywords": ["design", "design-md", "material", "shadcn", "ui"],
+  "skills": ".cursor/skills",
+  "rules": ".cursor/rules",
+  "commands": ".cursor/commands"
+}

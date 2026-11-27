@@ -1,0 +1,699 @@
+{
+  "source": "https://github.com/VoltAgent/awesome-design-md",
+  "license": "MIT",
+  "rawBase": "https://raw.githubusercontent.com/VoltAgent/awesome-design-md/main/design-md",
+  "count": 84,
+  "brands": [
+    {
+      "slug": "1win",
+      "name": "1win",
+      "category": "Media & consumer",
+      "aliases": [
+        "1win"
+      ]
+    },
+    {
+      "slug": "airbnb",
+      "name": "Airbnb",
+      "category": "Commerce",
+      "aliases": [
+        "airbnb"
+      ]
+    },
+    {
+      "slug": "airtable",
+      "name": "Airtable",
+      "category": "Design tools",
+      "aliases": [
+        "airtable"
+      ]
+    },
+    {
+      "slug": "aljazeera",
+      "name": "Al Jazeera",
+      "category": "Media & consumer",
+      "aliases": [
+        "aljazeera",
+        "al jazeera"
+      ]
+    },
+    {
+      "slug": "apple",
+      "name": "Apple",
+      "category": "Media & consumer",
+      "aliases": [
+        "apple"
+      ]
+    },
+    {
+      "slug": "binance",
+      "name": "Binance",
+      "category": "Fintech",
+      "aliases": [
+        "binance"
+      ]
+    },
+    {
+      "slug": "bmw",
+      "name": "BMW",
+      "category": "Automotive",
+      "aliases": [
+        "bmw"
+      ]
+    },
+    {
+      "slug": "bmw-m",
+      "name": "BMW M",
+      "category": "Automotive",
+      "aliases": [
+        "bmw-m",
+        "bmw m"
+      ]
+    },
+    {
+      "slug": "bugatti",
+      "name": "Bugatti",
+      "category": "Automotive",
+      "aliases": [
+        "bugatti"
+      ]
+    },
+    {
+      "slug": "cal",
+      "name": "Cal.com",
+      "category": "Productivity",
+      "aliases": [
+        "cal",
+        "cal.com"
+      ]
+    },
+    {
+      "slug": "claude",
+      "name": "Claude",
+      "category": "AI & LLM",
+      "aliases": [
+        "claude"
+      ]
+    },
+    {
+      "slug": "clay",
+      "name": "Clay",
+      "category": "Design tools",
+      "aliases": [
+        "clay"
+      ]
+    },
+    {
+      "slug": "clickhouse",
+      "name": "ClickHouse",
+      "category": "Backend & data",
+      "aliases": [
+        "clickhouse"
+      ]
+    },
+    {
+      "slug": "cohere",
+      "name": "Cohere",
+      "category": "AI & LLM",
+      "aliases": [
+        "cohere"
+      ]
+    },
+    {
+      "slug": "coinbase",
+      "name": "Coinbase",
+      "category": "Fintech",
+      "aliases": [
+        "coinbase"
+      ]
+    },
+    {
+      "slug": "composio",
+      "name": "Composio",
+      "category": "Backend & data",
+      "aliases": [
+        "composio"
+      ]
+    },
+    {
+      "slug": "cursor",
+      "name": "Cursor",
+      "category": "Developer tools",
+      "aliases": [
+        "cursor"
+      ]
+    },
+    {
+      "slug": "dell-1996",
+      "name": "Dell (1996)",
+      "category": "Retro web",
+      "aliases": [
+        "dell-1996",
+        "dell (1996)"
+      ]
+    },
+    {
+      "slug": "dji",
+      "name": "DJI",
+      "category": "Media & consumer",
+      "aliases": [
+        "dji"
+      ]
+    },
+    {
+      "slug": "elevenlabs",
+      "name": "ElevenLabs",
+      "category": "AI & LLM",
+      "aliases": [
+        "elevenlabs"
+      ]
+    },
+    {
+      "slug": "expo",
+      "name": "Expo",
+      "category": "Developer tools",
+      "aliases": [
+        "expo"
+      ]
+    },
+    {
+      "slug": "ferrari",
+      "name": "Ferrari",
+      "category": "Automotive",
+      "aliases": [
+        "ferrari"
+      ]
+    },
+    {
+      "slug": "figma",
+      "name": "Figma",
+      "category": "Design tools",
+      "aliases": [
+        "figma"
+      ]
+    },
+    {
+      "slug": "framer",
+      "name": "Framer",
+      "category": "Design tools",
+      "aliases": [
+        "framer"
+      ]
+    },
+    {
+      "slug": "hashicorp",
+      "name": "HashiCorp",
+      "category": "Backend & data",
+      "aliases": [
+        "hashicorp"
+      ]
+    },
+    {
+      "slug": "hp",
+      "name": "HP",
+      "category": "Media & consumer",
+      "aliases": [
+        "hp"
+      ]
+    },
+    {
+      "slug": "ibm",
+      "name": "IBM",
+      "category": "Media & consumer",
+      "aliases": [
+        "ibm"
+      ]
+    },
+    {
+      "slug": "intercom",
+      "name": "Intercom",
+      "category": "Productivity",
+      "aliases": [
+        "intercom"
+      ]
+    },
+    {
+      "slug": "jobright",
+      "name": "Jobright",
+      "category": "AI & LLM",
+      "aliases": [
+        "jobright"
+      ]
+    },
+    {
+      "slug": "kraken",
+      "name": "Kraken",
+      "category": "Fintech",
+      "aliases": [
+        "kraken"
+      ]
+    },
+    {
+      "slug": "lamborghini",
+      "name": "Lamborghini",
+      "category": "Automotive",
+      "aliases": [
+        "lamborghini"
+      ]
+    },
+    {
+      "slug": "linear.app",
+      "name": "Linear",
+      "category": "Productivity",
+      "aliases": [
+        "linear.app",
+        "linearapp",
+        "linear app",
+        "linear"
+      ]
+    },
+    {
+      "slug": "lovable",
+      "name": "Lovable",
+      "category": "Developer tools",
+      "aliases": [
+        "lovable"
+      ]
+    },
+    {
+      "slug": "mastercard",
+      "name": "Mastercard",
+      "category": "Fintech",
+      "aliases": [
+        "mastercard"
+      ]
+    },
+    {
+      "slug": "mercury",
+      "name": "Mercury",
+      "category": "Fintech",
+      "aliases": [
+        "mercury"
+      ]
+    },
+    {
+      "slug": "meta",
+      "name": "Meta",
+      "category": "Commerce",
+      "aliases": [
+        "meta"
+      ]
+    },
+    {
+      "slug": "minimax",
+      "name": "MiniMax",
+      "category": "AI & LLM",
+      "aliases": [
+        "minimax"
+      ]
+    },
+    {
+      "slug": "mintlify",
+      "name": "Mintlify",
+      "category": "Productivity",
+      "aliases": [
+        "mintlify"
+      ]
+    },
+    {
+      "slug": "miro",
+      "name": "Miro",
+      "category": "Design tools",
+      "aliases": [
+        "miro"
+      ]
+    },
+    {
+      "slug": "mistral.ai",
+      "name": "Mistral AI",
+      "category": "AI & LLM",
+      "aliases": [
+        "mistral.ai",
+        "mistralai",
+        "mistral ai"
+      ]
+    },
+    {
+      "slug": "mongodb",
+      "name": "MongoDB",
+      "category": "Backend & data",
+      "aliases": [
+        "mongodb"
+      ]
+    },
+    {
+      "slug": "mydealz",
+      "name": "mydealz",
+      "category": "Commerce",
+      "aliases": [
+        "mydealz"
+      ]
+    },
+    {
+      "slug": "nerdwallet",
+      "name": "NerdWallet",
+      "category": "Fintech",
+      "aliases": [
+        "nerdwallet"
+      ]
+    },
+    {
+      "slug": "nike",
+      "name": "Nike",
+      "category": "Commerce",
+      "aliases": [
+        "nike"
+      ]
+    },
+    {
+      "slug": "nintendo-2001",
+      "name": "Nintendo.com (2001)",
+      "category": "Retro web",
+      "aliases": [
+        "nintendo-2001",
+        "nintendo.com (2001)"
+      ]
+    },
+    {
+      "slug": "notion",
+      "name": "Notion",
+      "category": "Productivity",
+      "aliases": [
+        "notion"
+      ]
+    },
+    {
+      "slug": "nvidia",
+      "name": "NVIDIA",
+      "category": "Media & consumer",
+      "aliases": [
+        "nvidia"
+      ]
+    },
+    {
+      "slug": "ollama",
+      "name": "Ollama",
+      "category": "AI & LLM",
+      "aliases": [
+        "ollama"
+      ]
+    },
+    {
+      "slug": "opencode.ai",
+      "name": "OpenCode",
+      "category": "AI & LLM",
+      "aliases": [
+        "opencode.ai",
+        "opencodeai",
+        "opencode ai",
+        "opencode"
+      ]
+    },
+    {
+      "slug": "oracle",
+      "name": "Oracle",
+      "category": "Backend & data",
+      "aliases": [
+        "oracle"
+      ]
+    },
+    {
+      "slug": "oura",
+      "name": "Oura",
+      "category": "Media & consumer",
+      "aliases": [
+        "oura"
+      ]
+    },
+    {
+      "slug": "pinterest",
+      "name": "Pinterest",
+      "category": "Media & consumer",
+      "aliases": [
+        "pinterest"
+      ]
+    },
+    {
+      "slug": "playstation",
+      "name": "PlayStation",
+      "category": "Media & consumer",
+      "aliases": [
+        "playstation"
+      ]
+    },
+    {
+      "slug": "posthog",
+      "name": "PostHog",
+      "category": "Backend & data",
+      "aliases": [
+        "posthog"
+      ]
+    },
+    {
+      "slug": "raycast",
+      "name": "Raycast",
+      "category": "Developer tools",
+      "aliases": [
+        "raycast"
+      ]
+    },
+    {
+      "slug": "renault",
+      "name": "Renault",
+      "category": "Automotive",
+      "aliases": [
+        "renault"
+      ]
+    },
+    {
+      "slug": "replicate",
+      "name": "Replicate",
+      "category": "AI & LLM",
+      "aliases": [
+        "replicate"
+      ]
+    },
+    {
+      "slug": "resend",
+      "name": "Resend",
+      "category": "Productivity",
+      "aliases": [
+        "resend"
+      ]
+    },
+    {
+      "slug": "revolut",
+      "name": "Revolut",
+      "category": "Fintech",
+      "aliases": [
+        "revolut"
+      ]
+    },
+    {
+      "slug": "runwayml",
+      "name": "Runway",
+      "category": "AI & LLM",
+      "aliases": [
+        "runwayml",
+        "runway"
+      ]
+    },
+    {
+      "slug": "sanity",
+      "name": "Sanity",
+      "category": "Backend & data",
+      "aliases": [
+        "sanity"
+      ]
+    },
+    {
+      "slug": "sap",
+      "name": "SAP",
+      "category": "Productivity",
+      "aliases": [
+        "sap"
+      ]
+    },
+    {
+      "slug": "sentry",
+      "name": "Sentry",
+      "category": "Backend & data",
+      "aliases": [
+        "sentry"
+      ]
+    },
+    {
+      "slug": "shopify",
+      "name": "Shopify",
+      "category": "Commerce",
+      "aliases": [
+        "shopify"
+      ]
+    },
+    {
+      "slug": "slack",
+      "name": "Slack",
+      "category": "Productivity",
+      "aliases": [
+        "slack"
+      ]
+    },
+    {
+      "slug": "spacex",
+      "name": "SpaceX",
+      "category": "Media & consumer",
+      "aliases": [
+        "spacex"
+      ]
+    },
+    {
+      "slug": "spotify",
+      "name": "Spotify",
+      "category": "Media & consumer",
+      "aliases": [
+        "spotify"
+      ]
+    },
+    {
+      "slug": "starbucks",
+      "name": "Starbucks",
+      "category": "Commerce",
+      "aliases": [
+        "starbucks"
+      ]
+    },
+    {
+      "slug": "stripe",
+      "name": "Stripe",
+      "category": "Fintech",
+      "aliases": [
+        "stripe"
+      ]
+    },
+    {
+      "slug": "supabase",
+      "name": "Supabase",
+      "category": "Backend & data",
+      "aliases": [
+        "supabase"
+      ]
+    },
+    {
+      "slug": "superhuman",
+      "name": "Superhuman",
+      "category": "Developer tools",
+      "aliases": [
+        "superhuman"
+      ]
+    },
+    {
+      "slug": "tesla",
+      "name": "Tesla",
+      "category": "Automotive",
+      "aliases": [
+        "tesla"
+      ]
+    },
+    {
+      "slug": "theverge",
+      "name": "The Verge",
+      "category": "Media & consumer",
+      "aliases": [
+        "theverge",
+        "the verge"
+      ]
+    },
+    {
+      "slug": "together.ai",
+      "name": "Together AI",
+      "category": "AI & LLM",
+      "aliases": [
+        "together.ai",
+        "togetherai",
+        "together ai"
+      ]
+    },
+    {
+      "slug": "uber",
+      "name": "Uber",
+      "category": "Media & consumer",
+      "aliases": [
+        "uber"
+      ]
+    },
+    {
+      "slug": "vercel",
+      "name": "Vercel",
+      "category": "Developer tools",
+      "aliases": [
+        "vercel"
+      ]
+    },
+    {
+      "slug": "vodafone",
+      "name": "Vodafone",
+      "category": "Media & consumer",
+      "aliases": [
+        "vodafone"
+      ]
+    },
+    {
+      "slug": "voltagent",
+      "name": "VoltAgent",
+      "category": "AI & LLM",
+      "aliases": [
+        "voltagent"
+      ]
+    },
+    {
+      "slug": "warp",
+      "name": "Warp",
+      "category": "Developer tools",
+      "aliases": [
+        "warp"
+      ]
+    },
+    {
+      "slug": "webflow",
+      "name": "Webflow",
+      "category": "Design tools",
+      "aliases": [
+        "webflow"
+      ]
+    },
+    {
+      "slug": "wired",
+      "name": "WIRED",
+      "category": "Media & consumer",
+      "aliases": [
+        "wired"
+      ]
+    },
+    {
+      "slug": "wise",
+      "name": "Wise",
+      "category": "Fintech",
+      "aliases": [
+        "wise"
+      ]
+    },
+    {
+      "slug": "x.ai",
+      "name": "xAI",
+      "category": "AI & LLM",
+      "aliases": [
+        "x.ai",
+        "xai",
+        "x ai"
+      ]
+    },
+    {
+      "slug": "zapier",
+      "name": "Zapier",
+      "category": "Productivity",
+      "aliases": [
+        "zapier"
+      ]
+    }
+  ]
+}
